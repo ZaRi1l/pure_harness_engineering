@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pure Harness Runtime Status",
+  "type": "object",
+  "required": ["schema_version", "current_goal", "phase", "active_agents", "agents", "signals", "task_counts", "verification", "blockers", "recent_events", "artifact_preview_links", "last_update"]
+}

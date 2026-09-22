@@ -1,0 +1,12 @@
+{
+  "name": "pure-harness",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "init": "node scripts/runtime-state.mjs init",
+    "test": "node tests/all.test.mjs",
+    "self-check": "node scripts/self-check.mjs",
+    "preview": "node scripts/preview-server.mjs"
+  }
+}

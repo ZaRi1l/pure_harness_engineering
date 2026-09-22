@@ -1,0 +1,64 @@
+[features]
+hooks = true
+multi_agent = true
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 4
+
+[agents.planner]
+description = "Plans MEDIUM/LARGE work, acceptance criteria, scope, risks, sequencing, and required roles; does not implement."
+config_file = "./agents/planner.toml"
+
+[agents.worker]
+description = "Executes a bounded task across code, research, documents, planning, or data work. Default role for SMALL tasks."
+config_file = "./agents/worker.toml"
+
+[agents.reviewer]
+description = "Read-only independent review of completed work for correctness, regressions, evidence, and scope."
+config_file = "./agents/reviewer.toml"
+
+[agents.supervisor]
+description = "Read-only workflow audit for repeated failure, drift, orphaned tasks, agent failure, or LARGE checkpoints."
+config_file = "./agents/supervisor.toml"
+
+[agents.context-curator]
+description = "Maintains only durable shared project knowledge after meaningful decisions, regressions, or milestones."
+config_file = "./agents/context-curator.toml"
+
+[agents.preview-manager]
+description = "Changes dashboard structure, runtime display types, or feature previews; never updates routine status manually."
+config_file = "./agents/preview-manager.toml"
+
+[agents.verifier]
+description = "Read-only independent verification against acceptance criteria and deterministic evidence."
+config_file = "./agents/verifier.toml"
+
+[agents.impact-analyzer]
+description = "Read-only analysis of interface, schema, architecture, dependency, and downstream impact for broad changes."
+config_file = "./agents/impact-analyzer.toml"
+
+[agents.integrator]
+description = "Integrates isolated worker results and resolves merge, interface, and end-to-end verification issues."
+config_file = "./agents/integrator.toml"
+
+[agents.environment-doctor]
+description = "Read-only diagnosis of runtime, dependency, tool, credential availability, port, container, and build environment failures."
+config_file = "./agents/environment-doctor.toml"
+
+[agents.researcher]
+description = "Read-only external research with concise conclusions, evidence, sources, and uncertainty."
+config_file = "./agents/researcher.toml"
+
+[agents.security-auditor]
+description = "Read-only security review for authentication, authorization, secrets, input, files, SQL, network, or permissions."
+config_file = "./agents/security-auditor.toml"
+
+[agents.performance-analyzer]
+description = "Read-only performance analysis when latency, load, throughput, or resource use is an explicit concern."
+config_file = "./agents/performance-analyzer.toml"
+
+[agents.release-manager]
+description = "Coordinates version, changelog, release, and deployment work only when the project has a release process."
+config_file = "./agents/release-manager.toml"
+

@@ -1,0 +1,8 @@
+node_modules/
+.superpowers/
+
+# Generated Pure Harness runtime state
+.ai/runtime/status.json
+.ai/runtime/tasks.json
+.ai/runtime/events.jsonl
+.ai/runtime/.state.lock

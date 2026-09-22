@@ -1,0 +1,10 @@
+{
+  "description": "Pure Harness lifecycle state updates. Review and trust with /hooks.",
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "node \"$(git rev-parse --show-toplevel)/scripts/hook-runtime.mjs\"", "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$r = git rev-parse --show-toplevel; & node (Join-Path $r 'scripts/hook-runtime.mjs')\"", "timeout": 5, "statusMessage": "Initializing harness state"}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "node \"$(git rev-parse --show-toplevel)/scripts/hook-runtime.mjs\"", "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$r = git rev-parse --show-toplevel; & node (Join-Path $r 'scripts/hook-runtime.mjs')\"", "timeout": 3}]}],
+    "SubagentStart": [{"hooks": [{"type": "command", "command": "node \"$(git rev-parse --show-toplevel)/scripts/hook-runtime.mjs\"", "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$r = git rev-parse --show-toplevel; & node (Join-Path $r 'scripts/hook-runtime.mjs')\"", "timeout": 5}]}],
+    "SubagentStop": [{"hooks": [{"type": "command", "command": "node \"$(git rev-parse --show-toplevel)/scripts/hook-runtime.mjs\"", "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$r = git rev-parse --show-toplevel; & node (Join-Path $r 'scripts/hook-runtime.mjs')\"", "timeout": 5}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "node \"$(git rev-parse --show-toplevel)/scripts/hook-runtime.mjs\"", "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$r = git rev-parse --show-toplevel; & node (Join-Path $r 'scripts/hook-runtime.mjs')\"", "timeout": 5}]}]
+  }
+}
