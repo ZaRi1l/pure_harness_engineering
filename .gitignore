@@ -6,4 +6,5 @@ node_modules/
 .ai/runtime/status.json
 .ai/runtime/tasks.json
 .ai/runtime/events.jsonl
+.ai/runtime/claims.json
 .ai/runtime/.state.lock
