@@ -24,13 +24,12 @@ test('self-check rejects invalid config and empty hooks', async () => {
   assert.ok(report.failures.some(failure => failure.includes('required hook event')));
 });
 
-test('self-check fails when Codex is not installed', async () => {
+test('self-check warns when Codex is not installed', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-check-'));
   await mkdir(path.join(root, '.codex'));
   await writeFile(path.join(root, '.codex', 'config.toml'), '[features]\nhooks = true\n');
   await writeFile(path.join(root, '.codex', 'hooks.json'), '{"hooks":{}}');
   const unavailable = () => ({ error: Object.assign(new Error('not found'), { code: 'ENOENT' }) });
   const report = await checkRepository(root, { exerciseRuntime: false, exerciseHttp: false, spawnCodex: unavailable });
-  assert.equal(report.ok, false);
-  assert.ok(report.failures.some(failure => failure.includes('Codex executable unavailable')));
+  assert.ok(report.warnings.some(warning => warning.includes('Codex executable unavailable')));
 });

@@ -15,9 +15,13 @@ Use `.agents/skills/task-routing/` and its profile reference for domain guidance
 
 Preserve user changes. Do not reset, revert, overwrite, or broadly refactor outside the requested scope. If the expected change budget grows materially, stop implementation and return to planning. Parallel writers must use separate branches/worktrees and must not edit the same files concurrently.
 
+Before writing, claim the intended path with `node scripts/runtime-state.mjs claim <agent-id> <path> [...]`; release it when finished. Prefix-overlapping claims must run sequentially unless isolated in native Git worktrees.
+
 ## Verification
 
 Prefer real commands and artifacts over agent claims. A worker does not give final approval to its own result. Record verification evidence in runtime state; do not claim completion while required checks are missing or failing.
+
+Use `.agents/skills/testing/` for proportionate worker tests and independent verifier/reviewer checks. `npm run watchdog` records deterministic anomalies; invoke the read-only supervisor only when Main judges escalation useful.
 
 ## Memory and runtime
 

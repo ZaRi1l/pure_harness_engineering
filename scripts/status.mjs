@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { RuntimeStore, findRoot } from './runtime-state.mjs';
+import { pathToFileURL } from 'node:url';
 
 export function renderStatus(snapshot) {
   const { status, tasks, claims } = snapshot;
@@ -16,9 +17,14 @@ export function renderStatus(snapshot) {
   lines.push('', 'Claims');
   for (const claim of claims.claims) lines.push('  ' + claim.agent_id + '  ' + claim.scopes.join(', '));
   if (!claims.claims.length) lines.push('  none');
+  lines.push('', 'Watchdog Warnings');
+  for (const warning of status.warnings || []) lines.push('  ! ' + warning.message);
+  if (!(status.warnings || []).length) lines.push('  none');
   return lines.join('\n') + '\n';
 }
 
-const root = findRoot(), store = new RuntimeStore(root), snapshot = await store.readSnapshot();
-if (process.argv.includes('--json')) console.log(JSON.stringify(snapshot, null, 2));
-else process.stdout.write(renderStatus(snapshot));
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const root = findRoot(), store = new RuntimeStore(root), snapshot = await store.readSnapshot();
+  if (process.argv.includes('--json')) console.log(JSON.stringify(snapshot, null, 2));
+  else process.stdout.write(renderStatus(snapshot));
+}

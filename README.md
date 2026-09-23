@@ -1,59 +1,60 @@
-# Pure Harness v1
+# Pure Harness v1.1
 
-Codex-native harness for software, research, writing, planning, and data projects. It keeps SMALL work light, expands MEDIUM/LARGE work by need, records durable knowledge separately from transient state, and exposes deterministic workflow state in a browser.
+Pure Harness is a thin, Codex-native workflow harness. Main Codex makes orchestration decisions; Skills provide repeatable procedures; specialist agents are used only when an independent context or judgment is worthwhile. Scripts and hooks hold deterministic state and checks.
+
+Node.js is used for lightweight scripts and hooks. A persistent Node server is **not** required for normal harness operation. The server is only needed for the optional live dashboard.
 
 ## Start
 
-Clone this repository as the base for a new project, or copy its tracked files into an existing Git repository. Keep `.codex/`, `.agents/`, `.ai/`, `scripts/`, `preview/`, `tests/`, `AGENTS.md`, and `package.json`; then add the project's own files. No global Skill installation is required.
-
-Initialize runtime state:
+1. Clone or copy the tracked harness files into a Git repository.
+2. Run `npm run init`.
+3. Open the repository in Codex, inspect and trust hooks with `/hooks`.
+4. Run `npm run self-check`.
+5. Use Codex normally. Use `npm run status` when you need a terminal snapshot.
 
 ```powershell
 npm run init
-```
-
-Start the dashboard server:
-
-```powershell
+npm run status
 npm run preview
-```
-
-Open `http://127.0.0.1:8765/`. The server binds to localhost by default. Stop it with `Ctrl+C`.
-
-Project hooks are loaded after the repository is trusted. Review and trust them with `/hooks`; Codex then records session and subagent lifecycle events automatically.
-
-## Runtime commands
-
-```powershell
-node scripts/runtime-state.mjs goal "Prepare research synthesis" --phase planning
-node scripts/runtime-state.mjs task source-review "Verify primary sources" in_progress --owner researcher
-node scripts/runtime-state.mjs verify passed source-check --detail "12 primary sources checked"
-node scripts/runtime-state.mjs artifact "Draft report" "/preview/features/report.html"
-node scripts/runtime-state.mjs signal planner-1 worker-1 handoff "Task spec ready"
-node scripts/route-task.mjs medium
-```
-
-The dashboard's Agent Signal Network automatically shows Main-to-agent delegation and agent-to-Main lifecycle return from hooks. A stop event is neutral because Codex does not provide a success outcome in `SubagentStop`; verification and task state carry completion evidence. Record other meaningful handoffs with the `signal` command. Signals contain routing metadata and a short summary, never full prompts, transcripts, or private reasoning.
-
-The complexity argument to `route-task.mjs` is a judgment made by Main Codex or a person. The script only returns the standard role sequence; it does not classify work by file count.
-
-## Structure
-
-- `.codex/`: project config, custom agents, one hook source.
-- `.agents/skills/`: portable repository Skills, including `token-efficiency`.
-- `.ai/memory/`: curated durable knowledge.
-- `.ai/runtime/`: generated state; ignored by Git except `.gitkeep`.
-- `.ai/tasks/`: optional MEDIUM/LARGE Task Specs.
-- `scripts/`: dependency-free Node runtime CLI, hook bridge, router, preview server, and self-check.
-- `preview/`: dashboard and real feature/artifact previews when needed.
-
-## Validate
-
-```powershell
+npm run preview:live
+npm run watchdog
 npm test
 npm run self-check
 ```
 
-No npm package installation is required; the scripts use Node built-ins only. Agent configs intentionally inherit the active Codex model and reasoning level so the repository remains portable across accounts and machines.
+`npm run preview` creates `.ai/runtime/preview.html` from one runtime snapshot and exits. `npm run preview:live` starts an optional dashboard at `http://127.0.0.1:8765/`; it is localhost-only and refreshes runtime state every three seconds.
 
-Requirements are Git, Node.js 20 or newer, and a Codex version that supports project agents and hooks. After cloning on another computer, run `npm run init`, open the repository in Codex, review/trust the project hooks with `/hooks`, and run `npm run self-check`.
+## Runtime
+
+Hooks automatically record session and subagent lifecycle metadata. A subagent stop is neutral, not success: task state plus verification evidence determine completion.
+
+```powershell
+node scripts/runtime-state.mjs goal "Implement connector" --phase execution
+node scripts/runtime-state.mjs task implementation "Implement connector" in_progress --owner worker-1
+node scripts/runtime-state.mjs claim worker-1 src/backend/
+node scripts/runtime-state.mjs verify passed unit-tests --detail "npm test"
+node scripts/runtime-state.mjs release-claim worker-1
+node scripts/runtime-state.mjs signal planner worker handoff "Task spec ready"
+```
+
+Claims use normalized file/directory prefixes. `src/` conflicts with `src/backend/`; `src/backend/` and `src/frontend/` do not. Conflicting writers work sequentially or use native Git worktree isolation.
+
+`npm run watchdog` is one-shot, deterministic anomaly detection. It records warnings for stale agents, orphaned owners, incomplete verification, failed/blocked verification, and overlapping claims. Main Codex decides recovery; supervisor is a read-only, on-demand audit role rather than a daemon.
+
+## Workflow
+
+- SMALL: one worker and only proportionate verification.
+- MEDIUM: plan, execute, independent verification, then review when it adds value.
+- LARGE: add impact analysis, isolated writers/worktrees, integration, and supervisor checkpoints as justified.
+
+Workers may write implementation and tests. Verifiers rerun checks read-only and independently. Reviewers assess correctness, regressions, scope, and evidence; neither verifier nor reviewer edits tests to make a result pass. See `.agents/skills/testing/SKILL.md` for the reusable testing procedure.
+
+## Structure
+
+- `.codex/agents/` and `.codex/config.toml`: agent catalog source of truth.
+- `.agents/skills/`: repository Skills, discovered from `SKILL.md` frontmatter.
+- `.ai/runtime/`: ignored generated goal/task/event/claim state.
+- `scripts/`: dependency-free Node built-in CLI, hook bridge, watchdog, preview, and self-check.
+- `preview/`: optional live dashboard and UI proposals.
+
+No package installation is required. Use Node.js 20+, Git, and a Codex version with project agents and hooks. Agent definitions inherit the active Codex model and reasoning level; the repository never hard-codes one.

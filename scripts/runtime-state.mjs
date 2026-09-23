@@ -42,7 +42,7 @@ export class RuntimeStore {
     this.eventsPath = path.join(this.runtime, 'events.jsonl'); this.claimsPath = path.join(this.runtime, 'claims.json'); this.lockPath = path.join(this.runtime, '.state.lock');
     this.eventLimit = Math.max(1, eventLimit); this.lockTimeoutMs = lockTimeoutMs;
   }
-  emptyStatus() { return { schema_version: 1, current_goal: null, phase: 'idle', active_agents: [], agents: [], signals: [], task_counts: { total: 0, completed: 0 }, progress: null, completed_tasks: [], next_tasks: [], verification: { status: 'not_run', checks: [], last_run: null }, blockers: [], recent_events: [], artifact_preview_links: [], last_update: now() }; }
+  emptyStatus() { return { schema_version: 1, current_goal: null, phase: 'idle', active_agents: [], agents: [], signals: [], task_counts: { total: 0, completed: 0 }, progress: null, completed_tasks: [], next_tasks: [], verification: { status: 'not_run', checks: [], last_run: null }, blockers: [], warnings: [], recent_events: [], artifact_preview_links: [], last_update: now() }; }
   assertSafeLockPath() { const resolved = path.resolve(this.lockPath); if (path.dirname(resolved) !== path.resolve(this.runtime)) throw new Error('unsafe lock path'); return resolved; }
   async removeOwnedLock(token) { try { const owner = JSON.parse(await readFile(path.join(this.lockPath, 'owner.json'), 'utf8')); if (owner.token !== token) return; } catch { return; } await rm(this.assertSafeLockPath(), { recursive: true, force: true }); }
   async recoverStaleLock() {
@@ -107,6 +107,7 @@ export class RuntimeStore {
   async clearBlocker(id) { await this.mutate(({ status, events }) => { status.blockers = status.blockers.filter(item => item.id !== id); events.push(this.event('blocker_cleared', `Cleared blocker ${id}`)); }); }
   async addArtifact(label, href) { await this.mutate(({ status, events }) => { status.artifact_preview_links = status.artifact_preview_links.filter(item => item.href !== href).concat({ label: String(label).slice(0, 200), href }); events.push(this.event('artifact', `Preview registered: ${label}`)); }); }
   async addEvent(type, message) { await this.mutate(({ events }) => events.push(this.event(type, message))); }
+  async setWarnings(warnings) { await this.mutate(({ status, events }) => { status.warnings = warnings.map(warning => ({ id: String(warning.id).slice(0, 120), message: String(warning.message).slice(0, 500), time: now() })); events.push(this.event('watchdog', warnings.length ? String(warnings.length) + ' watchdog warning(s)' : 'Watchdog clear')); }); }
   async claim(agentId, scopes) {
     const normalized = [...new Set((Array.isArray(scopes) ? scopes : [scopes]).map(normalizeScope))];
     if (!normalized.length) throw new Error('claim requires a scope');

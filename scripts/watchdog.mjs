@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { RuntimeStore, findRoot } from './runtime-state.mjs';
+import { pathToFileURL } from 'node:url';
 
 export function inspectRuntime(snapshot, { staleMs = Number(process.env.PURE_HARNESS_STALE_AGENT_MS || 3600000) } = {}) {
   const warnings = [], { status, tasks, claims } = snapshot, known = new Set(status.agents.map(agent => agent.id));
@@ -11,7 +12,9 @@ export function inspectRuntime(snapshot, { staleMs = Number(process.env.PURE_HAR
   return warnings;
 }
 
-const store = new RuntimeStore(findRoot()), snapshot = await store.readSnapshot(), warnings = inspectRuntime(snapshot);
-for (const warning of warnings) await store.addEvent('watchdog', warning.message);
-if (process.argv.includes('--json')) console.log(JSON.stringify({ warnings }, null, 2));
-else console.log(warnings.length ? warnings.map(warning => 'WARN ' + warning.message).join('\n') : 'OK no watchdog warnings');
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const store = new RuntimeStore(findRoot()), snapshot = await store.readSnapshot(), warnings = inspectRuntime(snapshot);
+  await store.setWarnings(warnings);
+  if (process.argv.includes('--json')) console.log(JSON.stringify({ warnings }, null, 2));
+  else console.log(warnings.length ? warnings.map(warning => 'WARN ' + warning.message).join('\n') : 'OK no watchdog warnings');
+}
