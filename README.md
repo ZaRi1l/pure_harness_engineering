@@ -58,7 +58,13 @@ Main Codex remains user-selected/inherited. Subagent defaults are configured in 
 - Verifier, researcher, environment, and release work: Luna / Medium.
 - Context curation and preview work: Luna / Low.
 
-The policy is an optimization, not a harness requirement. A spawn-time override may raise a single difficult task when supported, but use the cheapest reliable model/effort by default. Astra is manual exceptional escalation only; it is never a default. If the configured models are unavailable to an account, remove the role override (and, if needed, the default subagent policy) to return to active-main inheritance. Model entitlement is not validated by repository self-check.
+The Main Codex model and reasoning level remain user-selected/inherited. Subagents use the explicit role-specific model and reasoning defaults defined in `.codex/config.toml` and `.codex/agents/`.
+
+The policy is an optimization, not a harness requirement. A spawn-time override may raise a single difficult task when supported, but use the cheapest reliable model/effort by default. Astra is manual exceptional escalation only; it is never a default. Model entitlement is not validated by repository self-check.
+
+### Model compatibility fallback
+
+The validated v1.1.1 configuration uses explicit role-specific Sol/Luna model defaults. If those models are unavailable in a particular Codex environment, you may manually remove affected model overrides and fall back to the active Codex model. This portable compatibility fallback is outside the default strict model-policy validation, so model-policy self-checks may fail until the standard role configuration is restored.
 
 ## Structure
 
@@ -68,4 +74,4 @@ The policy is an optimization, not a harness requirement. A spawn-time override 
 - `scripts/`: dependency-free Node built-in CLI, hook bridge, watchdog, preview, and self-check.
 - `preview/`: optional live dashboard and UI proposals.
 
-No package installation is required. Use Node.js 20+, Git, and a Codex version with project agents and hooks. Agent definitions inherit the active Codex model and reasoning level; the repository never hard-codes one.
+No package installation is required. Use Node.js 20+, Git, and a Codex version with project agents and hooks.
