@@ -1,5 +1,6 @@
 node_modules/
 .superpowers/
+.worktrees/
 
 # Generated Pure Harness runtime state
 .ai/runtime/status.json
