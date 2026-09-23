@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, copyFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, copyFile, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -20,7 +20,7 @@ test('serves dashboard and runtime JSON while rejecting traversal', async t => {
   const html = await (await fetch(`http://127.0.0.1:${port}/`)).text();
   const status = await (await fetch(`http://127.0.0.1:${port}/runtime/status`)).json();
   const snapshot = await (await fetch(`http://127.0.0.1:${port}/runtime/snapshot`)).json();
-  const catalog = await (await fetch(`http://127.0.0.1:${port}/runtime/catalog`)).json();
+  const catalogResponse = await fetch(`http://127.0.0.1:${port}/runtime/catalog`), catalog = await catalogResponse.json();
   const traversal = await fetch(`http://127.0.0.1:${port}/preview/%2e%2e/secret.txt`);
   assert.match(html, /Signal Timeline/);
   assert.match(html, /Preview Lab/);
@@ -29,6 +29,9 @@ test('serves dashboard and runtime JSON while rejecting traversal', async t => {
   assert.match(html, /Harness Guide/);
   assert.match(html, /Non-mutating UI proposals/);
   assert.match(html, /Watchdog Warnings/);
+  assert.match(html, /npm run preview:live/);
+  assert.match(html, /host\.replaceChildren\(\)/);
+  assert.equal(catalogResponse.status, 200);
   assert.ok(Array.isArray(catalog.agents));
   assert.ok(Array.isArray(catalog.skills));
   assert.equal(status.phase, 'idle');
@@ -44,6 +47,15 @@ test('catalog exposes read-only source and role policy metadata', () => {
   assert.equal(planner.reasoning, 'high');
   assert.match(planner.source, /developer_instructions/);
   assert.match(testing.source, /name: testing/);
+});
+
+test('guide commands remain backed by package scripts', async () => {
+  const scripts = JSON.parse(await readFile(path.resolve('package.json'), 'utf8')).scripts;
+  const html = await readFile(path.resolve('preview/index.html'), 'utf8');
+  for (const command of ['init', 'status', 'watchdog', 'preview', 'preview:live', 'test', 'self-check']) {
+    assert.ok(scripts[command]);
+    assert.match(html, new RegExp(command === 'test' ? 'npm test' : 'npm run ' + command));
+  }
 });
 
 test('rejects preview links that resolve outside preview root', async t => {
