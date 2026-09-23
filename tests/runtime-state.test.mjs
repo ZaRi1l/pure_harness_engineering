@@ -121,3 +121,14 @@ test('snapshot reads expose one consistent runtime generation', async () => {
   } while (writing);
   await writer;
 });
+
+test('claims reject overlapping write scopes and preserve independent siblings', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await store.claim('worker-backend', ['src/backend/']);
+  await store.claim('worker-ui', ['src/frontend/']);
+  await assert.rejects(() => store.claim('worker-root', ['src/']), /claim conflict/);
+  assert.deepEqual((await store.readSnapshot()).claims.claims.map(claim => claim.agent_id), ['worker-backend', 'worker-ui']);
+  await store.releaseClaim('worker-backend');
+  assert.deepEqual((await store.readSnapshot()).claims.claims.map(claim => claim.agent_id), ['worker-ui']);
+});
