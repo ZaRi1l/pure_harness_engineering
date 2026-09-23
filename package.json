@@ -8,6 +8,7 @@
     "test": "node tests/all.test.mjs",
     "self-check": "node scripts/self-check.mjs",
     "status": "node scripts/status.mjs",
+    "watchdog": "node scripts/watchdog.mjs",
     "preview:live": "node scripts/preview-server.mjs"
   }
 }
