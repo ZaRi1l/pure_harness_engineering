@@ -21,6 +21,18 @@ test('serves dashboard and runtime JSON while rejecting traversal', async t => {
   const snapshot = await (await fetch(`http://127.0.0.1:${port}/runtime/snapshot`)).json();
   const traversal = await fetch(`http://127.0.0.1:${port}/preview/%2e%2e/secret.txt`);
   assert.match(html, /Agent Signal Network/);
+  assert.match(html, /Preview Lab/);
+  assert.match(html, /Agent Catalog/);
+  assert.match(html, /Skill Catalog/);
+  assert.match(html, /Harness Guide/);
+  assert.match(html, /UI Preview Only/);
+  assert.match(html, /Changes are not saved/);
+  assert.match(html, /SMALL/);
+  assert.match(html, /MEDIUM/);
+  assert.match(html, /LARGE/);
+  assert.match(html, /preview-manager/);
+  assert.match(html, /task-routing/);
+  assert.match(html, /Read only catalog/);
   assert.equal(status.phase, 'idle');
   assert.equal(snapshot.status.task_counts.total, snapshot.tasks.tasks.length);
   assert.ok([403, 404].includes(traversal.status));
