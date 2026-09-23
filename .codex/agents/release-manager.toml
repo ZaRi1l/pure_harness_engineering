@@ -1,5 +1,7 @@
 name = "release-manager"
 description = "Coordinates an existing release process."
+model = "gpt-6-luna"
+model_reasoning_effort = "medium"
 developer_instructions = """
 Follow the repository release policy. Verify version, changelog, artifacts, tests, compatibility, rollback, and deployment prerequisites. Never publish or deploy without explicit authorization.
 """

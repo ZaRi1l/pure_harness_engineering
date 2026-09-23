@@ -12,6 +12,8 @@ import { inspectRuntime } from './watchdog.mjs';
 import { renderStaticPreview } from './generate-preview.mjs';
 
 const HOOK_EVENTS = ['SessionStart', 'SessionEnd', 'SubagentStart', 'SubagentStop', 'Stop'];
+const MODEL = /^gpt-6-(sol|luna)$/;
+const EFFORT = new Set(['low', 'medium', 'high']);
 
 function reportObject() {
   return { checks: [], warnings: [], failures: [], get ok() { return this.failures.length === 0; }, require(condition, success, failure) { (condition ? this.checks : this.failures).push(condition ? success : failure); } };
@@ -46,9 +48,11 @@ export async function checkRepository(root, { exerciseRuntime = true, exerciseHt
   if (existsSync(configPath)) {
     const text = readFileSync(configPath, 'utf8'), [valid, detail] = validateCodex(root, text, codexExecutable, spawnCodex);
     if (valid === null) report.warnings.push(detail); else report.require(valid, 'Codex config loads in strict mode', detail);
-    report.require(!/(^|\n)\s*(model|default_subagent_model)\s*=/.test(text), 'No model is hardcoded', 'project config hardcodes a model');
+    report.require(!/(^|\n)\s*model\s*=/.test(text), 'Root model is not hardcoded', 'project config hardcodes the root model');
+    const defaultModel = text.match(/(?:^|\n)default_subagent_model\s*=\s*"([^"]+)"/)?.[1], defaultEffort = text.match(/(?:^|\n)default_subagent_reasoning_effort\s*=\s*"([^"]+)"/)?.[1]; report.require(MODEL.test(defaultModel || '') && EFFORT.has(defaultEffort), 'Default subagent policy is valid', 'invalid default subagent model or reasoning effort');
     const agentCatalog = discoverCatalog(root); report.require(agentCatalog.agents.length > 0, 'Agent catalog is discoverable', 'no agent declarations found');
-    for (const agent of agentCatalog.agents) { const agentPath = path.join(root, '.codex', agent.path.replace(/^\.\//, '')); const exists = existsSync(agentPath); report.require(exists, `Agent ${agent.id} exists`, `missing agent config: ${agent.id}`); if (exists) { const contents = readFileSync(agentPath, 'utf8'); report.require(['name', 'description', 'developer_instructions'].every(key => new RegExp(`(^|\\n)${key}\\s*=`).test(contents)), `Agent ${agent.id} has required fields`, `agent ${agent.id} lacks required fields`); } }
+    for (const agent of agentCatalog.agents) { const agentPath = path.join(root, '.codex', agent.path.replace(/^\.\//, '')); const exists = existsSync(agentPath); report.require(exists, `Agent ${agent.id} exists`, `missing agent config: ${agent.id}`); if (exists) { const contents = readFileSync(agentPath, 'utf8'); report.require(basicTomlShape(contents) && ['name', 'description', 'developer_instructions'].every(key => new RegExp(`(^|\\n)${key}\\s*=`).test(contents)), `Agent ${agent.id} has required fields`, `agent ${agent.id} lacks required fields`); report.require(MODEL.test(agent.model) && EFFORT.has(agent.reasoning) && agent.model !== 'gpt-6-astra', `Agent ${agent.id} has a valid role policy`, `agent ${agent.id} has invalid model or reasoning policy`); } }
+    report.warnings.push('Model entitlement was not verified; configured models must be available to the active Codex account');
   }
   const skillCatalog = discoverCatalog(root); report.require(skillCatalog.skills.length > 0, 'Skill catalog is discoverable', 'no skills found'); for (const skill of skillCatalog.skills) report.require(skill.valid && skill.name === skill.id, `Skill ${skill.id} is discoverable`, `missing or invalid skill: ${skill.id}`);
   report.require(existsSync(path.join(root, '.agents', 'skills', 'task-routing', 'profiles.md')), 'Project profiles exist', 'missing task-routing profiles reference');

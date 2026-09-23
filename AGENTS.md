@@ -11,6 +11,10 @@ Use judgment for decisions, Skills for repeatable reasoning, and scripts/hooks f
 
 Use `.agents/skills/task-routing/` and its profile reference for domain guidance. For MEDIUM or LARGE work, create a Task Spec under `.ai/tasks/` when it will reduce ambiguity.
 
+## Model policy
+
+Subagents use role-specific defaults from `.codex/config.toml` and `.codex/agents/*.toml`. Sol is for implementation and high-value judgment; Luna is for verification, collection, operations, and repetitive work. Astra is manual exceptional escalation only. Do not raise model or reasoning effort unless the task justifies it.
+
 ## Safety and scope
 
 Preserve user changes. Do not reset, revert, overwrite, or broadly refactor outside the requested scope. If the expected change budget grows materially, stop implementation and return to planning. Parallel writers must use separate branches/worktrees and must not edit the same files concurrently.

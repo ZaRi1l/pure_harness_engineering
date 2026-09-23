@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { createPreviewServer } from '../scripts/preview-server.mjs';
 import { RuntimeStore } from '../scripts/runtime-state.mjs';
+import { discoverCatalog } from '../scripts/catalog.mjs';
 
 test('serves dashboard and runtime JSON while rejecting traversal', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-preview-'));
@@ -33,6 +34,16 @@ test('serves dashboard and runtime JSON while rejecting traversal', async t => {
   assert.equal(status.phase, 'idle');
   assert.equal(snapshot.status.task_counts.total, snapshot.tasks.tasks.length);
   assert.ok([403, 404].includes(traversal.status));
+});
+
+test('catalog exposes read-only source and role policy metadata', () => {
+  const catalog = discoverCatalog(path.resolve('.'));
+  const planner = catalog.agents.find(agent => agent.id === 'planner');
+  const testing = catalog.skills.find(skill => skill.id === 'testing');
+  assert.equal(planner.model, 'gpt-6-sol');
+  assert.equal(planner.reasoning, 'high');
+  assert.match(planner.source, /developer_instructions/);
+  assert.match(testing.source, /name: testing/);
 });
 
 test('rejects preview links that resolve outside preview root', async t => {

@@ -7,4 +7,6 @@ Search before reading broadly. Read only relevant file sections and do not repea
 
 Use no subagent for a clear SMALL task. For larger work, split only independent tasks and give each agent minimum context. Prevent duplicate research.
 
+Prefer lower-cost subagents for mechanical or repetitive work. Reserve strong reasoning models for decisions where they materially improve reliability.
+
 Compress handoffs to: Goal, relevant files/artifacts, important findings, decisions, constraints, remaining work, and verification status. After the same approach fails twice, change the hypothesis. Never save tokens by skipping required verification.

@@ -1,4 +1,4 @@
-# Pure Harness v1.1
+# Pure Harness v1.1.1
 
 Pure Harness is a thin, Codex-native workflow harness. Main Codex makes orchestration decisions; Skills provide repeatable procedures; specialist agents are used only when an independent context or judgment is worthwhile. Scripts and hooks hold deterministic state and checks.
 
@@ -48,6 +48,17 @@ Claims use normalized file/directory prefixes. `src/` conflicts with `src/backen
 - LARGE: add impact analysis, isolated writers/worktrees, integration, and supervisor checkpoints as justified.
 
 Workers may write implementation and tests. Verifiers rerun checks read-only and independently. Reviewers assess correctness, regressions, scope, and evidence; neither verifier nor reviewer edits tests to make a result pass. See `.agents/skills/testing/SKILL.md` for the reusable testing procedure.
+
+## Model policy
+
+Main Codex remains user-selected/inherited. Subagent defaults are configured in `.codex/config.toml` and role overrides in `.codex/agents/*.toml` are the source of truth:
+
+- Planner, reviewer, supervisor, integrator, security, and performance: Sol / High.
+- Worker and impact analysis: Sol / Medium.
+- Verifier, researcher, environment, and release work: Luna / Medium.
+- Context curation and preview work: Luna / Low.
+
+The policy is an optimization, not a harness requirement. A spawn-time override may raise a single difficult task when supported, but use the cheapest reliable model/effort by default. Astra is manual exceptional escalation only; it is never a default. If the configured models are unavailable to an account, remove the role override (and, if needed, the default subagent policy) to return to active-main inheritance. Model entitlement is not validated by repository self-check.
 
 ## Structure
 

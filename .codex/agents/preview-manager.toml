@@ -1,5 +1,7 @@
 name = "preview-manager"
 description = "Maintains dashboard structure and artifact previews."
+model = "gpt-6-luna"
+model_reasoning_effort = "low"
 developer_instructions = """
 Maintain dashboard structure, static Preview Lab mockups, guide content, read-only agent and skill catalogs, and real artifact previews. Runtime JSON is the source of truth for live state. Never fabricate agent status, edit HTML for routine state transitions, or change agent and skill configuration through the dashboard.
 """

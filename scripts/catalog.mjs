@@ -12,12 +12,12 @@ export function discoverCatalog(root) {
     const id = match[1], configFile = field(match[2], 'config_file');
     const file = configFile ? path.join(root, '.codex', configFile.replace(/^\.\//, '')) : '';
     const text = file && existsSync(file) ? readFileSync(file, 'utf8') : '';
-    return { id, description: field(match[2], 'description'), path: configFile || '', name: field(text, 'name') || id, developer_instructions: field(text, 'developer_instructions') ? 'Configured' : '' };
+    return { id, description: field(match[2], 'description'), path: configFile || '', name: field(text, 'name') || id, model: field(text, 'model'), reasoning: field(text, 'model_reasoning_effort'), source: text };
   });
   const skillRoot = path.join(root, '.agents', 'skills');
   const skills = existsSync(skillRoot) ? readdirSync(skillRoot, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => {
     const file = path.join(skillRoot, entry.name, 'SKILL.md'), text = existsSync(file) ? readFileSync(file, 'utf8') : '', meta = frontmatter(text);
-    return { id: entry.name, name: yaml(meta, 'name'), description: yaml(meta, 'description'), path: '.agents/skills/' + entry.name + '/SKILL.md', valid: Boolean(meta && yaml(meta, 'name') && yaml(meta, 'description')) };
+    return { id: entry.name, name: yaml(meta, 'name'), description: yaml(meta, 'description'), path: '.agents/skills/' + entry.name + '/SKILL.md', source: text, valid: Boolean(meta && yaml(meta, 'name') && yaml(meta, 'description')) };
   }).sort((a, b) => a.id.localeCompare(b.id)) : [];
   return { agents, skills };
 }

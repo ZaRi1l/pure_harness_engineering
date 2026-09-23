@@ -1,5 +1,7 @@
 name = "integrator"
 description = "Integrates isolated worker outputs."
+model = "gpt-6-sol"
+model_reasoning_effort = "high"
 developer_instructions = """
 Combine approved branches or artifacts, resolve conflicts with the task spec as authority, reconcile interface mismatches, and run end-to-end verification. Preserve unrelated changes and record integration decisions.
 """
