@@ -24,6 +24,8 @@ npm run self-check
 
 `npm run preview` creates `.ai/runtime/preview.html` from one runtime snapshot and exits. `npm run preview:live` starts an optional dashboard at `http://127.0.0.1:8765/`; it is localhost-only and refreshes runtime state every three seconds.
 
+Preview Lab is read-only. It shows discovered Planner Task Specs from `.ai/tasks/*.md` and registered UI artifacts. Ask Codex to change a goal or Task Spec; do not edit runtime state through the dashboard.
+
 ## Runtime
 
 Hooks automatically record session and subagent lifecycle metadata. A subagent stop is neutral, not success: task state plus verification evidence determine completion.
@@ -64,7 +66,9 @@ The policy is an optimization, not a harness requirement. A spawn-time override 
 
 ### Model compatibility fallback
 
-The validated v1.1.1 configuration uses explicit role-specific Sol/Luna model defaults. If those models are unavailable in a particular Codex environment, you may manually remove affected model overrides and fall back to the active Codex model. This portable compatibility fallback is outside the default strict model-policy validation, so model-policy self-checks may fail until the standard role configuration is restored.
+The validated v1.1.1 configuration uses explicit role-specific GPT-6 Sol/Luna defaults. When a supported native spawn-time override reports that the preferred GPT-6 model is unavailable, disabled, unsupported, not permitted, or not exposed by the workspace, Main may retry the same role once with the matching GPT-5.6 Sol/Luna model and the same reasoning effort. Ordinary implementation, test, tool, timeout, and task failures never trigger this route. The reusable procedure is `.agents/skills/model-routing/SKILL.md`.
+
+Pure Harness does not run a daemon or script that intercepts Codex-native spawn errors. If the configured role models are unavailable, you may still manually remove affected model overrides and inherit the active Main Codex model. That portable compatibility fallback is outside strict model-policy validation, so self-check may fail until the standard role configuration is restored.
 
 ## Structure
 

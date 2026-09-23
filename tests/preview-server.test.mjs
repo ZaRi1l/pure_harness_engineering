@@ -8,10 +8,12 @@ import { createPreviewServer } from '../scripts/preview-server.mjs';
 import { RuntimeStore } from '../scripts/runtime-state.mjs';
 import { discoverCatalog } from '../scripts/catalog.mjs';
 
-test('serves dashboard and runtime JSON while rejecting traversal', async t => {
+test('serves dashboard, task specs, and runtime JSON while rejecting traversal', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-preview-'));
   await mkdir(path.join(root, 'preview'));
   await copyFile(path.resolve('preview/index.html'), path.join(root, 'preview/index.html'));
+  await mkdir(path.join(root, '.ai', 'tasks'), { recursive: true });
+  await writeFile(path.join(root, '.ai', 'tasks', 'example.md'), '# Example task spec\n\nPlan content.');
   await new RuntimeStore(root).initialize();
   const server = await createPreviewServer(root, '127.0.0.1', 0);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -21,19 +23,27 @@ test('serves dashboard and runtime JSON while rejecting traversal', async t => {
   const status = await (await fetch(`http://127.0.0.1:${port}/runtime/status`)).json();
   const snapshot = await (await fetch(`http://127.0.0.1:${port}/runtime/snapshot`)).json();
   const catalogResponse = await fetch(`http://127.0.0.1:${port}/runtime/catalog`), catalog = await catalogResponse.json();
+  const taskSpecsResponse = await fetch(`http://127.0.0.1:${port}/runtime/task-specs`), taskSpecs = await taskSpecsResponse.json();
   const traversal = await fetch(`http://127.0.0.1:${port}/preview/%2e%2e/secret.txt`);
   assert.match(html, /Signal Timeline/);
   assert.match(html, /Preview Lab/);
   assert.match(html, /Agent Catalog/);
   assert.match(html, /Skill Catalog/);
   assert.match(html, /Harness Guide/);
-  assert.match(html, /Non-mutating UI proposals/);
+  assert.match(html, /Plan \/ Task Specs/);
+  assert.match(html, /UI Artifacts/);
+  assert.match(html, /frame\.sandbox='allow-scripts'/);
+  assert.match(html, /Fallback: /);
+  assert.match(html, /gpt-5\.6-/);
   assert.match(html, /Watchdog Warnings/);
   assert.match(html, /npm run preview:live/);
   assert.match(html, /host\.replaceChildren\(\)/);
   assert.equal(catalogResponse.status, 200);
   assert.ok(Array.isArray(catalog.agents));
   assert.ok(Array.isArray(catalog.skills));
+  assert.equal(taskSpecsResponse.status, 200);
+  assert.ok(Array.isArray(taskSpecs.taskSpecs));
+  assert.equal(taskSpecs.taskSpecs[0].path, '.ai/tasks/example.md');
   assert.equal(status.phase, 'idle');
   assert.equal(snapshot.status.task_counts.total, snapshot.tasks.tasks.length);
   assert.ok([403, 404].includes(traversal.status));
@@ -56,6 +66,8 @@ test('guide commands remain backed by package scripts', async () => {
     assert.ok(scripts[command]);
     assert.match(html, new RegExp(command === 'test' ? 'npm test' : 'npm run ' + command));
   }
+  assert.match(html, /\.ai\/tasks\/\*\.md/);
+  assert.match(html, /GPT-5\.6/);
 });
 
 test('rejects preview links that resolve outside preview root', async t => {

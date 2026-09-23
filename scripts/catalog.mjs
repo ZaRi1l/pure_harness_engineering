@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 const field = (text, name) => text.match(new RegExp('(?:^|\\n)' + name + '\\s*=\\s*"([^"]+)"'))?.[1] || '';
@@ -20,4 +20,22 @@ export function discoverCatalog(root) {
     return { id: entry.name, name: yaml(meta, 'name'), description: yaml(meta, 'description'), path: '.agents/skills/' + entry.name + '/SKILL.md', source: text, valid: Boolean(meta && yaml(meta, 'name') && yaml(meta, 'description')) };
   }).sort((a, b) => a.id.localeCompare(b.id)) : [];
   return { agents, skills };
+}
+
+export function discoverTaskSpecs(root) {
+  const taskRoot = path.join(root, '.ai', 'tasks');
+  if (!existsSync(taskRoot)) return [];
+  return readdirSync(taskRoot, { withFileTypes: true })
+    .filter(entry => entry.isFile() && entry.name.endsWith('.md'))
+    .map(entry => {
+      const file = path.join(taskRoot, entry.name), content = readFileSync(file, 'utf8');
+      return {
+        name: path.basename(entry.name, '.md'),
+        path: '.ai/tasks/' + entry.name,
+        title: content.match(/^#\s+(.+)$/m)?.[1] || path.basename(entry.name, '.md'),
+        modifiedAt: statSync(file).mtime.toISOString(),
+        content
+      };
+    })
+    .sort((a, b) => a.path.localeCompare(b.path));
 }
