@@ -24,7 +24,23 @@ npm run self-check
 
 `npm run preview` creates `.ai/runtime/preview.html` from one runtime snapshot and exits. `npm run preview:live` starts an optional dashboard at `http://127.0.0.1:8765/`; it is localhost-only and refreshes runtime state every three seconds.
 
-Preview Lab is read-only. It shows discovered Planner Task Specs from `.ai/tasks/*.md` and registered UI artifacts. Ask Codex to change a goal or Task Spec; do not edit runtime state through the dashboard.
+Preview Lab is read-only. It shows discovered Planner Task Specs from `.ai/tasks/*.md` and registered UI artifacts. Multiple artifacts appear as tabs with one large selected preview, so route, state, hash, or query-string variants of one app can be reviewed separately. Ask Codex to change a goal or Task Spec; do not edit runtime state through the dashboard.
+
+### Copying Pure Harness into an existing project
+
+`.ai/runtime` contains project-specific execution state. If the Pure Harness folder is copied from another project, that directory can retain the previous project's goals, tasks, events, agents, and write claims. `npm run init` creates missing runtime files and fills in missing fields; it does **not** forcibly remove an existing runtime.
+
+From the new project root, use this recommended Windows PowerShell sequence to start with a completely new runtime and verify the copied harness:
+
+```powershell
+Remove-Item -Recurse -Force .ai\runtime
+npm run init
+npm run self-check
+npm test
+npm run preview:live
+```
+
+Do not delete `.ai/tasks` or `.ai/memory` indiscriminately. Existing Task Specs or durable project memory may be intentional and worth preserving. Also make sure the destination does not retain the original Pure Harness repository's `.git` directory or Git connection.
 
 ## Runtime
 

@@ -12,6 +12,7 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   const root = await mkdtemp(path.join(tmpdir(), 'pure-preview-'));
   await mkdir(path.join(root, 'preview'));
   await copyFile(path.resolve('preview/index.html'), path.join(root, 'preview/index.html'));
+  await copyFile(path.resolve('preview/artifact-tabs.js'), path.join(root, 'preview/artifact-tabs.js'));
   await mkdir(path.join(root, '.ai', 'tasks'), { recursive: true });
   await writeFile(path.join(root, '.ai', 'tasks', 'example.md'), '# Example task spec\n\nPlan content.');
   await new RuntimeStore(root).initialize();
@@ -20,6 +21,8 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   t.after(() => new Promise(resolve => server.close(resolve)));
   const port = server.address().port;
   const html = await (await fetch(`http://127.0.0.1:${port}/`)).text();
+  const artifactModuleResponse = await fetch(`http://127.0.0.1:${port}/preview/artifact-tabs.js`);
+  const artifactModule = await artifactModuleResponse.text();
   const status = await (await fetch(`http://127.0.0.1:${port}/runtime/status`)).json();
   const snapshot = await (await fetch(`http://127.0.0.1:${port}/runtime/snapshot`)).json();
   const catalogResponse = await fetch(`http://127.0.0.1:${port}/runtime/catalog`), catalog = await catalogResponse.json();
@@ -32,7 +35,12 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   assert.match(html, /Harness Guide/);
   assert.match(html, /Plan \/ Task Specs/);
   assert.match(html, /UI Artifacts/);
-  assert.match(html, /frame\.sandbox='allow-scripts'/);
+  assert.match(html, /renderArtifactTabs/);
+  assert.match(html, /75vh/);
+  assert.equal(artifactModuleResponse.status, 200);
+  assert.match(artifactModuleResponse.headers.get('content-type'), /text\/javascript/);
+  assert.match(artifactModule, /setAttribute\('sandbox', 'allow-scripts'\)/);
+  assert.match(artifactModule, /Open separately/);
   assert.match(html, /Fallback: /);
   assert.match(html, /gpt-5\.6-/);
   assert.match(html, /Watchdog Warnings/);

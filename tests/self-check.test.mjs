@@ -57,3 +57,10 @@ test('self-check warns when Codex is not installed', async () => {
   const report = await checkRepository(root, { exerciseRuntime: false, exerciseHttp: false, spawnCodex: unavailable });
   assert.ok(report.warnings.some(warning => warning.includes('Codex executable unavailable')));
 });
+
+test('self-check serves the dashboard module imported by the live page', async () => {
+  const accepted = () => ({ status: 0, stdout: '{"checks":{"config.load":{"status":"ok"}}}', stderr: '' });
+  const report = await checkRepository(path.resolve('.'), { spawnCodex: accepted });
+  assert.equal(report.ok, true);
+  assert.ok(report.checks.includes('Dashboard module is served'));
+});
