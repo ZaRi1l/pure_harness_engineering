@@ -7,3 +7,4 @@ import './status-preview.test.mjs';
 import './task-specs.test.mjs';
 import './model-routing.test.mjs';
 import './preview-artifacts.test.mjs';
+import './agent-network.test.mjs';
