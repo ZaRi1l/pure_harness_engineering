@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { RuntimeStore, findRoot } from '../scripts/runtime-state.mjs';
+import { RuntimeStore, findRoot, runCli } from '../scripts/runtime-state.mjs';
 
 async function temporaryRoot() {
   return mkdtemp(path.join(tmpdir(), 'pure-harness-'));
@@ -44,6 +45,49 @@ test('records lifecycle and explicit agent signals without message bodies', asyn
   assert.equal(status.agents[0].status, 'completed');
   assert.deepEqual(status.signals.map(signal => signal.kind), ['delegate', 'handoff', 'result']);
   assert.equal('body' in status.signals[1], false);
+});
+
+test('signal metadata is optional, allowlisted, and backward compatible', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await store.addSignal('main', 'worker-ui', 'handoff', 'Implement UI');
+  await store.addSignal('worker-ui', 'verifier', 'verify', 'Verify UI', {
+    task_id: 'ui-task', status: 'running', artifact_href: '/preview/ui.html',
+    verification_name: 'ui-tests', body: 'must not persist', empty: ''
+  });
+  await store.addSignal('verifier', 'main', 'result', 'Verified', {
+    task_id: '', status: null, artifact_href: undefined, verification_name: 42
+  });
+  const signals = (await store.readStatus()).signals;
+  assert.deepEqual(Object.keys(signals[0]).sort(), ['from', 'kind', 'summary', 'time', 'to']);
+  assert.deepEqual(signals[1], {
+    time: signals[1].time, from: 'worker-ui', to: 'verifier', kind: 'verify', summary: 'Verify UI',
+    task_id: 'ui-task', status: 'running', artifact_href: '/preview/ui.html', verification_name: 'ui-tests'
+  });
+  assert.deepEqual(Object.keys(signals[2]).sort(), ['from', 'kind', 'summary', 'time', 'to', 'verification_name']);
+  assert.equal(signals[2].verification_name, '42');
+});
+
+test('an injected runtime directory never initializes the default runtime', async () => {
+  const root = await temporaryRoot();
+  const isolated = path.join(root, '.ai', 'demo', 'network-runtime');
+  const store = new RuntimeStore(root, { runtimeDir: isolated });
+  await store.initialize();
+  for (const name of ['status.json', 'tasks.json', 'events.jsonl', 'claims.json']) {
+    assert.equal(existsSync(path.join(isolated, name)), true, name);
+  }
+  assert.equal(existsSync(path.join(root, '.ai', 'runtime')), false);
+});
+
+test('signal CLI forwards optional metadata', async () => {
+  const root = await temporaryRoot();
+  await runCli(['signal', 'main', 'worker-ui', 'handoff', 'Implement UI', '--root', root,
+    '--task', 'ui-task', '--status', 'running', '--artifact', '/preview/ui.html', '--verification', 'ui-tests']);
+  const signal = (await new RuntimeStore(root).readStatus()).signals[0];
+  assert.deepEqual({ task_id: signal.task_id, status: signal.status,
+    artifact_href: signal.artifact_href, verification_name: signal.verification_name }, {
+    task_id: 'ui-task', status: 'running', artifact_href: '/preview/ui.html', verification_name: 'ui-tests'
+  });
 });
 
 test('aggregate verification cannot hide an outstanding failed check', async () => {
