@@ -28,7 +28,7 @@ Preview Lab is read-only. It shows discovered Planner Task Specs from `.ai/tasks
 
 ### Agent Signal Network
 
-Four surfaces answer different questions: **Active Agents** shows current runners; **Agent Signal Network** shows recorded relationships and workflow; **Signal Timeline** shows signals in chronological order; **Preview Lab** shows result UI and registered artifacts. On the live Dashboard, select an agent or signal for details. Use Live/History, All/Active/Failures/Current Task filters, task selection, drag to pan, wheel or buttons to zoom, and Fit/Reset to navigate the network. Failure and retry signals have distinct styling. The graph uses actual recorded signals only; it does not infer a handoff from task ownership, claims, or timing. If there are no recorded signals, there are no inferred edges.
+Four surfaces answer different questions: **Active Agents** shows current runners; **Agent Signal Network** shows recorded relationships and workflow; **Signal Timeline** shows the latest ten stored signals, newest first; **Preview Lab** shows result UI and registered artifacts. On the live Dashboard, select an agent or signal for details. Use Live/History, All/Active/Failures/Current Task filters, task selection, drag to pan, wheel or buttons to zoom, and Fit/Reset to navigate the network. Failure and retry signals have distinct styling. The graph uses actual recorded signals only; it does not infer a handoff from task ownership, claims, or timing. If there are no recorded signals, there are no inferred edges.
 
 ```powershell
 # Real project runtime; open the URL printed by the server
