@@ -26,6 +26,23 @@ npm run self-check
 
 Preview Lab is read-only. It shows discovered Planner Task Specs from `.ai/tasks/*.md` and registered UI artifacts. Multiple artifacts appear as tabs with one large selected preview, so route, state, hash, or query-string variants of one app can be reviewed separately. Ask Codex to change a goal or Task Spec; do not edit runtime state through the dashboard.
 
+### Agent Signal Network
+
+The live Dashboard groups four related views: **Active Agents** shows who is working, **Signal Timeline** lists recorded handoffs and other signals, **Agent Signal Network** connects the agents named by those signals, and **Snapshot History** lets you inspect retained state. Select an agent or signal for details. Use Live/History, All/Active/Failures/Current Task filters, task selection, drag to pan, wheel or buttons to zoom, and Fit/Reset to navigate the network. Failure and retry signals have distinct styling. The graph uses actual recorded signals only; it does not infer a handoff from task ownership, claims, or timing. If there are no recorded signals, there are no inferred edges.
+
+```powershell
+# Real project runtime; open the URL printed by the server
+npm run preview:live
+
+# Isolated deterministic network demo; open its printed URL
+npm run demo:network
+
+# After stopping the demo server
+npm run demo:reset
+```
+
+The demo reads fixture data from `.ai/demo/network-runtime`, never `.ai/runtime`. `npm run demo:reset` removes exactly `.ai/demo/network-runtime`; it does not clear real runtime state. In the demo Dashboard, select a node and edge, switch Live/History, try task and failure filters, and inspect Active Agents and Signal Timeline. `npm run preview` writes a static HTML snapshot with an interactive Snapshot History and network controls; the saved file does not poll or update after generation. The live dashboard refreshes every three seconds while its server runs.
+
 ### Copying Pure Harness into an existing project
 
 `.ai/runtime` contains project-specific execution state. If the Pure Harness folder is copied from another project, that directory can retain the previous project's goals, tasks, events, agents, and write claims. `npm run init` creates missing runtime files and fills in missing fields; it does **not** forcibly remove an existing runtime.
