@@ -7,7 +7,7 @@ import { discoverCatalog, discoverTaskSpecs } from './catalog.mjs';
 
 const escape = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const scriptData = value => JSON.stringify(value).replaceAll('<', '\\u003c').replaceAll('\u2028', '\\u2028').replaceAll('\u2029', '\\u2029');
-const scriptSource = value => String(value).replaceAll('</script', '<\\/script');
+const scriptSource = value => String(value).replace(/<\/script/gi, '<\\/script');
 export function renderStaticPreview(snapshot, taskSpecs = [], catalog = { agents: [], skills: [] }, networkSource = '') {
   const { status, tasks, claims } = snapshot;
   const taskRows = tasks.tasks.map(task => '<li>' + escape(task.status) + ' · ' + escape(task.title) + ' · ' + escape(task.owner || 'unassigned') + '</li>').join('') || '<li>none</li>';

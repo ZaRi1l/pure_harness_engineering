@@ -68,7 +68,7 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   assert.ok([403, 404].includes(traversal.status));
 });
 
-test('live dashboard reuses its network controller across snapshot refreshes', async () => {
+test('live dashboard reuses its network controller during polling and destroys it on navigation', async () => {
   const html = await readFile(path.resolve('preview/index.html'), 'utf8');
   const moduleSource = html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
   assert.ok(moduleSource, 'live dashboard module is present');
@@ -88,12 +88,13 @@ test('live dashboard reuses its network controller across snapshot refreshes', a
   const snapshots = [first, second];
   const agents = [{ id: 'worker', model: 'gpt-6-sol' }];
   const controllers = [];
+  const listeners = {};
   let refresh;
   const context = {
     document: { querySelector: selector => nodes.get(selector), querySelectorAll: () => [], createElement: element },
-    location: { hash: '#dashboard' }, addEventListener() {}, setInterval: callback => { refresh = callback; },
+    location: { hash: '#dashboard' }, addEventListener: (name, callback) => { listeners[name] = callback; }, setInterval: callback => { refresh = callback; },
     fetch: async url => ({ json: async () => url === '/runtime/catalog' ? { agents, skills: [] } : snapshots.shift() ?? second }),
-    AgentSignalNetwork: { create: host => { const controller = { host, updates: [], update(snapshot, catalog) { this.updates.push({ snapshot, catalog }); } }; controllers.push(controller); return controller; } }
+    AgentSignalNetwork: { create: host => { const controller = { host, updates: [], destroyCount: 0, update(snapshot, catalog) { this.updates.push({ snapshot, catalog }); }, destroy() { this.destroyCount++; } }; controllers.push(controller); return controller; } }
   };
   runInNewContext(moduleSource.replace(/^import .*?;\s*/m, 'const renderArtifactTabs = () => {};\n'), context);
   await new Promise(resolve => setImmediate(resolve));
@@ -105,6 +106,15 @@ test('live dashboard reuses its network controller across snapshot refreshes', a
   assert.equal(retained.host, nodes.get('#agent-network'));
   assert.equal(retained.updates.at(-1).snapshot, second);
   assert.equal(retained.updates.at(-1).catalog.agents[0].id, 'worker');
+  context.location.hash = '#preview';
+  listeners.hashchange();
+  assert.equal(retained.destroyCount, 1, 'the detached Dashboard controller is destroyed synchronously');
+  context.location.hash = '#dashboard';
+  listeners.hashchange();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(controllers.length, beforeRefresh + 1);
+  assert.notEqual(controllers.at(-1), retained);
+  assert.equal(controllers.at(-1).host, nodes.get('#agent-network'));
 });
 
 test('runtimeDir changes only live runtime data and keeps repository catalog and Task Specs', async t => {

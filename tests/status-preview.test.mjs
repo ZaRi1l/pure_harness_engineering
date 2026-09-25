@@ -23,7 +23,7 @@ class Element {
 const descendants = root => root.children.flatMap(child => [child, ...descendants(child)]);
 const find = (root, name, value) => descendants(root).find(child => child.getAttribute(`data-${name}`) === value);
 function executeStatic(html) {
-  const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  const script = html.match(/<script>([\s\S]*?)<\/script>/i)?.[1];
   assert.ok(script, 'static preview includes an inline renderer');
   const document = { head: null, host: null, createElement(name) { return new Element(name, this); }, createElementNS(_namespace, name) { return this.createElement(name); }, querySelector(selector) { if (selector === '#agent-network') return this.host; if (selector === '[data-agent-network-styles]') return descendants(this.head).find(item => item.getAttribute('data-agent-network-styles') !== null) ?? null; return null; } };
   document.head = document.createElement('head');
@@ -47,6 +47,17 @@ test('static preview embeds shared renderer and script-safe snapshot without pol
   assert.equal(context.pwned, undefined);
   assert.match(host.textContent, /Snapshot History/);
   assert.ok(find(host, 'edge-index', '0'));
+});
+
+test('static preview escapes mixed-case renderer closing tags before HTML parsing', () => {
+  const source = networkSource + '\n// </ScRiPt><script>globalThis.pwned=true</SCRIPT>';
+  const html = renderStaticPreview(snapshot, [], { agents: [] }, source);
+  const scriptBody = html.match(/<script>([\s\S]*)<\/script>/i)?.[1];
+  assert.ok(scriptBody);
+  assert.doesNotMatch(scriptBody, /<\/script/i);
+  const { host, context } = executeStatic(html);
+  assert.match(host.textContent, /Snapshot History/);
+  assert.equal(context.pwned, undefined);
 });
 
 test('static network handles zero, one, and multiple retained agents with client controls', () => {
