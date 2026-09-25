@@ -28,7 +28,7 @@ Preview Lab is read-only. It shows discovered Planner Task Specs from `.ai/tasks
 
 ### Agent Signal Network
 
-The live Dashboard groups four related views: **Active Agents** shows who is working, **Signal Timeline** lists recorded handoffs and other signals, **Agent Signal Network** connects the agents named by those signals, and **Snapshot History** lets you inspect retained state. Select an agent or signal for details. Use Live/History, All/Active/Failures/Current Task filters, task selection, drag to pan, wheel or buttons to zoom, and Fit/Reset to navigate the network. Failure and retry signals have distinct styling. The graph uses actual recorded signals only; it does not infer a handoff from task ownership, claims, or timing. If there are no recorded signals, there are no inferred edges.
+Four surfaces answer different questions: **Active Agents** shows current runners; **Agent Signal Network** shows recorded relationships and workflow; **Signal Timeline** shows signals in chronological order; **Preview Lab** shows result UI and registered artifacts. On the live Dashboard, select an agent or signal for details. Use Live/History, All/Active/Failures/Current Task filters, task selection, drag to pan, wheel or buttons to zoom, and Fit/Reset to navigate the network. Failure and retry signals have distinct styling. The graph uses actual recorded signals only; it does not infer a handoff from task ownership, claims, or timing. If there are no recorded signals, there are no inferred edges.
 
 ```powershell
 # Real project runtime; open the URL printed by the server
@@ -41,7 +41,7 @@ npm run demo:network
 npm run demo:reset
 ```
 
-The demo reads fixture data from `.ai/demo/network-runtime`, never `.ai/runtime`. `npm run demo:reset` removes exactly `.ai/demo/network-runtime`; it does not clear real runtime state. In the demo Dashboard, select a node and edge, switch Live/History, try task and failure filters, and inspect Active Agents and Signal Timeline. `npm run preview` writes a static HTML snapshot with an interactive Snapshot History and network controls; the saved file does not poll or update after generation. The live dashboard refreshes every three seconds while its server runs.
+The demo reads fixture data from `.ai/demo/network-runtime`, never `.ai/runtime`. `npm run demo:reset` removes exactly `.ai/demo/network-runtime`; it does not clear real runtime state. In the demo Dashboard, select a node and edge, switch Live/History, try task and failure filters, and inspect Active Agents and Signal Timeline. `npm run preview` writes a static HTML snapshot with an interactive network labeled **Snapshot History** and snapshot-based filters; the saved file does not poll or update after generation. The live dashboard refreshes every three seconds while its server runs.
 
 ### Copying Pure Harness into an existing project
 
