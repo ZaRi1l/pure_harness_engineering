@@ -29,6 +29,8 @@
 - Free-text task titles that resemble signal summaries must not create task linkage; Task 2 tests exact `task_id` and owner matching only.
 - Old signals without metadata and orphan endpoints must render without error; Tasks 1 and 2 add compatibility tests.
 
+Recovery contract for signal identity: the runtime writer assigns a new UUID `id` to every delegate, result, and explicit signal inside the locked append. Caller metadata and CLI input cannot override it. This is additive within schema version 1; old id-less records remain unchanged. The renderer selects by stored ID; legacy content/occurrence keys are best effort and must clear selection when identical append or pruning makes identity ambiguous. Regression tests cover the 51st-signal retention boundary and duplicate records.
+
 ---
 
 ### Task 1: Add Backward-Compatible Signal Metadata and Runtime Directory Injection

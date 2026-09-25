@@ -10,7 +10,8 @@
     signal.time, signal.from, signal.to, signal.kind, signal.summary,
     signal.task_id, signal.status, signal.artifact_href, signal.verification_name
   ]);
-  const signalKey = (signal, ordinalFromTail) => `${signalSignature(signal)}|${ordinalFromTail}`;
+  const signalKey = (signal, ordinalFromTail) => signal.id
+    ? `id:${signal.id}` : `legacy:${signalSignature(signal)}|${ordinalFromTail}`;
   const exactTaskMatch = (node, edge, task) => Boolean(task) && (
     node?.task_id === task.id || task.owner === node?.id || edge?.task_id === task.id
   );
@@ -53,7 +54,7 @@
       counts.set(signature, ordinals[index] + 1);
     }
     const edges = signals.map((signal, index) => {
-      const edge = { ...signal, index, key: signalKey(signal, ordinals[index]) };
+      const edge = { ...signal, index, key: signalKey(signal, ordinals[index]), legacySignature: signal.id ? null : signalSignature(signal) };
       const from = byId.get(signal.from);
       const to = byId.get(signal.to);
       edge.matchesFilter = viewState.filter === 'active' ? active(from) || active(to)
@@ -269,6 +270,8 @@
       if (focusAfterDraw) { focusTarget?.focus(); focusAfterDraw = false; }
     }
     function update(nextSnapshot, nextCatalog) {
+      const previousEdge = state.selection?.type === 'edge' ? selectedRecord() : null;
+      const previousEdges = model.edges;
       snapshot = nextSnapshot || {}; catalog = nextCatalog || {};
       const tasks = snapshot?.tasks?.tasks || [];
       if (!tasks.some(item => item.id === state.taskId)) state.taskId = tasks[0]?.id || '';
@@ -277,6 +280,16 @@
       task.value = state.taskId;
       model = buildModel(snapshot, catalog, state);
       positions = layout(model, bounds.width, bounds.height);
+      if (previousEdge && !previousEdge.id) {
+        const signature = previousEdge.legacySignature;
+        const oldCount = previousEdges.filter(edge => edge.legacySignature === signature).length;
+        const newCount = model.edges.filter(edge => edge.legacySignature === signature).length;
+        const oldKeys = previousEdges.map(edge => edge.key);
+        const newKeys = model.edges.map(edge => edge.key);
+        const headPruneOnly = newKeys.length <= oldKeys.length && newKeys.every((key, index) => key === oldKeys[oldKeys.length - newKeys.length + index]);
+        const appendOnly = newKeys.length >= oldKeys.length && oldKeys.every((key, index) => key === newKeys[index]);
+        if ((oldCount !== newCount && Math.max(oldCount, newCount) > 1) || (!headPruneOnly && !appendOnly)) state.selection = null;
+      }
       if (state.selection && !selectedRecord()) state.selection = null;
       draw();
     }

@@ -49,6 +49,8 @@ Status presentation normalizes only explicit values:
 
 Every edge corresponds one-to-one with an entry in `status.signals`. The renderer never creates an edge to make the graph look complete. Existing records with only `{time, from, to, kind, summary}` remain valid.
 
+New delegate, result, and explicit signals receive a writer-owned UUID `id` when appended under the runtime lock. Callers and optional metadata cannot supply or override it. This is an additive schema-version-1 field: existing id-less records remain readable and are not rewritten. The renderer uses stored IDs for selection across append and retention pruning. For legacy id-less records it uses content and occurrence as a best-effort key, clearing selection when identical changes make the selected record ambiguous.
+
 The signal writer may accept these optional additive fields:
 
 - `task_id`

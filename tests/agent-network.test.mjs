@@ -149,7 +149,7 @@ test('controller preserves selection, mode, filter, task, and transform across p
   assert.equal(host.children.length, 0);
 });
 
-test('selected signal survives oldest-signal pruning, including identical records', () => {
+test('legacy selected signal survives unrelated head pruning but clears when duplicates are pruned', () => {
   const { host } = fixture();
   const controller = api.create(host);
   const duplicate = { time: '2026-09-25T01:00:00Z', from: 'worker-a', to: 'worker-b', kind: 'handoff', summary: 'Same event' };
@@ -163,7 +163,75 @@ test('selected signal survives oldest-signal pruning, including identical record
   assert.deepEqual(JSON.parse(JSON.stringify(controller.getState().selection)), JSON.parse(JSON.stringify(selected)));
   assert.match(text(find(host, 'network-detail', '')), /Same event/);
   controller.update({ ...snapshot, status: { ...snapshot.status, signals: signals.slice(2) } }, catalog);
+  assert.equal(controller.getState().selection, null);
+  controller.destroy();
+});
+
+test('stored signal ID survives the 51st append and head prune, then clears when pruned', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  const signals = Array.from({ length: 50 }, (_, index) => ({
+    id: `signal-${index}`, time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker-a', kind: 'handoff', summary: `Signal ${index}`
+  }));
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals } }, catalog);
+  find(host, 'edge-index', '1').click();
+  const selected = controller.getState().selection;
+  assert.equal(selected.key, 'id:signal-1');
+  const retained = signals.slice(1).concat({ ...signals[0], id: 'signal-50', summary: 'Signal 50' });
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: retained } }, catalog);
   assert.deepEqual(JSON.parse(JSON.stringify(controller.getState().selection)), JSON.parse(JSON.stringify(selected)));
+  assert.match(text(find(host, 'network-detail', '')), /Signal 1/);
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: retained.slice(1) } }, catalog);
+  assert.equal(controller.getState().selection, null);
+  controller.destroy();
+});
+
+test('identical ID-bearing append cannot retarget a selected signal', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  const signal = { id: 'original', time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker-a', kind: 'handoff', summary: 'Same' };
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: [signal] } }, catalog);
+  find(host, 'edge-index', '0').click();
+  const selected = controller.getState().selection;
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: [signal, { ...signal, id: 'newer' }] } }, catalog);
+  assert.deepEqual(JSON.parse(JSON.stringify(controller.getState().selection)), JSON.parse(JSON.stringify(selected)));
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: [{ ...signal, id: 'newer' }] } }, catalog);
+  assert.equal(controller.getState().selection, null);
+  controller.destroy();
+});
+
+test('legacy selection clears when an identical signal is appended', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  const signal = { time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker-a', kind: 'handoff', summary: 'Same' };
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: [signal] } }, catalog);
+  find(host, 'edge-index', '0').click();
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: [signal, { ...signal }] } }, catalog);
+  assert.equal(controller.getState().selection, null);
+  controller.destroy();
+});
+
+test('legacy selection clears when identical prune and append hide a replacement', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  const duplicate = { time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker-a', kind: 'handoff', summary: 'Same' };
+  const other = { ...duplicate, summary: 'Other' };
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: [duplicate, duplicate, other] } }, catalog);
+  find(host, 'edge-index', '1').click();
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: [duplicate, other, duplicate] } }, catalog);
+  assert.equal(controller.getState().selection, null);
+  controller.destroy();
+});
+
+test('legacy selection clears when one identical replacement keeps the match count unchanged', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  const selected = { time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker-a', kind: 'handoff', summary: 'Same' };
+  const other = { ...selected, summary: 'Other' };
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: [selected, other] } }, catalog);
+  find(host, 'edge-index', '0').click();
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: [other, { ...selected }] } }, catalog);
+  assert.equal(controller.getState().selection, null);
   controller.destroy();
 });
 

@@ -44,6 +44,8 @@ test('records lifecycle and explicit agent signals without message bodies', asyn
   const status = await store.readStatus();
   assert.equal(status.agents[0].status, 'completed');
   assert.deepEqual(status.signals.map(signal => signal.kind), ['delegate', 'handoff', 'result']);
+  assert.equal(new Set(status.signals.map(signal => signal.id)).size, 3);
+  for (const signal of status.signals) assert.match(signal.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
   assert.equal('body' in status.signals[1], false);
 });
 
@@ -59,13 +61,52 @@ test('signal metadata is optional, allowlisted, and backward compatible', async 
     task_id: '', status: null, artifact_href: undefined, verification_name: 42
   });
   const signals = (await store.readStatus()).signals;
-  assert.deepEqual(Object.keys(signals[0]).sort(), ['from', 'kind', 'summary', 'time', 'to']);
+  assert.deepEqual(Object.keys(signals[0]).sort(), ['from', 'id', 'kind', 'summary', 'time', 'to']);
   assert.deepEqual(signals[1], {
-    time: signals[1].time, from: 'worker-ui', to: 'verifier', kind: 'verify', summary: 'Verify UI',
+    id: signals[1].id, time: signals[1].time, from: 'worker-ui', to: 'verifier', kind: 'verify', summary: 'Verify UI',
     task_id: 'ui-task', status: 'running', artifact_href: '/preview/ui.html', verification_name: 'ui-tests'
   });
-  assert.deepEqual(Object.keys(signals[2]).sort(), ['from', 'kind', 'summary', 'time', 'to', 'verification_name']);
+  assert.deepEqual(Object.keys(signals[2]).sort(), ['from', 'id', 'kind', 'summary', 'time', 'to', 'verification_name']);
   assert.equal(signals[2].verification_name, '42');
+});
+
+test('writer IDs stay unique for identical signals and cannot be supplied by callers', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await store.agentStarted('worker-1', 'worker', 'Implement', { id: 'spoofed-delegate' });
+  await store.addSignal('worker-1', 'main', 'handoff', 'Same', { id: 'spoofed-explicit' });
+  await store.addSignal('worker-1', 'main', 'handoff', 'Same', { id: 'spoofed-explicit' });
+  await store.agentStopped('worker-1', 'completed', { id: 'spoofed-result' });
+  const signals = (await store.readStatus()).signals;
+  assert.equal(new Set(signals.map(signal => signal.id)).size, 4);
+  for (const signal of signals) assert.match(signal.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  assert.equal(signals.some(signal => signal.id.startsWith('spoofed-')), false);
+});
+
+test('old schema-version-1 id-less signals remain unchanged after a new append', async () => {
+  const root = await temporaryRoot();
+  const runtime = path.join(root, '.ai', 'runtime');
+  await mkdir(runtime, { recursive: true });
+  const legacy = { time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker', kind: 'delegate', summary: 'Old' };
+  await writeFile(path.join(runtime, 'status.json'), JSON.stringify({ schema_version: 1, signals: [legacy] }));
+  const store = new RuntimeStore(root);
+  await store.addSignal('worker', 'main', 'result', 'New');
+  const status = await store.readStatus();
+  assert.equal(status.schema_version, 1);
+  assert.deepEqual(status.signals[0], legacy);
+  assert.match(status.signals[1].id, /^[0-9a-f-]{36}$/i);
+});
+
+test('the 51st signal prunes only the oldest stored ID', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  for (let index = 0; index < 50; index++) await store.addSignal('main', 'worker', 'handoff', `Signal ${index}`);
+  const before = (await store.readStatus()).signals;
+  await store.addSignal('main', 'worker', 'handoff', 'Signal 50');
+  const after = (await store.readStatus()).signals;
+  assert.equal(after.length, 50);
+  assert.deepEqual(after.slice(0, -1).map(signal => signal.id), before.slice(1).map(signal => signal.id));
+  assert.equal(new Set(after.map(signal => signal.id)).size, 50);
 });
 
 test('an injected runtime directory never initializes the default runtime', async () => {
@@ -82,8 +123,9 @@ test('an injected runtime directory never initializes the default runtime', asyn
 test('signal CLI forwards optional metadata', async () => {
   const root = await temporaryRoot();
   await runCli(['signal', 'main', 'worker-ui', 'handoff', 'Implement UI', '--root', root,
-    '--task', 'ui-task', '--status', 'running', '--artifact', '/preview/ui.html', '--verification', 'ui-tests']);
+    '--task', 'ui-task', '--status', 'running', '--artifact', '/preview/ui.html', '--verification', 'ui-tests', '--id', 'spoofed-cli']);
   const signal = (await new RuntimeStore(root).readStatus()).signals[0];
+  assert.notEqual(signal.id, 'spoofed-cli');
   assert.deepEqual({ task_id: signal.task_id, status: signal.status,
     artifact_href: signal.artifact_href, verification_name: signal.verification_name }, {
     task_id: 'ui-task', status: 'running', artifact_href: '/preview/ui.html', verification_name: 'ui-tests'

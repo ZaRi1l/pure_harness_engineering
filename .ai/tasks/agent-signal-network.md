@@ -11,6 +11,7 @@ Add a shared static/live Agent Signal Network and isolated deterministic demo so
 - Share `preview/agent-network.js` between `preview:live` and the generated static preview.
 - Support node/edge details, Live/History or Snapshot History, task/failure filters, pan, zoom, fit, and reset.
 - Preserve old signal records while permitting only minimal optional linkage metadata.
+- Assign a writer-owned UUID `id` to each new lifecycle or explicit signal; caller metadata cannot override it. Keep schema-version-1 id-less records readable and clear legacy edge selection when duplicate append or pruning makes identity ambiguous.
 - Provide `demo:network` and `demo:reset` using `.ai/demo/network-runtime`, never `.ai/runtime`.
 - Include the approved Planner, parallel Worker, Integrator, Verifier failure/retry/success, and Reviewer fixture flow.
 
