@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, copyFile, readFile, symlink, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 import { createPreviewServer } from '../scripts/preview-server.mjs';
 import { RuntimeStore } from '../scripts/runtime-state.mjs';
@@ -13,6 +14,7 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   await mkdir(path.join(root, 'preview'));
   await copyFile(path.resolve('preview/index.html'), path.join(root, 'preview/index.html'));
   await copyFile(path.resolve('preview/artifact-tabs.js'), path.join(root, 'preview/artifact-tabs.js'));
+  await copyFile(path.resolve('preview/agent-network.js'), path.join(root, 'preview/agent-network.js'));
   await mkdir(path.join(root, '.ai', 'tasks'), { recursive: true });
   await writeFile(path.join(root, '.ai', 'tasks', 'example.md'), '# Example task spec\n\nPlan content.');
   await new RuntimeStore(root).initialize();
@@ -23,12 +25,18 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   const html = await (await fetch(`http://127.0.0.1:${port}/`)).text();
   const artifactModuleResponse = await fetch(`http://127.0.0.1:${port}/preview/artifact-tabs.js`);
   const artifactModule = await artifactModuleResponse.text();
+  const networkResponse = await fetch(`http://127.0.0.1:${port}/preview/agent-network.js`);
+  const networkSource = await networkResponse.text();
   const status = await (await fetch(`http://127.0.0.1:${port}/runtime/status`)).json();
   const snapshot = await (await fetch(`http://127.0.0.1:${port}/runtime/snapshot`)).json();
   const catalogResponse = await fetch(`http://127.0.0.1:${port}/runtime/catalog`), catalog = await catalogResponse.json();
   const taskSpecsResponse = await fetch(`http://127.0.0.1:${port}/runtime/task-specs`), taskSpecs = await taskSpecsResponse.json();
   const traversal = await fetch(`http://127.0.0.1:${port}/preview/%2e%2e/secret.txt`);
   assert.match(html, /Signal Timeline/);
+  assert.match(html, /Active Agents/);
+  assert.equal((html.match(/<h2>Agent Signal Network<\/h2>/g) || []).length, 1);
+  assert.match(html, /<section class="card full"><h2>Agent Signal Network<\/h2><div id="agent-network"><\/div><\/section>/);
+  assert.match(html, /<script src="\/preview\/agent-network\.js"><\/script>\s*<script type="module">/);
   assert.match(html, /Preview Lab/);
   assert.match(html, /Agent Catalog/);
   assert.match(html, /Skill Catalog/);
@@ -41,6 +49,9 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   assert.match(artifactModuleResponse.headers.get('content-type'), /text\/javascript/);
   assert.match(artifactModule, /setAttribute\('sandbox', 'allow-scripts'\)/);
   assert.match(artifactModule, /Open separately/);
+  assert.equal(networkResponse.status, 200);
+  assert.match(networkResponse.headers.get('content-type'), /text\/javascript/);
+  assert.match(networkSource, /AgentSignalNetwork/);
   assert.match(html, /Fallback: /);
   assert.match(html, /gpt-5\.6-/);
   assert.match(html, /Watchdog Warnings/);
@@ -55,6 +66,67 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   assert.equal(status.phase, 'idle');
   assert.equal(snapshot.status.task_counts.total, snapshot.tasks.tasks.length);
   assert.ok([403, 404].includes(traversal.status));
+});
+
+test('live dashboard reuses its network controller across snapshot refreshes', async () => {
+  const html = await readFile(path.resolve('preview/index.html'), 'utf8');
+  const moduleSource = html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(moduleSource, 'live dashboard module is present');
+  const nodes = new Map();
+  const element = () => ({
+    children: [], classList: { toggle() {} },
+    append(...children) { this.children.push(...children); },
+    replaceChildren(...children) { this.children = children; },
+    set innerHTML(value) { for (const [, id] of value.matchAll(/id="([^"]+)"/g)) nodes.set(`#${id}`, element()); },
+    set textContent(value) { this.text = value; },
+    get textContent() { return this.text ?? ''; }
+  });
+  nodes.set('#app', element());
+  const first = { status: { active_agents: [], agents: [{ id: 'worker-1', role: 'worker' }], signals: [{ id: 'signal-1', from: 'main', to: 'worker-1', kind: 'delegate' }], verification: { status: 'passed' }, warnings: [], blockers: [], artifact_preview_links: [] }, tasks: { tasks: [] }, claims: { claims: [] }, events: [] };
+  const second = structuredClone(first);
+  second.status.signals.push({ id: 'signal-2', from: 'worker-1', to: 'main', kind: 'result' });
+  const snapshots = [first, second];
+  const agents = [{ id: 'worker', model: 'gpt-6-sol' }];
+  const controllers = [];
+  let refresh;
+  const context = {
+    document: { querySelector: selector => nodes.get(selector), querySelectorAll: () => [], createElement: element },
+    location: { hash: '#dashboard' }, addEventListener() {}, setInterval: callback => { refresh = callback; },
+    fetch: async url => ({ json: async () => url === '/runtime/catalog' ? { agents, skills: [] } : snapshots.shift() ?? second }),
+    AgentSignalNetwork: { create: host => { const controller = { host, updates: [], update(snapshot, catalog) { this.updates.push({ snapshot, catalog }); } }; controllers.push(controller); return controller; } }
+  };
+  runInNewContext(moduleSource.replace(/^import .*?;\s*/m, 'const renderArtifactTabs = () => {};\n'), context);
+  await new Promise(resolve => setImmediate(resolve));
+  const retained = controllers.at(-1);
+  const beforeRefresh = controllers.length;
+  refresh();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(controllers.length, beforeRefresh);
+  assert.equal(retained.host, nodes.get('#agent-network'));
+  assert.equal(retained.updates.at(-1).snapshot, second);
+  assert.equal(retained.updates.at(-1).catalog.agents[0].id, 'worker');
+});
+
+test('runtimeDir changes only live runtime data and keeps repository catalog and Task Specs', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-preview-root-'));
+  const runtimeDir = await mkdtemp(path.join(tmpdir(), 'pure-preview-runtime-'));
+  await mkdir(path.join(root, 'preview'));
+  await mkdir(path.join(root, '.ai', 'tasks'), { recursive: true });
+  await copyFile(path.resolve('preview/index.html'), path.join(root, 'preview/index.html'));
+  await writeFile(path.join(root, '.ai', 'tasks', 'example.md'), '# Source task');
+  const store = new RuntimeStore(root, { runtimeDir });
+  await store.initialize();
+  await store.setGoal('Injected runtime');
+  const server = await createPreviewServer(root, '127.0.0.1', { runtimeDir });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const snapshot = await (await fetch(`${base}/runtime/snapshot`)).json();
+  const taskSpecs = await (await fetch(`${base}/runtime/task-specs`)).json();
+  const page = await (await fetch(base)).text();
+  assert.equal(snapshot.status.current_goal, 'Injected runtime');
+  assert.equal(taskSpecs.taskSpecs[0].title, 'Source task');
+  assert.match(page, /Pure Harness/);
 });
 
 test('catalog exposes read-only source and role policy metadata', () => {

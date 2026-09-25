@@ -58,9 +58,12 @@ test('self-check warns when Codex is not installed', async () => {
   assert.ok(report.warnings.some(warning => warning.includes('Codex executable unavailable')));
 });
 
-test('self-check serves the dashboard module imported by the live page', async () => {
+test('self-check serves both dashboard assets and renders the static network', async () => {
   const accepted = () => ({ status: 0, stdout: '{"checks":{"config.load":{"status":"ok"}}}', stderr: '' });
   const report = await checkRepository(path.resolve('.'), { spawnCodex: accepted });
   assert.equal(report.ok, true);
   assert.ok(report.checks.includes('Dashboard module is served'));
+  assert.ok(report.checks.includes('Agent network renderer exists'));
+  assert.ok(report.checks.includes('Agent network renderer is served'));
+  assert.ok(report.checks.includes('Static agent network generation passes'));
 });

@@ -8,8 +8,8 @@ import { RuntimeStore, findRoot } from './runtime-state.mjs';
 import { discoverCatalog, discoverTaskSpecs } from './catalog.mjs';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
-export async function createPreviewServer(root, host = '127.0.0.1') {
-  root = path.resolve(root); const previewRoot = path.resolve(root, 'preview'), previewReal = await realpath(previewRoot), store = new RuntimeStore(root); await store.initialize();
+export async function createPreviewServer(root, host = '127.0.0.1', options = {}) {
+  root = path.resolve(root); const previewRoot = path.resolve(root, 'preview'), previewReal = await realpath(previewRoot), store = new RuntimeStore(root, { runtimeDir: options.runtimeDir }); await store.initialize();
   return http.createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url, `http://${host}`).pathname);
