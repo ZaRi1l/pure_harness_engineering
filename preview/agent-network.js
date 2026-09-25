@@ -18,7 +18,8 @@
   const active = node => node?.status === 'active';
   const failed = value => FAILURE_KINDS.has(String(value || '').toLowerCase());
   const string = value => String(value ?? '');
-  const displayTime = value => typeof value === 'string' && value.trim() && Number.isFinite(Date.parse(value)) ? value : 'unknown';
+  const displayTime = value => value == null || (typeof value === 'string' && !value.trim())
+    ? undefined : typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : 'unknown';
 
   function buildModel(snapshot = {}, catalog = {}, viewState = {}) {
     const status = snapshot?.status || {};
@@ -333,8 +334,12 @@
     const pointerMove = event => {
       if (!drag || event.pointerId !== drag.id) return;
       const rect = svg.getBoundingClientRect();
-      state.transform.x += (event.clientX - drag.x) * (rect.width > 0 ? bounds.width / rect.width : 1);
-      state.transform.y += (event.clientY - drag.y) * (rect.height > 0 ? bounds.height / rect.height : 1);
+      const scale = Math.max(
+        Number.isFinite(rect.width) && rect.width > 0 ? bounds.width / rect.width : 1,
+        Number.isFinite(rect.height) && rect.height > 0 ? bounds.height / rect.height : 1
+      );
+      state.transform.x += (event.clientX - drag.x) * scale;
+      state.transform.y += (event.clientY - drag.y) * scale;
       drag = { id: drag.id, x: event.clientX, y: event.clientY };
       draw();
     };

@@ -337,7 +337,20 @@ test('background pan converts CSS pixel movement into viewBox units', () => {
   controller.destroy();
 });
 
-test('detail dates show unknown for missing or invalid timestamps and preserve stored valid strings', () => {
+test('background pan uses the uniform SVG scale when the rendered box is letterboxed', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  const svg = descendants(host, element => element.tagName === 'SVG')[0];
+  svg.clientWidth = 400; svg.clientHeight = 280;
+  svg.dispatch('pointerdown', { clientX: 100, clientY: 100 });
+  svg.dispatch('pointermove', { clientX: 100, clientY: 120 });
+  assert.equal(controller.getState().transform.y, 40);
+  assert.equal(controller.getState().transform.y * 0.5, 20);
+  svg.dispatch('pointerup');
+  controller.destroy();
+});
+
+test('detail dates omit missing values, show unknown for invalid values, and preserve valid strings', () => {
   const { host } = fixture();
   const controller = api.create(host);
   const dated = structuredClone(snapshot);
@@ -347,9 +360,15 @@ test('detail dates show unknown for missing or invalid timestamps and preserve s
   controller.update(dated, catalog);
   find(host, 'node-id', 'worker-a').click();
   assert.match(text(find(host, 'network-detail', '')), /Started: unknown/);
-  assert.match(text(find(host, 'network-detail', '')), /Finished: unknown/);
+  assert.doesNotMatch(text(find(host, 'network-detail', '')), /Finished:/);
   find(host, 'edge-index', '0').click();
   assert.match(text(find(host, 'network-detail', '')), /Sent: unknown/);
+  delete dated.status.signals[0].time;
+  controller.update(dated, catalog);
+  find(host, 'edge-index', '0').click();
+  assert.doesNotMatch(text(find(host, 'network-detail', '')), /Sent:/);
+  find(host, 'node-id', 'orphan-agent').click();
+  assert.doesNotMatch(text(find(host, 'network-detail', '')), /Started:|Finished:/);
   controller.update(snapshot, catalog);
   find(host, 'node-id', 'worker-a').click();
   assert.match(text(find(host, 'network-detail', '')), /Started: 2026-09-25T00:00:00Z/);
