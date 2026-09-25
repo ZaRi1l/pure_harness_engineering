@@ -21,24 +21,31 @@ class FakeElement {
   addEventListener(name, listener) { const set = this.listeners.get(name) ?? new Set(); set.add(listener); this.listeners.set(name, set); }
   removeEventListener(name, listener) { this.listeners.get(name)?.delete(listener); }
   dispatch(name, extras = {}) {
-    const event = { type: name, target: this, currentTarget: this, preventDefault() {}, stopPropagation() {}, clientX: 100, clientY: 100, ...extras };
+    const event = { type: name, target: this, currentTarget: this, preventDefault() {}, stopPropagation() {}, clientX: 100, clientY: 100, pointerId: 1, ...extras };
     for (const listener of this.listeners.get(name) ?? []) listener(event);
     return event;
   }
   click() { this.dispatch('click'); }
   keydown(key) { this.dispatch('keydown', { key }); }
   focus() { this.ownerDocument.activeElement = this; }
+  setPointerCapture(id) { this.ownerDocument.capturedPointers.set(id, this); }
+  hasPointerCapture(id) { return this.ownerDocument.capturedPointers.get(id) === this; }
+  releasePointerCapture(id) { this.ownerDocument.capturedPointers.delete(id); }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
   getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 440 }; }
 }
 class FakeDocument {
-  constructor() { this.head = new FakeElement('head', this); }
+  constructor() { this.head = new FakeElement('head', this); this.capturedPointers = new Map(); this.outside = new FakeElement('div', this); }
   createElement(name) { return new FakeElement(name, this); }
   createElementNS(_namespace, name) { return this.createElement(name); }
   querySelector(selector) {
     if (selector === '[data-agent-network-styles]') return descendants(this.head, element => element.getAttribute('data-agent-network-styles') !== null)[0] ?? null;
     return null;
+  }
+  dispatchOutside(name, extras = {}) {
+    const pointerId = extras.pointerId ?? 1;
+    (this.capturedPointers.get(pointerId) || this.outside).dispatch(name, { pointerId, ...extras });
   }
 }
 function descendants(root, predicate) {
@@ -142,6 +149,24 @@ test('controller preserves selection, mode, filter, task, and transform across p
   assert.equal(host.children.length, 0);
 });
 
+test('selected signal survives oldest-signal pruning, including identical records', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  const duplicate = { time: '2026-09-25T01:00:00Z', from: 'worker-a', to: 'worker-b', kind: 'handoff', summary: 'Same event' };
+  const signals = [snapshot.status.signals[0], duplicate, duplicate, snapshot.status.signals[2]];
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals } }, catalog);
+  const initialKeys = Array.from(api.buildModel({ ...snapshot, status: { ...snapshot.status, signals } }, catalog, {}).edges, edge => edge.key);
+  assert.notEqual(initialKeys[1], initialKeys[2]);
+  find(host, 'edge-index', '2').click();
+  const selected = controller.getState().selection;
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: signals.slice(1) } }, catalog);
+  assert.deepEqual(JSON.parse(JSON.stringify(controller.getState().selection)), JSON.parse(JSON.stringify(selected)));
+  assert.match(text(find(host, 'network-detail', '')), /Same event/);
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: signals.slice(2) } }, catalog);
+  assert.deepEqual(JSON.parse(JSON.stringify(controller.getState().selection)), JSON.parse(JSON.stringify(selected)));
+  controller.destroy();
+});
+
 test('keyboard selection, controls, wheel, pan, fit, reset, and stale selection work', () => {
   const { host, document } = fixture();
   const controller = api.create(host);
@@ -171,6 +196,47 @@ test('keyboard selection, controls, wheel, pan, fit, reset, and stale selection 
   controller.update({ status: { agents: [], active_agents: [], signals: [] }, tasks: { tasks: [] } }, catalog);
   assert.equal(controller.getState().selection, null);
   assert.match(text(host), /No agents or signals/);
+});
+
+test('background pan ends after pointer release outside the graph', () => {
+  const { host, document } = fixture();
+  const controller = api.create(host);
+  controller.update(snapshot, catalog);
+  const svg = descendants(host, element => element.tagName === 'SVG')[0];
+  svg.dispatch('pointerdown', { pointerId: 7, clientX: 100, clientY: 100 });
+  svg.dispatch('pointermove', { pointerId: 7, clientX: 130, clientY: 120 });
+  const releasedAt = controller.getState().transform;
+  document.dispatchOutside('pointerup', { pointerId: 7, clientX: 200, clientY: 200 });
+  svg.dispatch('pointermove', { pointerId: 7, clientX: 150, clientY: 150 });
+  assert.deepEqual(JSON.parse(JSON.stringify(controller.getState().transform)), JSON.parse(JSON.stringify(releasedAt)));
+  assert.equal(document.capturedPointers.size, 0);
+  controller.destroy();
+});
+
+test('named mode, filter, and task controls apply Active and Failures views', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  controller.update(snapshot, catalog);
+  const mode = find(host, 'network-mode', '');
+  const filter = find(host, 'network-filter', '');
+  const task = find(host, 'network-task', '');
+  assert.equal(mode.getAttribute('aria-label'), 'Network mode');
+  assert.equal(filter.getAttribute('aria-label'), 'Network filter');
+  assert.equal(task.getAttribute('aria-label'), 'Network task');
+  filter.value = 'active'; filter.dispatch('change');
+  assert.equal(controller.getState().filter, 'active');
+  assert.equal(find(host, 'node-id', 'worker-b').getAttribute('data-emphasis'), 'true');
+  assert.equal(find(host, 'node-id', 'worker-a').getAttribute('data-emphasis'), 'false');
+  filter.value = 'failures'; filter.dispatch('change');
+  assert.equal(controller.getState().filter, 'failures');
+  assert.equal(find(host, 'node-id', 'verifier-1').getAttribute('data-emphasis'), 'false');
+  mode.value = 'history'; mode.dispatch('change');
+  assert.equal(controller.getState().mode, 'history');
+  assert.equal(find(host, 'node-id', 'verifier-1').getAttribute('data-emphasis'), 'true');
+  assert.equal(find(host, 'node-id', 'worker-b').getAttribute('data-emphasis'), 'false');
+  const retry = descendants(host, element => element.getAttribute('data-kind') === 'retry')[0];
+  assert.equal(retry.getAttribute('data-emphasis'), 'true');
+  controller.destroy();
 });
 
 test('static mode is named Snapshot History and tolerates old snapshots without metadata', () => {

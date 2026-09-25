@@ -6,7 +6,11 @@
   const normalizeStatus = value => value === 'running' ? 'active' : (value || 'unknown');
   const hash = value => [...String(value)].reduce((result, character) =>
     Math.imul(result ^ character.charCodeAt(0), 16777619) >>> 0, 2166136261);
-  const signalKey = (signal, index) => [signal.time, signal.from, signal.to, signal.kind, index].join('|');
+  const signalSignature = signal => JSON.stringify([
+    signal.time, signal.from, signal.to, signal.kind, signal.summary,
+    signal.task_id, signal.status, signal.artifact_href, signal.verification_name
+  ]);
+  const signalKey = (signal, ordinalFromTail) => `${signalSignature(signal)}|${ordinalFromTail}`;
   const exactTaskMatch = (node, edge, task) => Boolean(task) && (
     node?.task_id === task.id || task.owner === node?.id || edge?.task_id === task.id
   );
@@ -40,8 +44,16 @@
       return node;
     });
     const byId = new Map(nodes.map(node => [node.id, node]));
-    const edges = (status.signals || []).map((signal, index) => {
-      const edge = { ...signal, index, key: signalKey(signal, index) };
+    const signals = status.signals || [];
+    const ordinals = new Array(signals.length);
+    const counts = new Map();
+    for (let index = signals.length - 1; index >= 0; index--) {
+      const signature = signalSignature(signals[index]);
+      ordinals[index] = counts.get(signature) || 0;
+      counts.set(signature, ordinals[index] + 1);
+    }
+    const edges = signals.map((signal, index) => {
+      const edge = { ...signal, index, key: signalKey(signal, ordinals[index]) };
       const from = byId.get(signal.from);
       const to = byId.get(signal.to);
       edge.matchesFilter = viewState.filter === 'active' ? active(from) || active(to)
@@ -133,16 +145,19 @@
     const controls = element(document, 'div', 'asn-controls');
     const mode = options.staticMode ? null : data(element(document, 'select'), 'network-mode', '');
     if (mode) {
+      mode.setAttribute('aria-label', 'Network mode');
       for (const [value, label] of [['live', 'Live'], ['history', 'History']]) {
         const option = element(document, 'option', '', label); option.value = value; mode.append(option);
       }
       controls.append(mode);
     } else controls.append(element(document, 'span', 'asn-note', 'Snapshot History'));
     const filter = data(element(document, 'select'), 'network-filter', '');
+    filter.setAttribute('aria-label', 'Network filter');
     for (const [value, label] of [['all', 'All'], ['active', 'Active'], ['failures', 'Failures'], ['task', 'Current Task']]) {
       const option = element(document, 'option', '', label); option.value = value; filter.append(option);
     }
     const task = data(element(document, 'select'), 'network-task', '');
+    task.setAttribute('aria-label', 'Network task');
     controls.append(filter, task);
     const actionButtons = new Map();
     for (const [action, label] of [['zoom-in', 'Zoom in'], ['zoom-out', 'Zoom out'], ['fit', 'Fit'], ['reset', 'Reset']]) {
@@ -282,14 +297,30 @@
     });
     actionButtons.get('reset').addEventListener('click', () => { positions = layout(model, bounds.width, bounds.height); state.transform = { x: 0, y: 0, scale: 1 }; draw(); });
     const wheel = event => { event.preventDefault(); const rect = svg.getBoundingClientRect(); scaleAround(event.deltaY < 0 ? 1.1 : 1 / 1.1, (event.clientX - rect.left) * bounds.width / rect.width, (event.clientY - rect.top) * bounds.height / rect.height); };
-    const pointerDown = event => { if (event.target !== svg) return; drag = { x: event.clientX, y: event.clientY }; };
-    const pointerMove = event => { if (!drag) return; state.transform.x += event.clientX - drag.x; state.transform.y += event.clientY - drag.y; drag = { x: event.clientX, y: event.clientY }; draw(); };
-    const pointerUp = () => { drag = null; };
+    const pointerDown = event => {
+      if (event.target !== svg) return;
+      drag = { id: event.pointerId, x: event.clientX, y: event.clientY };
+      svg.setPointerCapture(event.pointerId);
+    };
+    const pointerMove = event => {
+      if (!drag || event.pointerId !== drag.id) return;
+      state.transform.x += event.clientX - drag.x;
+      state.transform.y += event.clientY - drag.y;
+      drag = { id: drag.id, x: event.clientX, y: event.clientY };
+      draw();
+    };
+    const pointerUp = event => {
+      if (!drag || event.pointerId !== drag.id) return;
+      drag = null;
+      if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
+    };
+    const captureLost = () => { drag = null; };
     svg.addEventListener('wheel', wheel);
     svg.addEventListener('pointerdown', pointerDown);
     svg.addEventListener('pointermove', pointerMove);
     svg.addEventListener('pointerup', pointerUp);
     svg.addEventListener('pointercancel', pointerUp);
+    svg.addEventListener('lostpointercapture', captureLost);
     draw();
     return {
       update,
@@ -302,6 +333,8 @@
         svg.removeEventListener('pointermove', pointerMove);
         svg.removeEventListener('pointerup', pointerUp);
         svg.removeEventListener('pointercancel', pointerUp);
+        svg.removeEventListener('lostpointercapture', captureLost);
+        if (drag && svg.hasPointerCapture(drag.id)) svg.releasePointerCapture(drag.id);
         host.replaceChildren();
       }
     };
