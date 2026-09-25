@@ -10,6 +10,8 @@
     "status": "node scripts/status.mjs",
     "watchdog": "node scripts/watchdog.mjs",
     "preview": "node scripts/generate-preview.mjs",
-    "preview:live": "node scripts/preview-server.mjs"
+    "preview:live": "node scripts/preview-server.mjs",
+    "demo:network": "node scripts/demo-network.mjs serve",
+    "demo:reset": "node scripts/demo-network.mjs reset"
   }
 }

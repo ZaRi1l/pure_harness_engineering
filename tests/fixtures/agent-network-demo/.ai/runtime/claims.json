@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "claims": [
+    { "agent_id": "worker-api", "scopes": ["src/api/"], "claimed_at": "2026-09-25T09:03:15.000Z" },
+    { "agent_id": "reviewer-1", "scopes": ["review/"], "claimed_at": "2026-09-25T09:10:25.000Z" }
+  ]
+}

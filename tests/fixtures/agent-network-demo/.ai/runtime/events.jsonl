@@ -1,0 +1,9 @@
+{"time":"2026-09-25T09:00:00.000Z","type":"goal","message":"Inspect agent collaboration"}
+{"time":"2026-09-25T09:03:15.000Z","type":"agent_signal","message":"Parallel UI and API workers delegated"}
+{"time":"2026-09-25T09:06:00.000Z","type":"artifact","message":"UI preview registered"}
+{"time":"2026-09-25T09:07:00.000Z","type":"agent_signal","message":"API worker reported failed tests"}
+{"time":"2026-09-25T09:08:00.000Z","type":"verification","message":"Integration tests passed"}
+{"time":"2026-09-25T09:08:30.000Z","type":"verification","message":"API tests failed"}
+{"time":"2026-09-25T09:09:00.000Z","type":"agent_signal","message":"Main requested API retry"}
+{"time":"2026-09-25T09:10:00.000Z","type":"agent_signal","message":"API retry submitted for verification"}
+{"time":"2026-09-25T09:10:30.000Z","type":"agent_signal","message":"Verifier handed work to reviewer"}

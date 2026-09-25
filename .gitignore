@@ -9,3 +9,9 @@ node_modules/
 .ai/runtime/claims.json
 .ai/runtime/preview.html
 .ai/runtime/.state.lock
+.ai/demo/network-runtime/
+!tests/fixtures/agent-network-demo/.ai/runtime/
+!tests/fixtures/agent-network-demo/.ai/runtime/status.json
+!tests/fixtures/agent-network-demo/.ai/runtime/tasks.json
+!tests/fixtures/agent-network-demo/.ai/runtime/claims.json
+!tests/fixtures/agent-network-demo/.ai/runtime/events.jsonl

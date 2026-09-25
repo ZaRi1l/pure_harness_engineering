@@ -8,3 +8,4 @@ import './task-specs.test.mjs';
 import './model-routing.test.mjs';
 import './preview-artifacts.test.mjs';
 import './agent-network.test.mjs';
+import './demo-network.test.mjs';

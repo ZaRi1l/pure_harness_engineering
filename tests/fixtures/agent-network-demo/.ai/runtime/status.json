@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "current_goal": "Inspect agent collaboration",
+  "phase": "review",
+  "last_update": "2026-09-25T09:11:00.000Z",
+  "agents": [
+    { "id": "planner-1", "role": "planner", "status": "completed", "current_task": "Plan the collaboration", "started_at": "2026-09-25T09:00:00.000Z", "stopped_at": "2026-09-25T09:03:00.000Z" },
+    { "id": "worker-ui", "role": "worker", "status": "completed", "current_task": "Build the UI", "started_at": "2026-09-25T09:03:10.000Z", "stopped_at": "2026-09-25T09:06:00.000Z" },
+    { "id": "worker-api", "role": "worker", "status": "failed", "current_task": "Initial API implementation", "started_at": "2026-09-25T09:03:15.000Z", "stopped_at": "2026-09-25T09:07:00.000Z" },
+    { "id": "integrator-1", "role": "integrator", "status": "stopped", "current_task": "Integrate the UI and API", "started_at": "2026-09-25T09:06:10.000Z", "stopped_at": "2026-09-25T09:08:00.000Z" },
+    { "id": "verifier-1", "role": "verifier", "status": "blocked", "current_task": "Verify API retry", "started_at": "2026-09-25T09:08:05.000Z", "stopped_at": "2026-09-25T09:10:20.000Z" },
+    { "id": "reviewer-1", "role": "reviewer", "status": "running", "current_task": "Review completed work", "started_at": "2026-09-25T09:10:25.000Z", "stopped_at": null }
+  ],
+  "active_agents": [
+    { "id": "worker-api", "role": "worker", "status": "running", "current_task": "Retry API tests", "started_at": "2026-09-25T09:09:00.000Z", "stopped_at": null },
+    { "id": "reviewer-1", "role": "reviewer", "status": "running", "current_task": "Review completed work", "started_at": "2026-09-25T09:10:25.000Z", "stopped_at": null }
+  ],
+  "signals": [
+    { "id": "demo-signal-01", "time": "2026-09-25T09:00:00.000Z", "from": "main", "to": "planner-1", "kind": "delegate", "task_id": "plan", "status": "completed", "summary": "Plan agent collaboration" },
+    { "id": "demo-signal-02", "time": "2026-09-25T09:03:10.000Z", "from": "main", "to": "worker-ui", "kind": "delegate", "task_id": "ui", "status": "completed", "summary": "Implement UI preview" },
+    { "id": "demo-signal-03", "time": "2026-09-25T09:03:15.000Z", "from": "main", "to": "worker-api", "kind": "delegate", "task_id": "api", "status": "active", "summary": "Implement API" },
+    { "id": "demo-signal-04", "time": "2026-09-25T09:06:00.000Z", "from": "worker-ui", "to": "main", "kind": "result", "task_id": "ui", "status": "completed", "artifact_href": "/preview/demo-ui.html", "summary": "UI preview ready" },
+    { "id": "demo-signal-05", "time": "2026-09-25T09:06:10.000Z", "from": "worker-ui", "to": "integrator-1", "kind": "handoff", "task_id": "integration", "status": "completed", "summary": "Hand off UI for integration" },
+    { "id": "demo-signal-06", "time": "2026-09-25T09:07:00.000Z", "from": "worker-api", "to": "main", "kind": "result", "task_id": "api", "status": "failed", "summary": "API tests failed" },
+    { "id": "demo-signal-07", "time": "2026-09-25T09:08:00.000Z", "from": "integrator-1", "to": "verifier-1", "kind": "verify", "task_id": "verification", "status": "completed", "verification_name": "integration-tests", "summary": "Integration tests passed" },
+    { "id": "demo-signal-08", "time": "2026-09-25T09:08:30.000Z", "from": "verifier-1", "to": "worker-api", "kind": "result", "task_id": "api", "status": "failed", "verification_name": "api-tests", "summary": "API tests need a retry" },
+    { "id": "demo-signal-09", "time": "2026-09-25T09:09:00.000Z", "from": "main", "to": "worker-api", "kind": "retry", "task_id": "api", "status": "active", "summary": "Retry API implementation" },
+    { "id": "demo-signal-10", "time": "2026-09-25T09:10:00.000Z", "from": "worker-api", "to": "verifier-1", "kind": "verify", "task_id": "api", "status": "completed", "verification_name": "api-tests", "summary": "API retry submitted for verification" },
+    { "id": "demo-signal-11", "time": "2026-09-25T09:10:30.000Z", "from": "verifier-1", "to": "reviewer-1", "kind": "review", "task_id": "review", "status": "active", "summary": "Review integration and API retry" }
+  ],
+  "task_counts": { "total": 6, "completed": 3 },
+  "progress": { "completed": 3, "total": 6 },
+  "completed_tasks": [
+    { "id": "plan", "title": "Plan collaboration", "status": "completed", "owner": "planner-1" },
+    { "id": "ui", "title": "Implement UI preview", "status": "completed", "owner": "worker-ui" },
+    { "id": "integration", "title": "Integrate UI and API", "status": "completed", "owner": "integrator-1" }
+  ],
+  "next_tasks": [
+    { "id": "verification", "title": "Verify integration and API", "status": "blocked", "owner": "verifier-1" }
+  ],
+  "verification": {
+    "status": "failed",
+    "checks": [
+      { "name": "integration-tests", "status": "passed", "detail": "Integration suite passed", "time": "2026-09-25T09:08:00.000Z" },
+      { "name": "api-tests", "status": "failed", "detail": "Initial API run failed; retry submitted", "time": "2026-09-25T09:08:30.000Z" }
+    ],
+    "last_run": "2026-09-25T09:08:30.000Z"
+  },
+  "blockers": [{ "id": "api-verification", "message": "API retry awaits verification", "time": "2026-09-25T09:10:00.000Z" }],
+  "warnings": [],
+  "recent_events": [],
+  "artifact_preview_links": [{ "label": "UI preview", "href": "/preview/demo-ui.html" }]
+}
