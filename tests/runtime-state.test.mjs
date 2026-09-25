@@ -185,11 +185,16 @@ test('event history stays readable during atomic capped updates', async () => {
   const store = new RuntimeStore(await temporaryRoot(), { eventLimit: 3 });
   await store.initialize();
   await store.addEvent('seed', 'event-0');
-  let done = false, writerError = null;
+  let done = false, writerError = null, concurrentReads = 0;
   const writer = (async () => { for (let index = 1; index <= 12; index += 1) await store.addEvent('test', `event-${index}`); })().catch(error => { writerError = error; }).finally(() => { done = true; });
-  while (!done) assert.ok((await store.readEvents()).length > 0);
+  while (!done) {
+    assert.ok((await store.readEvents()).length > 0);
+    concurrentReads += 1;
+    await new Promise(resolve => setImmediate(resolve));
+  }
   await writer;
   if (writerError) throw writerError;
+  assert.ok(concurrentReads > 0);
   assert.deepEqual((await store.readEvents()).map(event => event.message), ['event-10', 'event-11', 'event-12']);
 });
 
