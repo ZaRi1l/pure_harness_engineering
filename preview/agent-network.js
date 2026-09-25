@@ -286,9 +286,16 @@
         const newCount = model.edges.filter(edge => edge.legacySignature === signature).length;
         const oldKeys = previousEdges.map(edge => edge.key);
         const newKeys = model.edges.map(edge => edge.key);
-        const headPruneOnly = newKeys.length <= oldKeys.length && newKeys.every((key, index) => key === oldKeys[oldKeys.length - newKeys.length + index]);
-        const appendOnly = newKeys.length >= oldKeys.length && oldKeys.every((key, index) => key === newKeys[index]);
-        if ((oldCount !== newCount && Math.max(oldCount, newCount) > 1) || (!headPruneOnly && !appendOnly)) state.selection = null;
+        let overlap = 0;
+        for (let length = Math.min(oldKeys.length, newKeys.length); length > 0; length--) {
+          if (newKeys.slice(0, length).every((key, index) => key === oldKeys[oldKeys.length - length + index])) {
+            overlap = length;
+            break;
+          }
+        }
+        const nextIndex = previousEdges.indexOf(previousEdge) - (oldKeys.length - overlap);
+        const retained = nextIndex >= 0 && nextIndex < overlap && newKeys[nextIndex] === previousEdge.key;
+        if ((oldCount !== newCount && Math.max(oldCount, newCount) > 1) || !retained) state.selection = null;
       }
       if (state.selection && !selectedRecord()) state.selection = null;
       draw();

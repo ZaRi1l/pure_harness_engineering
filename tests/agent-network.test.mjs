@@ -167,6 +167,20 @@ test('legacy selected signal survives unrelated head pruning but clears when dup
   controller.destroy();
 });
 
+test('unique legacy selection survives head pruning and a new tail signal together', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  const [a, b, c] = snapshot.status.signals;
+  const d = { ...a, time: '2026-09-25T00:03:00Z', summary: 'Newest event' };
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: [a, b, c] } }, catalog);
+  find(host, 'edge-index', '1').click();
+  const selected = controller.getState().selection;
+  controller.update({ ...snapshot, status: { ...snapshot.status, signals: [b, c, d] } }, catalog);
+  assert.deepEqual(JSON.parse(JSON.stringify(controller.getState().selection)), JSON.parse(JSON.stringify(selected)));
+  assert.match(text(find(host, 'network-detail', '')), /Exact stored edge/);
+  controller.destroy();
+});
+
 test('stored signal ID survives the 51st append and head prune, then clears when pruned', () => {
   const { host } = fixture();
   const controller = api.create(host);
