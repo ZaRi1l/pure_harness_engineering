@@ -35,6 +35,11 @@ function executeStatic(html) {
 test('status CLI renders claims and watchdog warnings', () => { const text = renderStatus(snapshot); assert.match(text, /src\/backend/); assert.match(text, /Needs review/); });
 test('static preview renders snapshot and Task Specs safely', () => { const html = renderStaticPreview(snapshot, [{ title: 'Plan <safe>', path: '.ai/tasks/plan.md', content: '# Plan <safe>' }]); assert.match(html, /Ship &lt;safe&gt;/); assert.match(html, /Write Claims/); assert.match(html, /Plan \/ Task Specs/); assert.match(html, /Plan &lt;safe&gt;/); });
 
+test('static preview declares a device-width viewport', () => {
+  const html = renderStaticPreview(snapshot);
+  assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
+});
+
 test('static preview embeds shared renderer and script-safe snapshot without polling', () => {
   const hostile = structuredClone(snapshot);
   hostile.status.agents = [{ id: 'worker', role: 'worker', status: 'completed' }];

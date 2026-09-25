@@ -14,8 +14,14 @@ class FakeElement {
     this.value = '';
     this._text = '';
   }
-  append(...nodes) { this.children.push(...nodes); }
-  replaceChildren(...nodes) { this.children = [...nodes]; this._text = ''; }
+  append(...nodes) { for (const node of nodes) node.parentNode = this; this.children.push(...nodes); }
+  replaceChildren(...nodes) {
+    if (this.children.some(child => child.contains(this.ownerDocument.activeElement))) this.ownerDocument.activeElement = null;
+    for (const child of this.children) child.parentNode = null;
+    this.children = []; this._text = '';
+    this.append(...nodes);
+  }
+  contains(node) { return Boolean(node) && (node === this || this.children.some(child => child.contains(node))); }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   addEventListener(name, listener) { const set = this.listeners.get(name) ?? new Set(); set.add(listener); this.listeners.set(name, set); }
@@ -33,7 +39,7 @@ class FakeElement {
   releasePointerCapture(id) { this.ownerDocument.capturedPointers.delete(id); }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
-  getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 440 }; }
+  getBoundingClientRect() { return { left: 0, top: 0, width: this.clientWidth ?? 800, height: this.clientHeight ?? 440 }; }
 }
 class FakeDocument {
   constructor() { this.head = new FakeElement('head', this); this.capturedPointers = new Map(); this.outside = new FakeElement('div', this); }
@@ -259,6 +265,7 @@ test('keyboard selection, controls, wheel, pan, fit, reset, and stale selection 
   node.keydown('Enter');
   assert.match(text(find(host, 'network-detail', '')), /worker-b/);
   assert.equal(document.activeElement, find(host, 'node-id', 'worker-b'));
+  find(host, 'edge-index', '1').focus();
   find(host, 'edge-index', '1').keydown(' ');
   assert.match(text(find(host, 'network-detail', '')), /Exact stored edge/);
   assert.equal(document.activeElement, find(host, 'edge-index', '1'));
@@ -292,6 +299,63 @@ test('background pan ends after pointer release outside the graph', () => {
   svg.dispatch('pointermove', { pointerId: 7, clientX: 150, clientY: 150 });
   assert.deepEqual(JSON.parse(JSON.stringify(controller.getState().transform)), JSON.parse(JSON.stringify(releasedAt)));
   assert.equal(document.capturedPointers.size, 0);
+  controller.destroy();
+});
+
+test('redraw restores a focused node or signal after replacing graph children', () => {
+  const { host, document } = fixture();
+  const controller = api.create(host);
+  controller.update(snapshot, catalog);
+  const node = find(host, 'node-id', 'worker-a');
+  node.focus();
+  find(host, 'network-action', 'zoom-in').click();
+  assert.notEqual(find(host, 'node-id', 'worker-a'), node);
+  assert.equal(document.activeElement, find(host, 'node-id', 'worker-a'));
+  find(host, 'node-id', 'worker-a').click();
+  const edge = find(host, 'edge-index', '1');
+  edge.focus();
+  controller.update(snapshot, catalog);
+  assert.notEqual(find(host, 'edge-index', '1'), edge);
+  assert.equal(document.activeElement, find(host, 'edge-index', '1'));
+  const outside = find(host, 'network-action', 'fit');
+  outside.focus();
+  controller.update(snapshot, catalog);
+  assert.equal(document.activeElement, outside);
+  controller.destroy();
+});
+
+test('background pan converts CSS pixel movement into viewBox units', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  const svg = descendants(host, element => element.tagName === 'SVG')[0];
+  svg.clientWidth = 400; svg.clientHeight = 220;
+  svg.dispatch('pointerdown', { clientX: 100, clientY: 100 });
+  svg.dispatch('pointermove', { clientX: 125, clientY: 120 });
+  assert.equal(controller.getState().transform.x, 50);
+  assert.equal(controller.getState().transform.y, 40);
+  svg.dispatch('pointerup');
+  controller.destroy();
+});
+
+test('detail dates show unknown for missing or invalid timestamps and preserve stored valid strings', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  const dated = structuredClone(snapshot);
+  dated.status.agents[0].started_at = 'not a date';
+  dated.status.agents[0].stopped_at = '';
+  dated.status.signals[0].time = 'invalid';
+  controller.update(dated, catalog);
+  find(host, 'node-id', 'worker-a').click();
+  assert.match(text(find(host, 'network-detail', '')), /Started: unknown/);
+  assert.match(text(find(host, 'network-detail', '')), /Finished: unknown/);
+  find(host, 'edge-index', '0').click();
+  assert.match(text(find(host, 'network-detail', '')), /Sent: unknown/);
+  controller.update(snapshot, catalog);
+  find(host, 'node-id', 'worker-a').click();
+  assert.match(text(find(host, 'network-detail', '')), /Started: 2026-09-25T00:00:00Z/);
+  assert.match(text(find(host, 'network-detail', '')), /Finished: 2026-09-25T00:02:00Z/);
+  find(host, 'edge-index', '0').click();
+  assert.match(text(find(host, 'network-detail', '')), /Sent: 2026-09-25T00:00:00Z/);
   controller.destroy();
 });
 

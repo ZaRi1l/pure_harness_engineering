@@ -18,6 +18,7 @@
   const active = node => node?.status === 'active';
   const failed = value => FAILURE_KINDS.has(String(value || '').toLowerCase());
   const string = value => String(value ?? '');
+  const displayTime = value => typeof value === 'string' && value.trim() && Number.isFinite(Date.parse(value)) ? value : 'unknown';
 
   function buildModel(snapshot = {}, catalog = {}, viewState = {}) {
     const status = snapshot?.status || {};
@@ -202,8 +203,8 @@
       if (state.selection.type === 'node') {
         for (const [label, value] of [
           ['Agent', record.id], ['Role', record.role], ['Status', record.status], ['Model', record.catalog?.model],
-          ['Reasoning', record.catalog?.reasoning], ['Current/Last Task', record.current_task], ['Started', record.started_at],
-          ['Finished', record.stopped_at], ['Claims', record.claims.join(', ')],
+          ['Reasoning', record.catalog?.reasoning], ['Current/Last Task', record.current_task], ['Started', displayTime(record.started_at)],
+          ['Finished', displayTime(record.stopped_at)], ['Claims', record.claims.join(', ')],
           ['Inbound Signals', model.edges.filter(edge => edge.to === record.id).length],
           ['Outbound Signals', model.edges.filter(edge => edge.from === record.id).length]
         ]) if (value !== undefined && value !== null && value !== '') detail.append(detailRow(document, label, value));
@@ -213,7 +214,7 @@
         }
       } else {
         for (const [label, value] of [
-          ['From', record.from], ['To', record.to], ['Kind', record.kind], ['Summary', record.summary], ['Sent', record.time],
+          ['From', record.from], ['To', record.to], ['Kind', record.kind], ['Summary', record.summary], ['Sent', displayTime(record.time)],
           ['Task', record.task_id], ['Status', record.status], ['Artifact', record.artifact_href], ['Verification', record.verification_name]
         ]) if (value !== undefined && value !== null && value !== '') detail.append(detailRow(document, label, value));
       }
@@ -232,12 +233,15 @@
     }
     function draw() {
       if (destroyed) return;
+      const focused = graph.contains?.(document.activeElement) ? document.activeElement : null;
+      const focusedNodeId = focused?.getAttribute('data-node-id');
+      const focusedEdgeKey = focused?.getAttribute('data-edge-key');
       mode && (mode.value = state.mode);
       filter.value = state.filter;
       task.value = state.taskId;
       graph.setAttribute('transform', `translate(${state.transform.x} ${state.transform.y}) scale(${state.transform.scale})`);
       graph.replaceChildren();
-      let focusTarget = null;
+      let focusTarget = null, focusedTarget = null;
       const defs = svgElement(document, 'defs');
       const marker = svgElement(document, 'marker', { id: 'asn-arrow', markerWidth: 8, markerHeight: 8, refX: 6, refY: 4, orient: 'auto', markerUnits: 'strokeWidth' });
       marker.append(svgElement(document, 'path', { d: 'M 0 0 L 8 4 L 0 8 z', fill: '#8caab8' }));
@@ -246,9 +250,10 @@
       for (const edge of model.edges) {
         const path = pathFor(edge, counts);
         const visible = svgElement(document, 'path', { d: path, class: 'asn-edge', 'marker-end': 'url(#asn-arrow)', 'data-emphasis': edge.emphasized, 'data-failure': failed(edge.kind) || failed(edge.status), 'data-kind': string(edge.kind) });
-        const hit = data(svgElement(document, 'path', { d: path, class: 'asn-hit', 'aria-label': `${string(edge.from)} to ${string(edge.to)}: ${string(edge.kind)}` }), 'edge-index', edge.index);
+        const hit = data(svgElement(document, 'path', { d: path, class: 'asn-hit', 'aria-label': `${string(edge.from)} to ${string(edge.to)}: ${string(edge.kind)}`, 'data-edge-key': edge.key }), 'edge-index', edge.index);
         if (state.selection?.type === 'edge' && state.selection.key === edge.key) visible.setAttribute('class', 'asn-edge asn-selected');
         if (state.selection?.type === 'edge' && state.selection.key === edge.key) focusTarget = hit;
+        if (focusedEdgeKey === edge.key) focusedTarget = hit;
         activate(hit, event => { state.selection = { type: 'edge', key: edge.key }; focusAfterDraw = event.type === 'keydown'; draw(); });
         graph.append(visible, hit);
       }
@@ -258,6 +263,7 @@
         group.append(svgElement(document, 'circle', { cx: position.x, cy: position.y, r: 18 }));
         const label = svgElement(document, 'text', { x: position.x, y: position.y + 34 }); label.textContent = node.id; group.append(label);
         if (state.selection?.type === 'node' && state.selection.id === node.id) focusTarget = group;
+        if (focusedNodeId === node.id) focusedTarget = group;
         activate(group, event => { state.selection = { type: 'node', id: node.id }; focusAfterDraw = event.type === 'keydown'; draw(); });
         graph.append(group);
       }
@@ -267,7 +273,9 @@
             ? 'No linked network data for the selected task.'
             : 'History includes only agents and signals retained in this runtime.';
       drawDetail();
-      if (focusAfterDraw) { focusTarget?.focus(); focusAfterDraw = false; }
+      if (focused) focusedTarget?.focus();
+      else if (focusAfterDraw) focusTarget?.focus();
+      focusAfterDraw = false;
     }
     function update(nextSnapshot, nextCatalog) {
       const previousEdge = state.selection?.type === 'edge' ? selectedRecord() : null;
@@ -324,8 +332,9 @@
     };
     const pointerMove = event => {
       if (!drag || event.pointerId !== drag.id) return;
-      state.transform.x += event.clientX - drag.x;
-      state.transform.y += event.clientY - drag.y;
+      const rect = svg.getBoundingClientRect();
+      state.transform.x += (event.clientX - drag.x) * (rect.width > 0 ? bounds.width / rect.width : 1);
+      state.transform.y += (event.clientY - drag.y) * (rect.height > 0 ? bounds.height / rect.height : 1);
       drag = { id: drag.id, x: event.clientX, y: event.clientY };
       draw();
     };
