@@ -43,21 +43,34 @@ npm run demo:reset
 
 The demo reads fixture data from `.ai/demo/network-runtime`, never `.ai/runtime`. `npm run demo:reset` removes exactly `.ai/demo/network-runtime`; it does not clear real runtime state. In the demo Dashboard, select a node and edge, switch Live/History, try task and failure filters, and inspect Active Agents and Signal Timeline. `npm run preview` writes a static HTML snapshot with an interactive network labeled **Snapshot History** and snapshot-based filters; the saved file does not poll or update after generation. The live dashboard refreshes every three seconds while its server runs.
 
-### Copying Pure Harness into an existing project
+### New Project Setup / Copying Pure Harness
 
-`.ai/runtime` contains project-specific execution state. If the Pure Harness folder is copied from another project, that directory can retain the previous project's goals, tasks, events, agents, and write claims. `npm run init` creates missing runtime files and fills in missing fields; it does **not** forcibly remove an existing runtime.
+When the Pure Harness folder is copied into a completely new project, project-specific state and Pure Harness development records may come with it. `.ai/runtime` can retain the original project's goals, tasks, events, agents, and write claims. `npm run init` creates missing runtime files and fills in missing fields; it does **not** completely clear an existing copied runtime, so remove that directory first.
 
-From the new project root, use this recommended Windows PowerShell sequence to start with a completely new runtime and verify the copied harness:
+Use this recommended Windows PowerShell sequence from the new project root:
 
 ```powershell
+# 1. Reset project-specific runtime state
 Remove-Item -Recurse -Force .ai\runtime
 npm run init
+
+# 2. Remove Pure Harness development Task Specs
+# Run only when starting a completely new project from a copied harness
+Get-ChildItem .ai\tasks\*.md |
+Where-Object { $_.Name -ne "README.md" } |
+Remove-Item -Force
+
+# 3. Verify the copied harness
 npm run self-check
 npm test
+
+# 4. Start the Live Dashboard
 npm run preview:live
 ```
 
-Do not delete `.ai/tasks` or `.ai/memory` indiscriminately. Existing Task Specs or durable project memory may be intentional and worth preserving. Also make sure the destination does not retain the original Pure Harness repository's `.git` directory or Git connection.
+Files under `.ai/tasks/*.md` may be Task Specs used to develop Pure Harness itself, and copied specs appear in Preview Lab. Delete existing Task Specs other than `README.md` only when starting a completely new project. Do **not** delete `.ai/tasks` when continuing an existing project or when its Task Specs must be preserved.
+
+Review `.ai/memory` for information specific to the source project, but do not automatically delete the whole directory; it can contain durable project knowledge worth retaining. If `.git` was copied, run `git remote -v` and make sure the destination is not still connected to the original Pure Harness remote.
 
 ## Runtime
 
