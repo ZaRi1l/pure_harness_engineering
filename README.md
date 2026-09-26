@@ -47,6 +47,8 @@ The demo reads fixture data from `.ai/demo/network-runtime`, never `.ai/runtime`
 
 When the Pure Harness folder is copied into a completely new project, project-specific state and Pure Harness development records may come with it. `.ai/runtime` can retain the original project's goals, tasks, events, agents, and write claims. `npm run init` creates missing runtime files and fills in missing fields; it does **not** completely clear an existing copied runtime, so remove that directory first.
 
+If `.ai/runtime` is reset while a Codex session is already open, the recorded `SessionStart` history is removed and that hook may not fire again until a later session. This means only that session lifecycle was not observed in the new runtime; Pure Harness does not fabricate a replacement event or treat the missing event alone as a broken harness.
+
 Use this recommended Windows PowerShell sequence from the new project root:
 
 ```powershell
@@ -74,7 +76,11 @@ Review `.ai/memory` for information specific to the source project, but do not a
 
 ## Runtime
 
-Hooks automatically record session and subagent lifecycle metadata. A subagent stop is neutral, not success: task state plus verification evidence determine completion.
+Hooks automatically record session and subagent lifecycle metadata and remain the primary deterministic source. Hook configuration being installed does not prove that the current host dispatched it: `npm run self-check` reports dispatch as **observed**, **not yet observed**, or **suspected unavailable**. A suspected-unavailable warning requires positive orchestration fallback evidence with no corresponding subagent hook evidence; missing `SessionStart` alone is not enough. `npm run watchdog` stores the same evidence-based fallback warning for the Dashboard.
+
+Main also uses a thin fallback only around an actual native subagent call. After a successful spawn acknowledgement it records the exact native agent instance ID with `--source orchestration`; after the native result returns it records a neutral stop and releases the claim. A planned delegation creates no fallback record, and an interrupted agent with no return stays active until stale detection warns about it. Hook and fallback writes reconcile by exact ID, with hook provenance taking precedence. Pure Harness never guesses that differently named records are the same agent.
+
+A subagent stop is neutral, not success: task state plus verification evidence determine completion.
 
 ```powershell
 node scripts/runtime-state.mjs goal "Implement connector" --phase execution
@@ -83,6 +89,11 @@ node scripts/runtime-state.mjs claim worker-1 src/backend/
 node scripts/runtime-state.mjs verify passed unit-tests --detail "npm test"
 node scripts/runtime-state.mjs release-claim worker-1
 node scripts/runtime-state.mjs signal planner worker handoff "Task spec ready"
+
+# Main orchestration fallback examples; use only at actual native boundaries
+node scripts/runtime-state.mjs agent-start <native-agent-id> worker --task "Implement connector" --task-id implementation --source orchestration
+node scripts/runtime-state.mjs agent-stop <native-agent-id> --outcome stopped --task-id implementation --source orchestration
+node scripts/runtime-state.mjs release-claim <native-agent-id>
 ```
 
 Claims use normalized file/directory prefixes. `src/` conflicts with `src/backend/`; `src/backend/` and `src/frontend/` do not. Conflicting writers work sequentially or use native Git worktree isolation.
