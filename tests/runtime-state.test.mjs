@@ -49,6 +49,65 @@ test('records lifecycle and explicit agent signals without message bodies', asyn
   assert.equal('body' in status.signals[1], false);
 });
 
+test('repeated hook and orchestration starts reconcile one native agent instance', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'Implement UI', { task_id: 'ui-1', source: 'orchestration' });
+  const first = await store.readStatus();
+  await store.agentStarted('native-1', 'worker', 'Implement UI', { task_id: 'ui-1', source: 'hook' });
+  await store.agentStarted('native-1', 'worker', 'Implement UI', { task_id: 'ui-1', source: 'hook' });
+  const status = await store.readStatus(), events = await store.readEvents();
+  assert.equal(status.active_agents.length, 1);
+  assert.equal(status.agents.length, 1);
+  assert.equal(status.agents[0].started_at, first.agents[0].started_at);
+  assert.equal(status.agents[0].start_source, 'hook');
+  assert.equal(status.signals.filter(signal => signal.kind === 'delegate').length, 1);
+  assert.equal(events.filter(event => event.type === 'agent_started').length, 1);
+});
+
+test('repeated stops are idempotent and a hook stop becomes canonical', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'Implement UI', { source: 'orchestration' });
+  await store.agentStopped('native-1', 'stopped', { task_id: 'ui-1', source: 'orchestration' });
+  const first = await store.readStatus();
+  await store.agentStopped('native-1', 'stopped', { task_id: 'ui-1', source: 'hook' });
+  await store.agentStopped('native-1', 'stopped', { task_id: 'ui-1', source: 'hook' });
+  const status = await store.readStatus(), events = await store.readEvents();
+  assert.deepEqual(status.active_agents, []);
+  assert.equal(status.agents[0].status, 'stopped');
+  assert.equal(status.agents[0].stopped_at, first.agents[0].stopped_at);
+  assert.equal(status.agents[0].stop_source, 'hook');
+  assert.equal(status.signals.filter(signal => signal.kind === 'result').length, 1);
+  assert.equal(events.filter(event => event.type === 'agent_stopped').length, 1);
+});
+
+test('an unknown stop does not fabricate agent history or a result edge', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await store.agentStopped('missing-agent', 'stopped', { source: 'hook' });
+  const status = await store.readStatus(), events = await store.readEvents();
+  assert.deepEqual(status.active_agents, []);
+  assert.deepEqual(status.agents, []);
+  assert.deepEqual(status.signals, []);
+  assert.equal(events.some(event => event.type === 'agent_stopped'), false);
+});
+
+test('lifecycle CLI forwards source and task metadata for concurrent workers', async () => {
+  const root = await temporaryRoot();
+  await runCli(['agent-start', 'worker-a', 'worker', '--task', 'Task A', '--task-id', 'task-a', '--source', 'orchestration', '--root', root]);
+  await runCli(['agent-start', 'worker-b', 'worker', '--task', 'Task B', '--task-id', 'task-b', '--source', 'orchestration', '--root', root]);
+  await runCli(['agent-stop', 'worker-a', '--source', 'orchestration', '--root', root]);
+  const status = await new RuntimeStore(root).readStatus();
+  assert.deepEqual(status.active_agents.map(agent => agent.id), ['worker-b']);
+  assert.deepEqual(status.agents.map(agent => [agent.id, agent.start_source, agent.stop_source || null]), [
+    ['worker-a', 'orchestration', 'orchestration'],
+    ['worker-b', 'orchestration', null]
+  ]);
+  assert.equal(status.signals.find(signal => signal.to === 'worker-a').task_id, 'task-a');
+  assert.equal(status.signals.find(signal => signal.to === 'worker-b').task_id, 'task-b');
+});
+
 test('signal metadata is optional, allowlisted, and backward compatible', async () => {
   const store = new RuntimeStore(await temporaryRoot());
   await store.initialize();

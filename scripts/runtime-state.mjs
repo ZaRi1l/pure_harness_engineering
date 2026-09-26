@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 export const TASK_STATUSES = new Set(['pending', 'in_progress', 'blocked', 'completed', 'cancelled']);
 export const VERIFICATION_STATUSES = new Set(['not_run', 'running', 'passed', 'failed', 'blocked']);
 const SIGNAL_METADATA_FIELDS = ['task_id', 'status', 'artifact_href', 'verification_name'];
+const LIFECYCLE_SOURCES = new Set(['hook', 'orchestration']);
 function signalMetadata(value = {}) {
   return Object.fromEntries(SIGNAL_METADATA_FIELDS
     .filter(key => value[key] !== undefined && value[key] !== null && value[key] !== '')
@@ -16,6 +17,8 @@ function signalMetadata(value = {}) {
 function appendSignal(status, signal) {
   status.signals = status.signals.concat({ ...signal, id: randomUUID() }).slice(-50);
 }
+function lifecycleSource(value) { return LIFECYCLE_SOURCES.has(value) ? value : undefined; }
+function preferredLifecycleSource(current, next) { return current === 'hook' || next !== 'hook' ? current || next : 'hook'; }
 const now = () => new Date().toISOString();
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const normalizeScope = scope => {
@@ -109,8 +112,35 @@ export class RuntimeStore {
   async setGoal(goal, phase = 'planning') { await this.mutate(({ status, events }) => { status.current_goal = String(goal).slice(0, 500); status.phase = phase; events.push(this.event('goal', 'Goal updated', { phase })); }); }
   async setPhase(phase) { await this.mutate(({ status, events }) => { status.phase = phase; events.push(this.event('phase', `Phase: ${phase}`)); }); }
   async upsertTask(id, title, taskStatus, owner = null) { if (!TASK_STATUSES.has(taskStatus)) throw new Error(`invalid task status: ${taskStatus}`); await this.mutate(({ tasks, events }) => { let record = tasks.tasks.find(task => task.id === id); if (!record) { record = { id, created_at: now() }; tasks.tasks.push(record); } Object.assign(record, { title: String(title).slice(0, 300), status: taskStatus, owner, updated_at: now() }); events.push(this.event('task', `${id}: ${taskStatus}`, { owner })); }); }
-  async agentStarted(id, role, task = '', metadata = {}) { await this.mutate(({ status, events }) => { const agent = { id, role, status: 'running', current_task: String(task).slice(0, 300), started_at: now(), stopped_at: null }; status.active_agents = status.active_agents.filter(item => item.id !== id).concat(agent); status.agents = status.agents.filter(item => item.id !== id).concat({ ...agent }).slice(-30); appendSignal(status, { time: now(), from: 'main', to: id, kind: 'delegate', summary: agent.current_task || `Start ${role}`, ...signalMetadata({ task_id: metadata.task_id }) }); events.push(this.event('agent_started', `${role} started`, { agent_id: id })); }); }
-  async agentStopped(id, outcome = 'stopped', metadata = {}) { await this.mutate(({ status, events }) => { const active = status.active_agents.find(agent => agent.id === id); status.active_agents = status.active_agents.filter(agent => agent.id !== id); for (const agent of status.agents) if (agent.id === id) Object.assign(agent, { status: outcome, stopped_at: now() }); appendSignal(status, { time: now(), from: id, to: 'main', kind: 'result', summary: String(outcome).slice(0, 300), ...signalMetadata({ task_id: metadata.task_id, status: outcome !== 'stopped' ? outcome : undefined }) }); events.push(this.event('agent_stopped', `${active?.role || 'agent'} ${outcome}`, { agent_id: id })); }); }
+  async agentStarted(id, role, task = '', metadata = {}) { await this.mutate(({ status, events }) => {
+    const source = lifecycleSource(metadata.source), existing = status.agents.find(agent => agent.id === id);
+    if (existing) {
+      const startSource = preferredLifecycleSource(existing.start_source, source);
+      if (startSource) existing.start_source = startSource;
+      if (!existing.current_task && task) existing.current_task = String(task).slice(0, 300);
+      for (const active of status.active_agents) if (active.id === id) Object.assign(active, existing);
+      return;
+    }
+    const agent = { id, role, status: 'running', current_task: String(task).slice(0, 300), started_at: now(), stopped_at: null, ...(source ? { start_source: source } : {}) };
+    status.active_agents = status.active_agents.filter(item => item.id !== id).concat(agent);
+    status.agents = status.agents.filter(item => item.id !== id).concat({ ...agent }).slice(-30);
+    appendSignal(status, { time: now(), from: 'main', to: id, kind: 'delegate', summary: agent.current_task || `Start ${role}`, ...signalMetadata({ task_id: metadata.task_id }) });
+    events.push(this.event('agent_started', `${role} started`, { agent_id: id, source }));
+  }); }
+  async agentStopped(id, outcome = 'stopped', metadata = {}) { await this.mutate(({ status, events }) => {
+    const source = lifecycleSource(metadata.source), agent = status.agents.find(item => item.id === id);
+    if (!agent) return;
+    if (agent.stopped_at) {
+      const stopSource = preferredLifecycleSource(agent.stop_source, source);
+      if (stopSource) agent.stop_source = stopSource;
+      return;
+    }
+    const stoppedAt = now(), stopSource = preferredLifecycleSource(agent.stop_source, source);
+    status.active_agents = status.active_agents.filter(item => item.id !== id);
+    Object.assign(agent, { status: outcome, stopped_at: stoppedAt, ...(stopSource ? { stop_source: stopSource } : {}) });
+    appendSignal(status, { time: stoppedAt, from: id, to: 'main', kind: 'result', summary: String(outcome).slice(0, 300), ...signalMetadata({ task_id: metadata.task_id, status: outcome !== 'stopped' ? outcome : undefined }) });
+    events.push(this.event('agent_stopped', `${agent.role || 'agent'} ${outcome}`, { agent_id: id, source }));
+  }); }
   async addSignal(from, to, kind, summary, metadata = {}) { await this.mutate(({ status, events }) => { appendSignal(status, { time: now(), from, to, kind: String(kind).slice(0, 80), summary: String(summary).slice(0, 300), ...signalMetadata(metadata) }); events.push(this.event('agent_signal', `${from} -> ${to}: ${kind}`)); }); }
   async setVerification(checkStatus, name, detail = '') { if (!VERIFICATION_STATUSES.has(checkStatus)) throw new Error(`invalid verification status: ${checkStatus}`); await this.mutate(({ status, events }) => { const checks = status.verification.checks.filter(check => check.name !== name).concat({ name, status: checkStatus, detail: String(detail).slice(0, 500), time: now() }); const values = new Set(checks.map(check => check.status)); const aggregate = ['failed', 'blocked', 'running'].find(value => values.has(value)) || (checks.length && values.size === 1 && values.has('passed') ? 'passed' : 'not_run'); status.verification = { status: aggregate, checks, last_run: now() }; events.push(this.event('verification', `${name}: ${checkStatus}`)); }); }
   async addBlocker(id, message) { await this.mutate(({ status, events }) => { status.blockers = status.blockers.filter(item => item.id !== id).concat({ id, message: String(message).slice(0, 500), time: now() }); events.push(this.event('blocker', message, { blocker_id: id })); }); }
@@ -135,7 +165,7 @@ export function findRoot(start = process.cwd()) { let current = path.resolve(sta
 function option(args, name, fallback = null) { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : fallback; }
 export async function runCli(argv = process.argv.slice(2)) {
   const copy = [...argv], rootIndex = copy.indexOf('--root'), root = rootIndex >= 0 ? copy.splice(rootIndex, 2)[1] : findRoot(); const store = new RuntimeStore(root); const [command, ...args] = copy;
-  const actions = { init: () => store.initialize({ force: args.includes('--force') }), goal: () => store.setGoal(args[0], option(args, '--phase', 'planning')), phase: () => store.setPhase(args[0]), task: () => store.upsertTask(args[0], args[1], args[2], option(args, '--owner')), 'agent-start': () => store.agentStarted(args[0], args[1], option(args, '--task', '')), 'agent-stop': () => store.agentStopped(args[0], option(args, '--outcome', 'stopped')), verify: () => store.setVerification(args[0], args[1], option(args, '--detail', '')), blocker: () => store.addBlocker(args[0], args[1]), 'clear-blocker': () => store.clearBlocker(args[0]), artifact: () => store.addArtifact(args[0], args[1]), event: () => store.addEvent(args[0], args[1]), signal: () => store.addSignal(args[0], args[1], args[2], args[3], { task_id: option(args, '--task'), status: option(args, '--status'), artifact_href: option(args, '--artifact'), verification_name: option(args, '--verification') }) };
+  const actions = { init: () => store.initialize({ force: args.includes('--force') }), goal: () => store.setGoal(args[0], option(args, '--phase', 'planning')), phase: () => store.setPhase(args[0]), task: () => store.upsertTask(args[0], args[1], args[2], option(args, '--owner')), 'agent-start': () => store.agentStarted(args[0], args[1], option(args, '--task', ''), { task_id: option(args, '--task-id'), source: option(args, '--source') }), 'agent-stop': () => store.agentStopped(args[0], option(args, '--outcome', 'stopped'), { task_id: option(args, '--task-id'), source: option(args, '--source') }), verify: () => store.setVerification(args[0], args[1], option(args, '--detail', '')), blocker: () => store.addBlocker(args[0], args[1]), 'clear-blocker': () => store.clearBlocker(args[0]), artifact: () => store.addArtifact(args[0], args[1]), event: () => store.addEvent(args[0], args[1]), signal: () => store.addSignal(args[0], args[1], args[2], args[3], { task_id: option(args, '--task'), status: option(args, '--status'), artifact_href: option(args, '--artifact'), verification_name: option(args, '--verification') }) };
   actions.claim = () => store.claim(args[0], args.slice(1));
   actions['release-claim'] = () => store.releaseClaim(args[0]);
   if (!actions[command]) throw new Error(`unknown command: ${command || '(missing)'}`); await actions[command]();
