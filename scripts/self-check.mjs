@@ -8,12 +8,13 @@ import { pathToFileURL } from 'node:url';
 import { createPreviewServer } from './preview-server.mjs';
 import { RuntimeStore, findRoot } from './runtime-state.mjs';
 import { discoverCatalog } from './catalog.mjs';
-import { inspectRuntime } from './watchdog.mjs';
+import { hookDispatchDiagnostic, inspectRuntime } from './watchdog.mjs';
 import { renderStaticPreview } from './generate-preview.mjs';
 
 const HOOK_EVENTS = ['SessionStart', 'SessionEnd', 'SubagentStart', 'SubagentStop', 'Stop'];
 const MODEL = /^gpt-6-(sol|luna)$/;
 const EFFORT = new Set(['low', 'medium', 'high']);
+export { hookDispatchDiagnostic };
 
 function reportObject() {
   return { checks: [], warnings: [], failures: [], get ok() { return this.failures.length === 0; }, require(condition, success, failure) { (condition ? this.checks : this.failures).push(condition ? success : failure); } };
@@ -45,6 +46,10 @@ export async function checkRepository(root, { exerciseRuntime = true, exerciseHt
       if (hookMap && typeof hookMap === 'object') for (const event of HOOK_EVENTS) { const groups = hookMap[event], handlers = Array.isArray(groups) ? groups.flatMap(group => Array.isArray(group?.hooks) ? group.hooks : []) : []; const valid = handlers.length > 0 && handlers.every(handler => handler.type === 'command' && handler.command && handler.commandWindows); report.require(valid, `Hook event ${event} is configured`, `missing or invalid required hook event: ${event}`); }
     } catch (error) { report.failures.push(`invalid hooks.json: ${error.message}`); }
   }
+  const runtimeStatusPath = path.join(root, '.ai', 'runtime', 'status.json');
+  const dispatch = existsSync(runtimeStatusPath) ? hookDispatchDiagnostic(await new RuntimeStore(root).readSnapshot()) : hookDispatchDiagnostic({ status: { agents: [] }, events: [] });
+  if (dispatch.state === 'observed') report.checks.push(dispatch.message);
+  else report.warnings.push(dispatch.message);
   if (existsSync(configPath)) {
     const text = readFileSync(configPath, 'utf8'), [valid, detail] = validateCodex(root, text, codexExecutable, spawnCodex);
     if (valid === null) report.warnings.push(detail); else report.require(valid, 'Codex config loads in strict mode', detail);

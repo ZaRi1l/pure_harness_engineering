@@ -146,7 +146,7 @@ export class RuntimeStore {
   async addBlocker(id, message) { await this.mutate(({ status, events }) => { status.blockers = status.blockers.filter(item => item.id !== id).concat({ id, message: String(message).slice(0, 500), time: now() }); events.push(this.event('blocker', message, { blocker_id: id })); }); }
   async clearBlocker(id) { await this.mutate(({ status, events }) => { status.blockers = status.blockers.filter(item => item.id !== id); events.push(this.event('blocker_cleared', `Cleared blocker ${id}`)); }); }
   async addArtifact(label, href) { await this.mutate(({ status, events }) => { status.artifact_preview_links = status.artifact_preview_links.filter(item => item.href !== href).concat({ label: String(label).slice(0, 200), href }); events.push(this.event('artifact', `Preview registered: ${label}`)); }); }
-  async addEvent(type, message) { await this.mutate(({ events }) => events.push(this.event(type, message))); }
+  async addEvent(type, message, data = {}) { await this.mutate(({ events }) => events.push(this.event(type, message, data))); }
   async setWarnings(warnings) { await this.mutate(({ status, events }) => { status.warnings = warnings.map(warning => ({ id: String(warning.id).slice(0, 120), message: String(warning.message).slice(0, 500), time: now() })); events.push(this.event('watchdog', warnings.length ? String(warnings.length) + ' watchdog warning(s)' : 'Watchdog clear')); }); }
   async claim(agentId, scopes) {
     const normalized = [...new Set((Array.isArray(scopes) ? scopes : [scopes]).map(normalizeScope))];

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { checkRepository } from '../scripts/self-check.mjs';
+import { checkRepository, hookDispatchDiagnostic } from '../scripts/self-check.mjs';
 import { rolesFor } from '../scripts/route-task.mjs';
 import { discoverCatalog } from '../scripts/catalog.mjs';
 
@@ -66,4 +66,15 @@ test('self-check serves both dashboard assets and renders the static network', a
   assert.ok(report.checks.includes('Agent network renderer exists'));
   assert.ok(report.checks.includes('Agent network renderer is served'));
   assert.ok(report.checks.includes('Static agent network generation passes'));
+});
+
+test('self-check distinguishes observed, not-yet-observed, and suspected lifecycle dispatch', () => {
+  const empty = { status: { agents: [] }, events: [] };
+  assert.deepEqual(hookDispatchDiagnostic(empty), { state: 'not_yet_observed', message: 'Lifecycle hook dispatch not yet observed in current runtime' });
+  const observed = { status: { agents: [] }, events: [{ type: 'hook_dispatch', data: { hook_event: 'SessionStart' } }] };
+  assert.equal(hookDispatchDiagnostic(observed).state, 'observed');
+  const retainedHookAgent = { status: { agents: [{ id: 'worker-1', start_source: 'hook', stop_source: 'hook' }] }, events: [] };
+  assert.equal(hookDispatchDiagnostic(retainedHookAgent).state, 'observed');
+  const fallback = { status: { agents: [{ id: 'worker-1', start_source: 'orchestration' }] }, events: [] };
+  assert.equal(hookDispatchDiagnostic(fallback).state, 'suspected_unavailable');
 });
