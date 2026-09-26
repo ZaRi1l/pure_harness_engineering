@@ -152,10 +152,11 @@ test('catalog exposes read-only source and role policy metadata', () => {
 test('guide commands remain backed by package scripts', async () => {
   const scripts = JSON.parse(await readFile(path.resolve('package.json'), 'utf8')).scripts;
   const html = await readFile(path.resolve('preview/index.html'), 'utf8');
-  for (const command of ['init', 'status', 'watchdog', 'preview', 'preview:live', 'test', 'self-check']) {
+  for (const command of ['init', 'status', 'watchdog', 'preview', 'preview:live', 'demo:network', 'demo:reset', 'test', 'self-check']) {
     assert.ok(scripts[command]);
     assert.match(html, new RegExp(command === 'test' ? 'npm test' : 'npm run ' + command));
   }
+  assert.match(html, /Agent Network demo: npm run demo:network\\nReset network demo: npm run demo:reset/);
   assert.match(html, /\.ai\/tasks\/\*\.md/);
   assert.match(html, /GPT-5\.6/);
 });
