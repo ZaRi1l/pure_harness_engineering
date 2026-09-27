@@ -15,7 +15,9 @@ function signalMetadata(value = {}) {
     .map(key => [key, String(value[key]).slice(0, 500)]));
 }
 function appendSignal(status, signal) {
-  status.signals = status.signals.concat({ ...signal, id: randomUUID() }).slice(-50);
+  const stored = { ...signal, id: randomUUID() };
+  status.signals = status.signals.concat(stored).slice(-50);
+  return stored;
 }
 function lifecycleSource(value) { return LIFECYCLE_SOURCES.has(value) ? value : undefined; }
 function preferredLifecycleSource(current, next) { return current === 'hook' || next !== 'hook' ? current || next : 'hook'; }
@@ -113,14 +115,16 @@ export class RuntimeStore {
   async setPhase(phase) { await this.mutate(({ status, events }) => { status.phase = phase; events.push(this.event('phase', `Phase: ${phase}`)); }); }
   async upsertTask(id, title, taskStatus, owner = null) { if (!TASK_STATUSES.has(taskStatus)) throw new Error(`invalid task status: ${taskStatus}`); await this.mutate(({ tasks, events }) => { let record = tasks.tasks.find(task => task.id === id); if (!record) { record = { id, created_at: now() }; tasks.tasks.push(record); } Object.assign(record, { title: String(title).slice(0, 300), status: taskStatus, owner, updated_at: now() }); events.push(this.event('task', `${id}: ${taskStatus}`, { owner })); }); }
   async agentStarted(id, role, task = '', metadata = {}) { await this.mutate(({ status, events }) => {
-    const source = lifecycleSource(metadata.source), existing = status.agents.find(agent => agent.id === id);
+    const source = lifecycleSource(metadata.source), active = status.active_agents.find(agent => agent.id === id);
+    let existing = status.agents.find(agent => agent.id === id);
+    if (!existing && active) { existing = { ...active }; status.agents = status.agents.concat(existing).slice(-30); }
     if (existing) {
       const startSource = preferredLifecycleSource(existing.start_source, source);
       if (startSource) existing.start_source = startSource;
       if (source === 'hook') {
         existing.role = role;
         if (task) existing.current_task = String(task).slice(0, 300);
-        const signal = status.signals.find(item => item.time === existing.started_at && item.from === 'main' && item.to === id && item.kind === 'delegate');
+        const signal = status.signals.find(item => item.id === existing.start_signal_id);
         if (signal) { signal.summary = existing.current_task || `Start ${role}`; if (metadata.task_id) signal.task_id = String(metadata.task_id).slice(0, 500); }
         const event = events.find(item => item.type === 'agent_started' && item.data?.agent_id === id);
         if (event) { event.message = `${role} started`; event.data = { ...event.data, source: 'hook' }; }
@@ -129,9 +133,10 @@ export class RuntimeStore {
       return;
     }
     const agent = { id, role, status: 'running', current_task: String(task).slice(0, 300), started_at: now(), stopped_at: null, ...(source ? { start_source: source } : {}) };
+    const signal = appendSignal(status, { time: now(), from: 'main', to: id, kind: 'delegate', summary: agent.current_task || `Start ${role}`, ...signalMetadata({ task_id: metadata.task_id }) });
+    agent.start_signal_id = signal.id;
     status.active_agents = status.active_agents.filter(item => item.id !== id).concat(agent);
     status.agents = status.agents.filter(item => item.id !== id).concat({ ...agent }).slice(-30);
-    appendSignal(status, { time: now(), from: 'main', to: id, kind: 'delegate', summary: agent.current_task || `Start ${role}`, ...signalMetadata({ task_id: metadata.task_id }) });
     events.push(this.event('agent_started', `${role} started`, { agent_id: id, source }));
   }); }
   async agentStopped(id, outcome = 'stopped', metadata = {}) { await this.mutate(({ status, events }) => {
@@ -144,7 +149,7 @@ export class RuntimeStore {
       if (stopSource) agent.stop_source = stopSource;
       if (source === 'hook') {
         agent.status = outcome;
-        const signal = status.signals.find(item => item.time === agent.stopped_at && item.from === id && item.to === 'main' && item.kind === 'result');
+        const signal = status.signals.find(item => item.id === agent.stop_signal_id);
         if (signal) {
           signal.summary = String(outcome).slice(0, 300);
           if (outcome === 'stopped') delete signal.status; else signal.status = String(outcome).slice(0, 500);
@@ -158,7 +163,8 @@ export class RuntimeStore {
     const stoppedAt = now(), stopSource = preferredLifecycleSource(agent.stop_source, source);
     status.active_agents = status.active_agents.filter(item => item.id !== id);
     Object.assign(agent, { status: outcome, stopped_at: stoppedAt, ...(stopSource ? { stop_source: stopSource } : {}) });
-    appendSignal(status, { time: stoppedAt, from: id, to: 'main', kind: 'result', summary: String(outcome).slice(0, 300), ...signalMetadata({ task_id: metadata.task_id, status: outcome !== 'stopped' ? outcome : undefined }) });
+    const signal = appendSignal(status, { time: stoppedAt, from: id, to: 'main', kind: 'result', summary: String(outcome).slice(0, 300), ...signalMetadata({ task_id: metadata.task_id, status: outcome !== 'stopped' ? outcome : undefined }) });
+    agent.stop_signal_id = signal.id;
     events.push(this.event('agent_stopped', `${agent.role || 'agent'} ${outcome}`, { agent_id: id, source }));
   }); }
   async addSignal(from, to, kind, summary, metadata = {}) { await this.mutate(({ status, events }) => { appendSignal(status, { time: now(), from, to, kind: String(kind).slice(0, 80), summary: String(summary).slice(0, 300), ...signalMetadata(metadata) }); events.push(this.event('agent_signal', `${from} -> ${to}: ${kind}`)); }); }

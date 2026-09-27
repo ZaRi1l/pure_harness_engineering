@@ -52,7 +52,10 @@ test('records lifecycle and explicit agent signals without message bodies', asyn
 test('repeated hook and orchestration starts reconcile one native agent instance', async () => {
   const store = new RuntimeStore(await temporaryRoot());
   await store.initialize();
-  await store.agentStarted('native-1', 'worker', 'Implement UI', { task_id: 'ui-1', source: 'orchestration' });
+  const NativeDate = globalThis.Date; let tick = 0;
+  globalThis.Date = class extends NativeDate { constructor(...args) { super(...(args.length ? args : [1700000000000 + tick++])); } static now() { return NativeDate.now(); } };
+  try { await store.agentStarted('native-1', 'worker', 'Implement UI', { task_id: 'ui-1', source: 'orchestration' }); }
+  finally { globalThis.Date = NativeDate; }
   const first = await store.readStatus();
   await store.agentStarted('native-1', 'preview-manager', 'Inspect UI', { task_id: 'ui-1', source: 'hook' });
   await store.agentStarted('native-1', 'preview-manager', 'Inspect UI', { task_id: 'ui-1', source: 'hook' });
@@ -64,6 +67,8 @@ test('repeated hook and orchestration starts reconcile one native agent instance
   assert.equal(status.agents[0].role, 'preview-manager');
   assert.equal(status.agents[0].current_task, 'Inspect UI');
   assert.equal(status.signals.filter(signal => signal.kind === 'delegate').length, 1);
+  assert.equal(status.signals.find(signal => signal.kind === 'delegate').summary, 'Inspect UI');
+  assert.equal(status.signals.find(signal => signal.kind === 'delegate').task_id, 'ui-1');
   assert.equal(events.filter(event => event.type === 'agent_started').length, 1);
 });
 
@@ -117,7 +122,13 @@ test('stopping an active agent still works after the history registry cap prunes
   const store = new RuntimeStore(await temporaryRoot());
   await store.initialize();
   for (let index = 0; index < 31; index += 1) await store.agentStarted(`worker-${index}`, 'worker', `Task ${index}`, { source: 'orchestration' });
-  assert.equal((await store.readStatus()).agents.some(agent => agent.id === 'worker-0'), false);
+  const pruned = await store.readStatus(), startedAt = pruned.active_agents.find(agent => agent.id === 'worker-0').started_at;
+  assert.equal(pruned.agents.some(agent => agent.id === 'worker-0'), false);
+  await store.agentStarted('worker-0', 'reviewer', 'Review task', { source: 'hook' });
+  const reconciled = await store.readStatus(), events = await store.readEvents();
+  assert.equal(reconciled.active_agents.find(agent => agent.id === 'worker-0').started_at, startedAt);
+  assert.equal(reconciled.signals.filter(signal => signal.kind === 'delegate' && signal.to === 'worker-0').length, 1);
+  assert.equal(events.filter(event => event.type === 'agent_started' && event.data?.agent_id === 'worker-0').length, 1);
   await store.agentStopped('worker-0', 'stopped', { source: 'orchestration' });
   const status = await store.readStatus();
   assert.equal(status.active_agents.some(agent => agent.id === 'worker-0'), false);
