@@ -183,6 +183,22 @@ test('old schema-version-1 id-less signals remain unchanged after a new append',
   assert.match(status.signals[1].id, /^[0-9a-f-]{36}$/i);
 });
 
+test('legacy agents without lifecycle signal IDs never rewrite unrelated id-less signals', async () => {
+  const root = await temporaryRoot(), store = new RuntimeStore(root);
+  await store.initialize();
+  const runtime = path.join(root, '.ai', 'runtime'), started = '2026-01-01T00:00:00.000Z', stopped = '2026-01-01T00:01:00.000Z';
+  const active = { id: 'legacy-active', role: 'worker', status: 'running', current_task: 'old task', started_at: started, stopped_at: null, start_source: 'orchestration' };
+  const terminal = { id: 'legacy-stopped', role: 'worker', status: 'stopped', current_task: 'old result', started_at: started, stopped_at: stopped, start_source: 'orchestration', stop_source: 'orchestration' };
+  const unrelated = { time: started, from: 'main', to: 'unrelated', kind: 'delegate', summary: 'unrelated' };
+  await writeFile(path.join(runtime, 'status.json'), JSON.stringify({ ...store.emptyStatus(), active_agents: [active], agents: [active, terminal], signals: [unrelated] }));
+  await store.agentStarted('legacy-active', 'reviewer', 'new hook task', { source: 'hook' });
+  await store.agentStopped('legacy-stopped', 'failed', { source: 'hook' });
+  const status = await store.readStatus();
+  assert.deepEqual(status.signals[0], unrelated);
+  assert.equal(status.agents.find(agent => agent.id === 'legacy-active').current_task, 'new hook task');
+  assert.equal(status.agents.find(agent => agent.id === 'legacy-stopped').status, 'failed');
+});
+
 test('the 51st signal prunes only the oldest stored ID', async () => {
   const store = new RuntimeStore(await temporaryRoot());
   await store.initialize();

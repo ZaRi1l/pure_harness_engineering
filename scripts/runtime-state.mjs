@@ -124,7 +124,7 @@ export class RuntimeStore {
       if (source === 'hook') {
         existing.role = role;
         if (task) existing.current_task = String(task).slice(0, 300);
-        const signal = status.signals.find(item => item.id === existing.start_signal_id);
+        const signal = existing.start_signal_id ? status.signals.find(item => item.id === existing.start_signal_id) : undefined;
         if (signal) { signal.summary = existing.current_task || `Start ${role}`; if (metadata.task_id) signal.task_id = String(metadata.task_id).slice(0, 500); }
         const event = events.find(item => item.type === 'agent_started' && item.data?.agent_id === id);
         if (event) { event.message = `${role} started`; event.data = { ...event.data, source: 'hook' }; }
@@ -149,7 +149,7 @@ export class RuntimeStore {
       if (stopSource) agent.stop_source = stopSource;
       if (source === 'hook') {
         agent.status = outcome;
-        const signal = status.signals.find(item => item.id === agent.stop_signal_id);
+        const signal = agent.stop_signal_id ? status.signals.find(item => item.id === agent.stop_signal_id) : undefined;
         if (signal) {
           signal.summary = String(outcome).slice(0, 300);
           if (outcome === 'stopped') delete signal.status; else signal.status = String(outcome).slice(0, 500);
