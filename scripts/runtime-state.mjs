@@ -117,7 +117,14 @@ export class RuntimeStore {
     if (existing) {
       const startSource = preferredLifecycleSource(existing.start_source, source);
       if (startSource) existing.start_source = startSource;
-      if (!existing.current_task && task) existing.current_task = String(task).slice(0, 300);
+      if (source === 'hook') {
+        existing.role = role;
+        if (task) existing.current_task = String(task).slice(0, 300);
+        const signal = status.signals.find(item => item.time === existing.started_at && item.from === 'main' && item.to === id && item.kind === 'delegate');
+        if (signal) { signal.summary = existing.current_task || `Start ${role}`; if (metadata.task_id) signal.task_id = String(metadata.task_id).slice(0, 500); }
+        const event = events.find(item => item.type === 'agent_started' && item.data?.agent_id === id);
+        if (event) { event.message = `${role} started`; event.data = { ...event.data, source: 'hook' }; }
+      } else if (!existing.current_task && task) existing.current_task = String(task).slice(0, 300);
       for (const active of status.active_agents) if (active.id === id) Object.assign(active, existing);
       return;
     }
@@ -128,11 +135,24 @@ export class RuntimeStore {
     events.push(this.event('agent_started', `${role} started`, { agent_id: id, source }));
   }); }
   async agentStopped(id, outcome = 'stopped', metadata = {}) { await this.mutate(({ status, events }) => {
-    const source = lifecycleSource(metadata.source), agent = status.agents.find(item => item.id === id);
+    const source = lifecycleSource(metadata.source), active = status.active_agents.find(item => item.id === id);
+    let agent = status.agents.find(item => item.id === id);
+    if (!agent && active) { agent = { ...active }; status.agents = status.agents.concat(agent).slice(-30); }
     if (!agent) return;
     if (agent.stopped_at) {
       const stopSource = preferredLifecycleSource(agent.stop_source, source);
       if (stopSource) agent.stop_source = stopSource;
+      if (source === 'hook') {
+        agent.status = outcome;
+        const signal = status.signals.find(item => item.time === agent.stopped_at && item.from === id && item.to === 'main' && item.kind === 'result');
+        if (signal) {
+          signal.summary = String(outcome).slice(0, 300);
+          if (outcome === 'stopped') delete signal.status; else signal.status = String(outcome).slice(0, 500);
+          if (metadata.task_id) signal.task_id = String(metadata.task_id).slice(0, 500);
+        }
+        const event = events.find(item => item.type === 'agent_stopped' && item.data?.agent_id === id);
+        if (event) { event.message = `${agent.role || 'agent'} ${outcome}`; event.data = { ...event.data, source: 'hook' }; }
+      }
       return;
     }
     const stoppedAt = now(), stopSource = preferredLifecycleSource(agent.stop_source, source);
