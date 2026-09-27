@@ -413,3 +413,100 @@ test('static mode is named Snapshot History and tolerates old snapshots without 
   assert.equal(document.head.children.length, 1);
   controller.destroy();
 });
+
+test('network controls and details use the supplied translator', () => {
+  const { host } = fixture();
+  const translations = {
+    'network.modeLabel': '네트워크 모드',
+    'network.live': '실시간',
+    'network.history': '기록',
+    'network.filterLabel': '네트워크 필터',
+    'network.all': '전체',
+    'network.active': '활성',
+    'network.failures': '실패',
+    'network.currentTask': '현재 작업',
+    'network.taskLabel': '네트워크 작업',
+    'network.zoomIn': '확대',
+    'network.zoomOut': '축소',
+    'network.fit': '맞춤',
+    'network.reset': '초기화',
+    'network.graphLabel': '에이전트 신호 네트워크',
+    'network.empty': '에이전트 또는 신호를 선택하세요. 에이전트 {agents}개, 신호 {signals}개.',
+    'network.agent': '에이전트',
+    'network.role': '역할',
+    'network.status': '상태',
+    'network.from': '보낸 이',
+    'network.to': '받는 이',
+    'network.kind': '종류',
+    'network.summary': '요약'
+  };
+  const translate = (key, values = {}) => String(translations[key] || key).replace(/\{([^}]+)\}/g, (_match, name) => values[name]);
+  const controller = api.create(host, { translate });
+  controller.update(snapshot, catalog);
+
+  assert.equal(find(host, 'network-mode', '').getAttribute('aria-label'), '네트워크 모드');
+  assert.match(text(host), /실시간.*전체.*확대.*초기화/);
+  assert.equal(descendants(host, element => element.tagName === 'SVG')[0].getAttribute('aria-label'), '에이전트 신호 네트워크');
+  assert.match(text(find(host, 'network-detail', '')), /에이전트 5개, 신호 3개/);
+  find(host, 'node-id', 'worker-a').click();
+  assert.match(text(find(host, 'network-detail', '')), /에이전트: worker-a.*역할: worker/s);
+  find(host, 'edge-index', '0').click();
+  assert.match(text(find(host, 'network-detail', '')), /보낸 이: main.*받는 이: worker-a.*종류: delegate/s);
+  controller.destroy();
+});
+
+test('changing the translator preserves network selection, filters, and zoom', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  controller.update(snapshot, catalog);
+  find(host, 'node-id', 'worker-a').click();
+  const filter = find(host, 'network-filter', '');
+  filter.value = 'failures';
+  filter.dispatch('change');
+  find(host, 'network-action', 'zoom-in').click();
+  const before = controller.getState();
+
+  controller.setTranslate(key => ({
+    'network.modeLabel': '네트워크 모드',
+    'network.live': '실시간',
+    'network.history': '기록',
+    'network.filterLabel': '네트워크 필터',
+    'network.all': '전체',
+    'network.active': '활성',
+    'network.failures': '실패',
+    'network.currentTask': '현재 작업',
+    'network.taskLabel': '네트워크 작업',
+    'network.zoomIn': '확대',
+    'network.zoomOut': '축소',
+    'network.fit': '맞춤',
+    'network.reset': '초기화',
+    'network.graphLabel': '에이전트 신호 네트워크',
+    'network.agent': '에이전트'
+  }[key] || key));
+
+  assert.deepEqual(JSON.parse(JSON.stringify(controller.getState())), JSON.parse(JSON.stringify(before)));
+  assert.equal(find(host, 'network-mode', '').getAttribute('aria-label'), '네트워크 모드');
+  assert.match(text(host), /실시간.*실패.*확대.*초기화/);
+  assert.match(text(find(host, 'network-detail', '')), /에이전트: worker-a/);
+  controller.destroy();
+});
+
+test('a recreated renderer can restore interaction state on live language changes', () => {
+  const first = fixture();
+  const controller = api.create(first.host);
+  controller.update(snapshot, catalog);
+  find(first.host, 'node-id', 'worker-b').click();
+  const filter = find(first.host, 'network-filter', '');
+  filter.value = 'active';
+  filter.dispatch('change');
+  find(first.host, 'network-action', 'zoom-in').click();
+  const retained = controller.getState();
+
+  const second = fixture();
+  const recreated = api.create(second.host, { initialState: retained });
+  recreated.update(snapshot, catalog);
+  assert.deepEqual(JSON.parse(JSON.stringify(recreated.getState())), JSON.parse(JSON.stringify(retained)));
+  assert.match(text(find(second.host, 'network-detail', '')), /worker-b/);
+  controller.destroy();
+  recreated.destroy();
+});

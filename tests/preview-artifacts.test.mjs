@@ -168,3 +168,25 @@ test('does not make non-web schemes actionable through Open separately', () => {
   assert.equal(byTag(host, 'iframe').length, 0);
   assert.match(descendants(host, node => /not supported/i.test(node.textContent))[0].textContent, /not supported/i);
 });
+
+test('renders artifact controls and safety messages through the shared translator', () => {
+  const translations = {
+    'artifacts.empty': '등록된 UI 아티팩트가 없습니다.',
+    'artifacts.tabsLabel': 'UI 아티팩트 미리보기',
+    'artifacts.refresh': '새로 고침',
+    'artifacts.open': '새 탭에서 열기',
+    'artifacts.externalBlocked': '안전 정책에 따라 삽입하지 않습니다.',
+    'artifacts.schemeBlocked': '지원하지 않는 URL 형식입니다.'
+  };
+  const t = key => translations[key] || key;
+  const empty = fixture();
+  renderArtifactTabs(empty.host, [], { translate: t });
+  assert.match(empty.host.children[0].textContent, /등록된 UI 아티팩트/);
+
+  const unsafe = fixture();
+  renderArtifactTabs(unsafe.host, [{ label: '외부', href: 'https://example.com' }], { translate: t });
+  assert.equal(descendants(unsafe.host, node => node.getAttribute('role') === 'tablist')[0].getAttribute('aria-label'), 'UI 아티팩트 미리보기');
+  assert.equal(byAction(unsafe.host, 'refresh')[0].textContent, '새로 고침');
+  assert.equal(byAction(unsafe.host, 'open')[0].textContent, '새 탭에서 열기');
+  assert.match(descendants(unsafe.host, node => /안전 정책/.test(node.textContent))[0].textContent, /삽입하지 않습니다/);
+});

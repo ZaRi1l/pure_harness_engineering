@@ -27,7 +27,7 @@ async function tempProject(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-network-demo-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, 'preview'));
-  for (const name of ['index.html', 'agent-network.js', 'artifact-tabs.js', 'demo-ui.html']) {
+  for (const name of ['index.html', 'agent-network.js', 'artifact-tabs.js', 'preferences.js', 'dashboard.js', 'demo-ui.html']) {
     await copyFile(path.join(previewRoot, name), path.join(root, 'preview', name));
   }
   return root;
@@ -121,6 +121,8 @@ test('demo server serves fixture runtime from an isolated directory', async t =>
     const artifact = await fetch(`${base}/preview/demo-ui.html`);
     assert.equal(artifact.status, 200);
     assert.match(await artifact.text(), /Demo UI Preview/);
+    assert.equal((await fetch(`${base}/preview/preferences.js`)).status, 200);
+    assert.equal((await fetch(`${base}/preview/dashboard.js`)).status, 200);
   } finally {
     await new Promise(resolve => server.close(resolve));
     await resetDemo(root);

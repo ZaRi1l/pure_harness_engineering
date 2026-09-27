@@ -27,13 +27,22 @@ let browserSequence = 0;
 export function renderArtifactTabs(host, artifacts, options = {}) {
   const document = host.ownerDocument;
   const origin = options.origin || document.defaultView?.location?.origin || 'http://127.0.0.1';
+  const fallback = {
+    'artifacts.empty': 'No UI artifacts registered.',
+    'artifacts.tabsLabel': 'UI artifact previews',
+    'artifacts.refresh': 'Refresh',
+    'artifacts.open': 'Open separately',
+    'artifacts.externalBlocked': 'This URL is not embedded by the Preview Lab safety policy. Use Open separately to inspect it.',
+    'artifacts.schemeBlocked': 'This URL scheme is not supported by the Preview Lab safety policy.'
+  };
+  const t = key => options.translate?.(key) ?? fallback[key] ?? key;
   const records = (Array.isArray(artifacts) ? artifacts : [])
     .map(artifact => ({ label: String(artifact?.label || artifact?.href || 'UI artifact'), href: String(artifact?.href || '') }))
     .filter(artifact => artifact.href);
 
   host.replaceChildren();
   if (!records.length) {
-    host.append(element(document, 'p', 'artifact-empty muted', 'No UI artifacts registered.'));
+    host.append(element(document, 'p', 'artifact-empty muted', t('artifacts.empty')));
     return { selectedHref: '' };
   }
 
@@ -41,7 +50,7 @@ export function renderArtifactTabs(host, artifacts, options = {}) {
   const root = element(document, 'div', 'artifact-browser');
   const tabs = element(document, 'div', 'artifact-tabs');
   tabs.setAttribute('role', 'tablist');
-  tabs.setAttribute('aria-label', 'UI artifact previews');
+  tabs.setAttribute('aria-label', t('artifacts.tabsLabel'));
   const stage = element(document, 'section', 'artifact-stage');
   const browserId = `artifact-browser-${++browserSequence}`;
   stage.id = `${browserId}-panel`;
@@ -63,12 +72,12 @@ export function renderArtifactTabs(host, artifacts, options = {}) {
     const identity = element(document, 'div', 'artifact-identity');
     identity.append(element(document, 'strong', '', artifact.label), element(document, 'span', 'muted artifact-url', artifact.href));
     const actions = element(document, 'div', 'artifact-actions');
-    const refresh = element(document, 'button', '', 'Refresh');
+    const refresh = element(document, 'button', '', t('artifacts.refresh'));
     refresh.type = 'button';
     refresh.dataset.action = 'refresh';
     refresh.disabled = !safe;
     const openable = isOpenableArtifact(artifact.href, origin);
-    const open = element(document, openable ? 'a' : 'span', 'artifact-open', 'Open separately');
+    const open = element(document, openable ? 'a' : 'span', 'artifact-open', t('artifacts.open'));
     open.dataset.action = 'open';
     if (openable) {
       open.href = artifact.href;
@@ -90,8 +99,8 @@ export function renderArtifactTabs(host, artifacts, options = {}) {
       viewport.append(frame);
     } else {
       const message = openable
-        ? 'This URL is not embedded by the Preview Lab safety policy. Use Open separately to inspect it.'
-        : 'This URL scheme is not supported by the Preview Lab safety policy.';
+        ? t('artifacts.externalBlocked')
+        : t('artifacts.schemeBlocked');
       viewport.append(element(document, 'p', 'artifact-blocked muted', message));
     }
     stage.replaceChildren(toolbar, viewport);

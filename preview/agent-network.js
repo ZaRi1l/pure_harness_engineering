@@ -138,37 +138,64 @@
 
   function create(host, options = {}) {
     const document = host.ownerDocument;
+    const fallback = {
+      'network.modeLabel': 'Network mode', 'network.live': 'Live', 'network.history': 'History',
+      'network.snapshotHistory': 'Snapshot History', 'network.filterLabel': 'Network filter', 'network.all': 'All',
+      'network.active': 'Active', 'network.failures': 'Failures', 'network.currentTask': 'Current Task',
+      'network.taskLabel': 'Network task', 'network.zoomIn': 'Zoom in', 'network.zoomOut': 'Zoom out',
+      'network.fit': 'Fit', 'network.reset': 'Reset', 'network.graphLabel': 'Agent Signal Network',
+      'network.empty': 'Select an agent or signal. {agents} agents, {signals} signals.',
+      'network.noData': 'No agents or signals in this snapshot.',
+      'network.noActive': 'No active flow. Retained history is still shown.',
+      'network.noTaskData': 'No linked network data for the selected task.',
+      'network.historyNote': 'History includes only agents and signals retained in this runtime.',
+      'network.agent': 'Agent', 'network.role': 'Role', 'network.status': 'Status', 'network.model': 'Model',
+      'network.reasoning': 'Reasoning', 'network.currentLastTask': 'Current/Last Task', 'network.started': 'Started',
+      'network.finished': 'Finished', 'network.claims': 'Claims', 'network.inbound': 'Inbound Signals',
+      'network.outbound': 'Outbound Signals', 'network.elapsed': 'Elapsed', 'network.from': 'From', 'network.to': 'To',
+      'network.kind': 'Kind', 'network.summary': 'Summary', 'network.sent': 'Sent', 'network.task': 'Task',
+      'network.artifact': 'Artifact', 'network.verification': 'Verification', 'network.edgeLabel': '{from} to {to}: {kind}'
+    };
+    let translate = options.translate;
+    const t = (key, values = {}) => {
+      const message = translate?.(key, values) ?? fallback[key] ?? key;
+      return String(message).replace(/\{([^}]+)\}/g, (_match, name) => String(values[name] ?? ''));
+    };
     if (!document.querySelector?.('[data-agent-network-styles]')) {
       const style = element(document, 'style');
       data(style, 'agent-network-styles', '');
-      style.textContent = '.asn{font:13px/1.45 system-ui,sans-serif;color:inherit}.asn-controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.asn-controls button,.asn-controls select{font:inherit;width:auto;max-width:100%;padding:5px 9px;border:1px solid #607383;border-radius:6px;background:#172730;color:inherit}.asn-main{display:grid;grid-template-columns:minmax(0,2fr) minmax(220px,1fr);gap:12px}.asn-svg{display:block;width:100%;height:auto;min-height:360px;border:1px solid #53616c;border-radius:8px;background:#0e1a22;touch-action:none}.asn-detail{padding:12px;border:1px solid #53616c;border-radius:8px;overflow-wrap:anywhere}.asn-detail-row{margin:4px 0}.asn-edge{fill:none;stroke:#6f8794;stroke-width:2}.asn-edge[data-emphasis="false"]{opacity:.23}.asn-edge[data-failure="true"]{stroke:#ff8291;stroke-dasharray:7 4}.asn-edge[data-kind="retry"]{stroke:#f5c771;stroke-width:3;stroke-dasharray:6 4}.asn-hit{fill:none;stroke:transparent;stroke-width:16;cursor:pointer}.asn-node{cursor:pointer}.asn-node circle{fill:#488da8;stroke:#c1dae5;stroke-width:2}.asn-node[data-status="active"] circle{fill:#45b998}.asn-node[data-status="completed"] circle{fill:#718b9d}.asn-node[data-status="failed"] circle,.asn-node[data-status="blocked"] circle{fill:#bd5b72}.asn-node[data-emphasis="false"]{opacity:.3}.asn-node text{fill:#f1f5f8;text-anchor:middle;font:11px system-ui,sans-serif;pointer-events:none}.asn-selected circle,.asn-selected path,.asn-node:focus-visible circle,.asn-hit:focus-visible{stroke:#ffe088;stroke-width:4;outline:none}.asn-note{margin:5px 0;color:#9bb2bf}@media(max-width:760px){.asn-main{grid-template-columns:1fr}.asn-svg{min-height:280px}.asn-detail{min-height:100px}}';
+      style.textContent = '.asn{font:13px/1.45 system-ui,sans-serif;color:inherit}.asn-controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.asn-controls button,.asn-controls select{font:inherit;width:auto;max-width:100%;padding:5px 9px;border:1px solid var(--graph-border,#607383);border-radius:6px;background:var(--graph-control,#172730);color:inherit}.asn-main{display:grid;grid-template-columns:minmax(0,2fr) minmax(220px,1fr);gap:12px}.asn-svg{display:block;width:100%;height:auto;min-height:360px;border:1px solid var(--graph-border,#53616c);border-radius:8px;background:var(--graph-bg,#0e1a22);touch-action:none}.asn-detail{padding:12px;border:1px solid var(--graph-border,#53616c);border-radius:8px;overflow-wrap:anywhere}.asn-detail-row{margin:4px 0}.asn-edge{fill:none;stroke:var(--graph-edge,#6f8794);stroke-width:2}.asn-edge[data-emphasis="false"]{opacity:.23}.asn-edge[data-failure="true"]{stroke:#d94f68;stroke-dasharray:7 4}.asn-edge[data-kind="retry"]{stroke:#c98b16;stroke-width:3;stroke-dasharray:6 4}.asn-hit{fill:none;stroke:transparent;stroke-width:16;cursor:pointer}.asn-node{cursor:pointer}.asn-node circle{fill:#397f9b;stroke:var(--graph-node-stroke,#c1dae5);stroke-width:2}.asn-node[data-status="active"] circle{fill:#238c70}.asn-node[data-status="completed"] circle{fill:#60798b}.asn-node[data-status="failed"] circle,.asn-node[data-status="blocked"] circle{fill:#ad4058}.asn-node[data-emphasis="false"]{opacity:.3}.asn-node text{fill:var(--graph-text,#f1f5f8);text-anchor:middle;font:11px system-ui,sans-serif;pointer-events:none}.asn-selected circle,.asn-selected path,.asn-node:focus-visible circle,.asn-hit:focus-visible{stroke:#d3a700;stroke-width:4;outline:none}.asn-note{margin:5px 0;color:var(--m,#9bb2bf)}@media(max-width:760px){.asn-main{grid-template-columns:1fr}.asn-svg{min-height:280px}.asn-detail{min-height:100px}}';
       document.head.append(style);
     }
     const root = element(document, 'section', 'asn');
     const controls = element(document, 'div', 'asn-controls');
     const mode = options.staticMode ? null : data(element(document, 'select'), 'network-mode', '');
+    const modeOptions = [['live', 'network.live'], ['history', 'network.history']];
+    let snapshotModeNote;
     if (mode) {
-      mode.setAttribute('aria-label', 'Network mode');
-      for (const [value, label] of [['live', 'Live'], ['history', 'History']]) {
-        const option = element(document, 'option', '', label); option.value = value; mode.append(option);
+      mode.setAttribute('aria-label', t('network.modeLabel'));
+      for (const [value, key] of modeOptions) {
+        const option = element(document, 'option', '', t(key)); option.value = value; mode.append(option);
       }
       controls.append(mode);
-    } else controls.append(element(document, 'span', 'asn-note', 'Snapshot History'));
+    } else { snapshotModeNote = element(document, 'span', 'asn-note', t('network.snapshotHistory')); controls.append(snapshotModeNote); }
     const filter = data(element(document, 'select'), 'network-filter', '');
-    filter.setAttribute('aria-label', 'Network filter');
-    for (const [value, label] of [['all', 'All'], ['active', 'Active'], ['failures', 'Failures'], ['task', 'Current Task']]) {
-      const option = element(document, 'option', '', label); option.value = value; filter.append(option);
+    filter.setAttribute('aria-label', t('network.filterLabel'));
+    const filterOptions = [['all', 'network.all'], ['active', 'network.active'], ['failures', 'network.failures'], ['task', 'network.currentTask']];
+    for (const [value, key] of filterOptions) {
+      const option = element(document, 'option', '', t(key)); option.value = value; filter.append(option);
     }
     const task = data(element(document, 'select'), 'network-task', '');
-    task.setAttribute('aria-label', 'Network task');
+    task.setAttribute('aria-label', t('network.taskLabel'));
     controls.append(filter, task);
     const actionButtons = new Map();
-    for (const [action, label] of [['zoom-in', 'Zoom in'], ['zoom-out', 'Zoom out'], ['fit', 'Fit'], ['reset', 'Reset']]) {
-      const button = data(element(document, 'button', '', label), 'network-action', action);
+    const actionLabels = new Map([['zoom-in', 'network.zoomIn'], ['zoom-out', 'network.zoomOut'], ['fit', 'network.fit'], ['reset', 'network.reset']]);
+    for (const [action, key] of actionLabels) {
+      const button = data(element(document, 'button', '', t(key)), 'network-action', action);
       controls.append(button); actionButtons.set(action, button);
     }
     const main = element(document, 'div', 'asn-main');
-    const svg = svgElement(document, 'svg', { class: 'asn-svg', viewBox: '0 0 800 440', 'aria-label': 'Agent Signal Network' });
+    const svg = svgElement(document, 'svg', { class: 'asn-svg', viewBox: '0 0 800 440', 'aria-label': t('network.graphLabel') });
     const graph = svgElement(document, 'g');
     svg.append(graph);
     const detail = data(element(document, 'aside', 'asn-detail'), 'network-detail', '');
@@ -177,7 +204,19 @@
     root.append(controls, note, main);
     host.replaceChildren(root);
 
-    const state = { mode: options.staticMode ? 'history' : 'live', filter: 'all', taskId: '', selection: null, transform: { x: 0, y: 0, scale: 1 } };
+    const initial = options.initialState || {};
+    const initialTransform = initial.transform || {};
+    const state = {
+      mode: options.staticMode ? 'history' : (['live', 'history'].includes(initial.mode) ? initial.mode : 'live'),
+      filter: ['all', 'active', 'failures', 'task'].includes(initial.filter) ? initial.filter : 'all',
+      taskId: string(initial.taskId),
+      selection: initial.selection ? { ...initial.selection } : null,
+      transform: {
+        x: Number.isFinite(initialTransform.x) ? initialTransform.x : 0,
+        y: Number.isFinite(initialTransform.y) ? initialTransform.y : 0,
+        scale: Number.isFinite(initialTransform.scale) ? Math.max(0.35, Math.min(3, initialTransform.scale)) : 1
+      }
+    };
     let snapshot = {}, catalog = {}, model = { nodes: [], edges: [], tasks: [] }, positions = [], drag = null, destroyed = false, focusAfterDraw = false;
     const bounds = { width: 800, height: 440 };
     const clampScale = value => Math.max(0.35, Math.min(3, value));
@@ -198,25 +237,25 @@
       detail.replaceChildren();
       const record = selectedRecord();
       if (!record) {
-        detail.append(element(document, 'p', '', `Select an agent or signal. ${model.nodes.length} agents, ${model.edges.length} signals.`));
+        detail.append(element(document, 'p', '', t('network.empty', { agents: model.nodes.length, signals: model.edges.length })));
         return;
       }
       if (state.selection.type === 'node') {
         for (const [label, value] of [
-          ['Agent', record.id], ['Role', record.role], ['Status', record.status], ['Model', record.catalog?.model],
-          ['Reasoning', record.catalog?.reasoning], ['Current/Last Task', record.current_task], ['Started', displayTime(record.started_at)],
-          ['Finished', displayTime(record.stopped_at)], ['Claims', record.claims.join(', ')],
-          ['Inbound Signals', model.edges.filter(edge => edge.to === record.id).length],
-          ['Outbound Signals', model.edges.filter(edge => edge.from === record.id).length]
+          [t('network.agent'), record.id], [t('network.role'), record.role], [t('network.status'), record.status], [t('network.model'), record.catalog?.model],
+          [t('network.reasoning'), record.catalog?.reasoning], [t('network.currentLastTask'), record.current_task], [t('network.started'), displayTime(record.started_at)],
+          [t('network.finished'), displayTime(record.stopped_at)], [t('network.claims'), record.claims.join(', ')],
+          [t('network.inbound'), model.edges.filter(edge => edge.to === record.id).length],
+          [t('network.outbound'), model.edges.filter(edge => edge.from === record.id).length]
         ]) if (value !== undefined && value !== null && value !== '') detail.append(detailRow(document, label, value));
         if (record.started_at && record.stopped_at) {
           const elapsed = Date.parse(record.stopped_at) - Date.parse(record.started_at);
-          if (Number.isFinite(elapsed) && elapsed >= 0) detail.append(detailRow(document, 'Elapsed', `${Math.round(elapsed / 1000)}s`));
+          if (Number.isFinite(elapsed) && elapsed >= 0) detail.append(detailRow(document, t('network.elapsed'), `${Math.round(elapsed / 1000)}s`));
         }
       } else {
         for (const [label, value] of [
-          ['From', record.from], ['To', record.to], ['Kind', record.kind], ['Summary', record.summary], ['Sent', displayTime(record.time)],
-          ['Task', record.task_id], ['Status', record.status], ['Artifact', record.artifact_href], ['Verification', record.verification_name]
+          [t('network.from'), record.from], [t('network.to'), record.to], [t('network.kind'), record.kind], [t('network.summary'), record.summary], [t('network.sent'), displayTime(record.time)],
+          [t('network.task'), record.task_id], [t('network.status'), record.status], [t('network.artifact'), record.artifact_href], [t('network.verification'), record.verification_name]
         ]) if (value !== undefined && value !== null && value !== '') detail.append(detailRow(document, label, value));
       }
     }
@@ -251,7 +290,7 @@
       for (const edge of model.edges) {
         const path = pathFor(edge, counts);
         const visible = svgElement(document, 'path', { d: path, class: 'asn-edge', 'marker-end': 'url(#asn-arrow)', 'data-emphasis': edge.emphasized, 'data-failure': failed(edge.kind) || failed(edge.status), 'data-kind': string(edge.kind) });
-        const hit = data(svgElement(document, 'path', { d: path, class: 'asn-hit', 'aria-label': `${string(edge.from)} to ${string(edge.to)}: ${string(edge.kind)}`, 'data-edge-key': edge.key }), 'edge-index', edge.index);
+        const hit = data(svgElement(document, 'path', { d: path, class: 'asn-hit', 'aria-label': t('network.edgeLabel', { from: string(edge.from), to: string(edge.to), kind: string(edge.kind) }), 'data-edge-key': edge.key }), 'edge-index', edge.index);
         if (state.selection?.type === 'edge' && state.selection.key === edge.key) visible.setAttribute('class', 'asn-edge asn-selected');
         if (state.selection?.type === 'edge' && state.selection.key === edge.key) focusTarget = hit;
         if (focusedEdgeKey === edge.key) focusedTarget = hit;
@@ -268,11 +307,11 @@
         activate(group, event => { state.selection = { type: 'node', id: node.id }; focusAfterDraw = event.type === 'keydown'; draw(); });
         graph.append(group);
       }
-      note.textContent = model.nodes.length === 0 && model.edges.length === 0 ? 'No agents or signals in this snapshot.'
-        : state.mode === 'live' && !model.nodes.some(active) ? 'No active flow. Retained history is still shown.'
+      note.textContent = model.nodes.length === 0 && model.edges.length === 0 ? t('network.noData')
+        : state.mode === 'live' && !model.nodes.some(active) ? t('network.noActive')
           : state.filter === 'task' && state.taskId && !model.nodes.some(node => node.matchesFilter) && !model.edges.some(edge => edge.matchesFilter)
-            ? 'No linked network data for the selected task.'
-            : 'History includes only agents and signals retained in this runtime.';
+            ? t('network.noTaskData')
+            : t('network.historyNote');
       drawDetail();
       if (focused) focusedTarget?.focus();
       else if (focusAfterDraw) focusTarget?.focus();
@@ -310,6 +349,18 @@
       draw();
     }
     const rebuild = () => { model = buildModel(snapshot, catalog, state); draw(); };
+    function setTranslate(nextTranslate) {
+      translate = nextTranslate;
+      mode?.setAttribute('aria-label', t('network.modeLabel'));
+      if (mode) Array.from(mode.children).forEach((option, index) => { option.textContent = t(modeOptions[index][1]); });
+      if (snapshotModeNote) snapshotModeNote.textContent = t('network.snapshotHistory');
+      filter.setAttribute('aria-label', t('network.filterLabel'));
+      Array.from(filter.children).forEach((option, index) => { option.textContent = t(filterOptions[index][1]); });
+      task.setAttribute('aria-label', t('network.taskLabel'));
+      for (const [action, key] of actionLabels) actionButtons.get(action).textContent = t(key);
+      svg.setAttribute('aria-label', t('network.graphLabel'));
+      draw();
+    }
     mode?.addEventListener('change', () => { state.mode = mode.value; rebuild(); });
     filter.addEventListener('change', () => { state.filter = filter.value; rebuild(); });
     task.addEventListener('change', () => { state.taskId = task.value; rebuild(); });
@@ -358,6 +409,7 @@
     draw();
     return {
       update,
+      setTranslate,
       getState: () => ({ mode: state.mode, filter: state.filter, taskId: state.taskId, selection: state.selection && { ...state.selection }, transform: { ...state.transform } }),
       destroy: () => {
         if (destroyed) return;
