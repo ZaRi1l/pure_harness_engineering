@@ -50,6 +50,18 @@ test('hook dispatch reconciles orchestration fallback without duplicate lifecycl
   assert.deepEqual(snapshot.events.filter(event => event.type === 'hook_dispatch').map(event => event.data.hook_event), ['SubagentStart', 'SubagentStop']);
 });
 
+test('a stale uncorrelated stop hook cannot end a resumed turn or release its claim', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = new RuntimeStore(root); await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'First', { task_id: 'first', source: 'hook' });
+  await store.agentStopped('native-1', 'stopped', { task_id: 'first', source: 'hook' });
+  await store.agentResumed('native-1', 'Second', 'Accepted', { task_id: 'second', source: 'orchestration' });
+  await store.claim('native-1', ['src/backend/']);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'native-1', agent_type: 'worker' }, root);
+  assert.deepEqual((await store.readStatus()).active_agents.map(agent => agent.id), ['native-1']);
+  assert.deepEqual((await store.readClaims()).claims.map(claim => claim.agent_id), ['native-1']);
+});
+
 test('session hooks record dispatch evidence without fabricating lifecycle state', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
   await handleHook({ hook_event_name: 'SessionStart' }, root);

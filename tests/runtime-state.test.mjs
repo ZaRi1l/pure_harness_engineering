@@ -92,6 +92,66 @@ test('repeated stops are idempotent and a hook stop becomes canonical', async ()
   assert.equal(events.find(event => event.type === 'agent_stopped').data.source, 'hook');
 });
 
+test('a stopped native agent resumes by exact ID with a fresh neutral return', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'First turn', { task_id: 'first', source: 'orchestration' });
+  await store.agentStopped('native-1', 'stopped', { task_id: 'first', source: 'orchestration' });
+  const prior = await store.readStatus();
+  await store.agentResumed('native-1', 'Second turn', 'Follow-up accepted', { task_id: 'second', source: 'orchestration' });
+  await store.agentResumed('native-1', 'Second turn', 'Follow-up accepted', { task_id: 'second', source: 'orchestration' });
+  const active = await store.readStatus();
+  assert.deepEqual(active.active_agents.map(agent => agent.id), ['native-1']);
+  assert.equal(active.agents.length, 1);
+  assert.equal(active.agents[0].status, 'running');
+  assert.equal(active.agents[0].current_task, 'Second turn');
+  assert.equal(active.agents[0].stopped_at, null);
+  assert.equal(active.signals.length, 3);
+  assert.equal(active.signals.at(-1).summary, 'Follow-up accepted');
+  assert.equal(active.signals.at(-1).task_id, 'second');
+  assert.equal(active.signals[1].id, prior.signals[1].id);
+  await store.agentStopped('native-1', 'stopped', { task_id: 'second', source: 'orchestration' });
+  const stopped = await store.readStatus();
+  assert.deepEqual(stopped.active_agents, []);
+  assert.equal(stopped.agents[0].status, 'stopped');
+  assert.deepEqual(stopped.signals.map(signal => signal.kind), ['delegate', 'result', 'delegate', 'result']);
+});
+
+test('resume refuses unknown IDs and a stale task stop cannot close a newer turn', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await assert.rejects(() => store.agentResumed('missing', 'Task', 'Accepted', { source: 'orchestration' }), /unknown agent/);
+  await store.agentStarted('native-1', 'worker', 'First', { task_id: 'first', source: 'hook' });
+  await store.agentStopped('native-1', 'stopped', { task_id: 'first', source: 'hook' });
+  await store.agentResumed('native-1', 'Second', 'Accepted', { task_id: 'second', source: 'orchestration' });
+  await store.agentStopped('native-1', 'stopped', { task_id: 'first', source: 'hook' });
+  await store.agentStopped('native-1', 'stopped', { source: 'hook' });
+  assert.deepEqual((await store.readStatus()).active_agents.map(agent => agent.id), ['native-1']);
+  await store.agentStopped('native-1', 'stopped', { task_id: 'second', source: 'orchestration' });
+  await store.agentStopped('native-1', 'failed', { task_id: 'first', source: 'hook' });
+  assert.equal((await store.readStatus()).agents[0].status, 'stopped');
+});
+
+test('resume requires an explicit short summary and does not resume a first active turn', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'Task', { source: 'orchestration' });
+  await assert.rejects(() => store.agentResumed('native-1', 'Task', 'Accepted', { source: 'orchestration' }), /already active/);
+  await store.agentStopped('native-1', 'stopped', { source: 'orchestration' });
+  await assert.rejects(() => store.agentResumed('native-1', 'Second', '', { source: 'orchestration' }), /summary required/);
+});
+
+test('resume CLI records only a short explicit summary for the existing ID', async () => {
+  const root = await temporaryRoot();
+  await runCli(['agent-start', 'native-1', 'worker', '--task', 'First', '--source', 'orchestration', '--root', root]);
+  await runCli(['agent-stop', 'native-1', '--source', 'orchestration', '--root', root]);
+  await runCli(['agent-resume', 'native-1', '--task', 'Second', '--summary', 'A'.repeat(250), '--task-id', 'second', '--source', 'orchestration', '--root', root]);
+  const status = await new RuntimeStore(root).readStatus();
+  assert.equal(status.signals.at(-1).summary, 'A'.repeat(200));
+  assert.equal(status.agents[0].id, 'native-1');
+  assert.equal(status.agents[0].current_task, 'Second');
+});
+
 test('an unknown stop does not fabricate agent history or a result edge', async () => {
   const store = new RuntimeStore(await temporaryRoot());
   await store.initialize();

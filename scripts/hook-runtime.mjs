@@ -11,7 +11,7 @@ export async function handleHook(payload, root = findRoot()) {
   if (event === 'SessionStart') await store.addEvent('session_started', 'Codex session started');
   else if (event === 'SessionEnd') await store.addEvent('session_ended', 'Codex session ended');
   else if (event === 'SubagentStart') await store.agentStarted(id, role, String(payload.task || ''), { task_id: payload.task_id, source: 'hook' });
-  else if (event === 'SubagentStop') { await store.agentStopped(id, payload.outcome ? String(payload.outcome) : 'stopped', { task_id: payload.task_id, source: 'hook' }); if (agentId) await store.releaseClaim(id); }
+  else if (event === 'SubagentStop') { const accepted = await store.agentStopped(id, payload.outcome ? String(payload.outcome) : 'stopped', { task_id: payload.task_id, source: 'hook' }); if (agentId && accepted) await store.releaseClaim(id); }
   else if (event === 'Stop') await store.addEvent('turn_stopped', 'Codex turn stopped');
 }
 async function main() { try { const raw = await readStdin(); await handleHook(raw ? JSON.parse(raw) : {}); } catch (error) { console.log(JSON.stringify({ systemMessage: `Pure Harness runtime update skipped: ${error.message}` })); } }
