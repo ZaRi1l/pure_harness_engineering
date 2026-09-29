@@ -92,6 +92,15 @@ test('repeated stops are idempotent and a hook stop becomes canonical', async ()
   assert.equal(events.find(event => event.type === 'agent_stopped').data.source, 'hook');
 });
 
+test('a hook stop releases its claim in the same lifecycle transition', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'Task', { source: 'hook' });
+  await store.claim('native-1', ['src/backend/']);
+  await store.agentStopped('native-1', 'stopped', { source: 'hook' });
+  assert.deepEqual((await store.readClaims()).claims, []);
+});
+
 test('a stopped native agent resumes by exact ID with a fresh neutral return', async () => {
   const store = new RuntimeStore(await temporaryRoot());
   await store.initialize();

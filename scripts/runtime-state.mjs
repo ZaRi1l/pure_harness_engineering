@@ -154,7 +154,7 @@ export class RuntimeStore {
     status.active_agents = status.active_agents.filter(item => item.id !== id).concat({ ...agent });
     events.push(this.event('agent_started', `${agent.role || 'agent'} resumed`, { agent_id: id, source }));
   }); }
-  async agentStopped(id, outcome = 'stopped', metadata = {}) { let accepted = false; await this.mutate(({ status, events }) => {
+  async agentStopped(id, outcome = 'stopped', metadata = {}) { await this.mutate(({ status, events, claims }) => {
     const source = lifecycleSource(metadata.source), active = status.active_agents.find(item => item.id === id);
     let agent = status.agents.find(item => item.id === id);
     if (!agent && active) { agent = { ...active }; status.agents = status.agents.concat(agent).slice(-30); }
@@ -162,7 +162,6 @@ export class RuntimeStore {
     if (agent.resumed_at && source === 'hook' && metadata.turn_token !== agent.turn_token) return;
     if (agent.resumed_at && metadata.turn_token !== agent.turn_token) throw new Error('current turn token required to stop resumed agent');
     if (agent.task_id && metadata.task_id && agent.task_id !== metadata.task_id) return;
-    accepted = true;
     if (agent.stopped_at) {
       const stopSource = preferredLifecycleSource(agent.stop_source, source);
       if (stopSource) agent.stop_source = stopSource;
@@ -185,7 +184,11 @@ export class RuntimeStore {
     const signal = appendSignal(status, { time: stoppedAt, from: id, to: 'main', kind: 'result', summary: String(outcome).slice(0, 300), ...signalMetadata({ task_id: metadata.task_id, status: outcome !== 'stopped' ? outcome : undefined }) });
     agent.stop_signal_id = signal.id;
     events.push(this.event('agent_stopped', `${agent.role || 'agent'} ${outcome}`, { agent_id: id, source }));
-  }); return accepted; }
+    if (source === 'hook') {
+      claims.claims = claims.claims.filter(claim => claim.agent_id !== id);
+      events.push(this.event('claim_released', `${id} released claims`, { agent_id: id }));
+    }
+  }); }
   async addSignal(from, to, kind, summary, metadata = {}) { await this.mutate(({ status, events }) => { appendSignal(status, { time: now(), from, to, kind: String(kind).slice(0, 80), summary: String(summary).slice(0, 300), ...signalMetadata(metadata) }); events.push(this.event('agent_signal', `${from} -> ${to}: ${kind}`)); }); }
   async setVerification(checkStatus, name, detail = '') { if (!VERIFICATION_STATUSES.has(checkStatus)) throw new Error(`invalid verification status: ${checkStatus}`); await this.mutate(({ status, events }) => { const checks = status.verification.checks.filter(check => check.name !== name).concat({ name, status: checkStatus, detail: String(detail).slice(0, 500), time: now() }); const values = new Set(checks.map(check => check.status)); const aggregate = ['failed', 'blocked', 'running'].find(value => values.has(value)) || (checks.length && values.size === 1 && values.has('passed') ? 'passed' : 'not_run'); status.verification = { status: aggregate, checks, last_run: now() }; events.push(this.event('verification', `${name}: ${checkStatus}`)); }); }
   async addBlocker(id, message) { await this.mutate(({ status, events }) => { status.blockers = status.blockers.filter(item => item.id !== id).concat({ id, message: String(message).slice(0, 500), time: now() }); events.push(this.event('blocker', message, { blocker_id: id })); }); }
