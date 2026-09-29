@@ -10,8 +10,8 @@ export async function handleHook(payload, root = findRoot()) {
   await store.addEvent('hook_dispatch', `Codex hook dispatched: ${event}`, { hook_event: event });
   if (event === 'SessionStart') await store.addEvent('session_started', 'Codex session started');
   else if (event === 'SessionEnd') await store.addEvent('session_ended', 'Codex session ended');
-  else if (event === 'SubagentStart') await store.agentStarted(id, role, String(payload.task || ''), { task_id: payload.task_id, source: 'hook' });
-  else if (event === 'SubagentStop') { const accepted = await store.agentStopped(id, payload.outcome ? String(payload.outcome) : 'stopped', { task_id: payload.task_id, source: 'hook' }); if (agentId && accepted) await store.releaseClaim(id); }
+  else if (event === 'SubagentStart') await store.agentStarted(id, role, String(payload.task || ''), { task_id: payload.task_id, turn_token: payload.turn_token, source: 'hook' });
+  else if (event === 'SubagentStop') { const accepted = await store.agentStopped(id, payload.outcome ? String(payload.outcome) : 'stopped', { task_id: payload.task_id, turn_token: payload.turn_token, source: 'hook' }); if (agentId && accepted) await store.releaseClaim(id); }
   else if (event === 'Stop') await store.addEvent('turn_stopped', 'Codex turn stopped');
 }
 async function main() { try { const raw = await readStdin(); await handleHook(raw ? JSON.parse(raw) : {}); } catch (error) { console.log(JSON.stringify({ systemMessage: `Pure Harness runtime update skipped: ${error.message}` })); } }

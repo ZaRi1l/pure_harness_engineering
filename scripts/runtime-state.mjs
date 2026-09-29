@@ -119,7 +119,7 @@ export class RuntimeStore {
     let existing = status.agents.find(agent => agent.id === id);
     if (!existing && active) { existing = { ...active }; status.agents = status.agents.concat(existing).slice(-30); }
     if (existing) {
-      if (existing.resumed_at && source === 'hook' && (!metadata.task_id || metadata.task_id !== existing.task_id)) return;
+      if (existing.resumed_at && source === 'hook' && metadata.turn_token !== existing.turn_token) return;
       const startSource = preferredLifecycleSource(existing.start_source, source);
       if (startSource) existing.start_source = startSource;
       if (source === 'hook') {
@@ -140,17 +140,16 @@ export class RuntimeStore {
     status.agents = status.agents.filter(item => item.id !== id).concat({ ...agent }).slice(-30);
     events.push(this.event('agent_started', `${role} started`, { agent_id: id, source }));
   }); }
-  async agentResumed(id, task = '', summary = '', metadata = {}) { if (!String(summary).trim()) throw new Error('resume summary required'); await this.mutate(({ status, events }) => {
+  async agentResumed(id, task = '', summary = '', metadata = {}) { if (!String(summary).trim()) throw new Error('resume summary required'); if (!String(metadata.turn_token || '').trim()) throw new Error('resume turn token required'); await this.mutate(({ status, events }) => {
     const agent = status.agents.find(item => item.id === id);
     if (!agent) throw new Error(`unknown agent: ${id}`);
-    if (!agent.stopped_at) {
-      if (agent.resumed_at && agent.current_task === String(task).slice(0, 300) && agent.task_id === metadata.task_id) return;
-      throw new Error(`agent already active: ${id}`);
-    }
+    if (agent.resume_tokens?.includes(metadata.turn_token)) return;
+    if (!agent.stopped_at) throw new Error(`agent already active: ${id}`);
     const startedAt = now(), source = lifecycleSource(metadata.source);
     const signal = appendSignal(status, { time: startedAt, from: 'main', to: id, kind: 'delegate', summary: String(summary).slice(0, 200), ...signalMetadata({ task_id: metadata.task_id }) });
     Object.assign(agent, { status: 'running', current_task: String(task).slice(0, 300), started_at: startedAt, stopped_at: null,
-      start_signal_id: signal.id, task_id: metadata.task_id, start_source: source, resumed_at: startedAt });
+      start_signal_id: signal.id, task_id: metadata.task_id, start_source: source, resumed_at: startedAt,
+      turn_token: metadata.turn_token, resume_tokens: [...(agent.resume_tokens || []), metadata.turn_token] });
     delete agent.stop_signal_id; delete agent.stop_source;
     status.active_agents = status.active_agents.filter(item => item.id !== id).concat({ ...agent });
     events.push(this.event('agent_started', `${agent.role || 'agent'} resumed`, { agent_id: id, source }));
@@ -160,7 +159,8 @@ export class RuntimeStore {
     let agent = status.agents.find(item => item.id === id);
     if (!agent && active) { agent = { ...active }; status.agents = status.agents.concat(agent).slice(-30); }
     if (!agent) return;
-    if (agent.resumed_at && source === 'hook' && (!metadata.task_id || metadata.task_id !== agent.task_id)) return;
+    if (agent.resumed_at && source === 'hook' && metadata.turn_token !== agent.turn_token) return;
+    if (agent.resumed_at && metadata.turn_token !== agent.turn_token) throw new Error('current turn token required to stop resumed agent');
     if (agent.task_id && metadata.task_id && agent.task_id !== metadata.task_id) return;
     accepted = true;
     if (agent.stopped_at) {
@@ -210,7 +210,7 @@ export function findRoot(start = process.cwd()) { let current = path.resolve(sta
 function option(args, name, fallback = null) { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : fallback; }
 export async function runCli(argv = process.argv.slice(2)) {
   const copy = [...argv], rootIndex = copy.indexOf('--root'), root = rootIndex >= 0 ? copy.splice(rootIndex, 2)[1] : findRoot(); const store = new RuntimeStore(root); const [command, ...args] = copy;
-  const actions = { init: () => store.initialize({ force: args.includes('--force') }), goal: () => store.setGoal(args[0], option(args, '--phase', 'planning')), phase: () => store.setPhase(args[0]), task: () => store.upsertTask(args[0], args[1], args[2], option(args, '--owner')), 'agent-start': () => store.agentStarted(args[0], args[1], option(args, '--task', ''), { task_id: option(args, '--task-id'), source: option(args, '--source') }), 'agent-resume': () => store.agentResumed(args[0], option(args, '--task', ''), option(args, '--summary', ''), { task_id: option(args, '--task-id'), source: option(args, '--source') }), 'agent-stop': () => store.agentStopped(args[0], option(args, '--outcome', 'stopped'), { task_id: option(args, '--task-id'), source: option(args, '--source') }), verify: () => store.setVerification(args[0], args[1], option(args, '--detail', '')), blocker: () => store.addBlocker(args[0], args[1]), 'clear-blocker': () => store.clearBlocker(args[0]), artifact: () => store.addArtifact(args[0], args[1]), event: () => store.addEvent(args[0], args[1]), signal: () => store.addSignal(args[0], args[1], args[2], args[3], { task_id: option(args, '--task'), status: option(args, '--status'), artifact_href: option(args, '--artifact'), verification_name: option(args, '--verification') }) };
+  const actions = { init: () => store.initialize({ force: args.includes('--force') }), goal: () => store.setGoal(args[0], option(args, '--phase', 'planning')), phase: () => store.setPhase(args[0]), task: () => store.upsertTask(args[0], args[1], args[2], option(args, '--owner')), 'agent-start': () => store.agentStarted(args[0], args[1], option(args, '--task', ''), { task_id: option(args, '--task-id'), source: option(args, '--source') }), 'agent-resume': () => store.agentResumed(args[0], option(args, '--task', ''), option(args, '--summary', ''), { task_id: option(args, '--task-id'), turn_token: option(args, '--turn-token'), source: option(args, '--source') }), 'agent-stop': () => store.agentStopped(args[0], option(args, '--outcome', 'stopped'), { task_id: option(args, '--task-id'), turn_token: option(args, '--turn-token'), source: option(args, '--source') }), verify: () => store.setVerification(args[0], args[1], option(args, '--detail', '')), blocker: () => store.addBlocker(args[0], args[1]), 'clear-blocker': () => store.clearBlocker(args[0]), artifact: () => store.addArtifact(args[0], args[1]), event: () => store.addEvent(args[0], args[1]), signal: () => store.addSignal(args[0], args[1], args[2], args[3], { task_id: option(args, '--task'), status: option(args, '--status'), artifact_href: option(args, '--artifact'), verification_name: option(args, '--verification') }) };
   actions.claim = () => store.claim(args[0], args.slice(1));
   actions['release-claim'] = () => store.releaseClaim(args[0]);
   if (!actions[command]) throw new Error(`unknown command: ${command || '(missing)'}`); await actions[command]();

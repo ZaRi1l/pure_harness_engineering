@@ -98,8 +98,8 @@ test('a stopped native agent resumes by exact ID with a fresh neutral return', a
   await store.agentStarted('native-1', 'worker', 'First turn', { task_id: 'first', source: 'orchestration' });
   await store.agentStopped('native-1', 'stopped', { task_id: 'first', source: 'orchestration' });
   const prior = await store.readStatus();
-  await store.agentResumed('native-1', 'Second turn', 'Follow-up accepted', { task_id: 'second', source: 'orchestration' });
-  await store.agentResumed('native-1', 'Second turn', 'Follow-up accepted', { task_id: 'second', source: 'orchestration' });
+  await store.agentResumed('native-1', 'Second turn', 'Follow-up accepted', { task_id: 'second', turn_token: 'turn-2', source: 'orchestration' });
+  await store.agentResumed('native-1', 'Second turn', 'Follow-up accepted', { task_id: 'second', turn_token: 'turn-2', source: 'orchestration' });
   const active = await store.readStatus();
   assert.deepEqual(active.active_agents.map(agent => agent.id), ['native-1']);
   assert.equal(active.agents.length, 1);
@@ -110,7 +110,7 @@ test('a stopped native agent resumes by exact ID with a fresh neutral return', a
   assert.equal(active.signals.at(-1).summary, 'Follow-up accepted');
   assert.equal(active.signals.at(-1).task_id, 'second');
   assert.equal(active.signals[1].id, prior.signals[1].id);
-  await store.agentStopped('native-1', 'stopped', { task_id: 'second', source: 'orchestration' });
+  await store.agentStopped('native-1', 'stopped', { task_id: 'second', turn_token: 'turn-2', source: 'orchestration' });
   const stopped = await store.readStatus();
   assert.deepEqual(stopped.active_agents, []);
   assert.equal(stopped.agents[0].status, 'stopped');
@@ -120,14 +120,14 @@ test('a stopped native agent resumes by exact ID with a fresh neutral return', a
 test('resume refuses unknown IDs and a stale task stop cannot close a newer turn', async () => {
   const store = new RuntimeStore(await temporaryRoot());
   await store.initialize();
-  await assert.rejects(() => store.agentResumed('missing', 'Task', 'Accepted', { source: 'orchestration' }), /unknown agent/);
+  await assert.rejects(() => store.agentResumed('missing', 'Task', 'Accepted', { turn_token: 'turn-2', source: 'orchestration' }), /unknown agent/);
   await store.agentStarted('native-1', 'worker', 'First', { task_id: 'first', source: 'hook' });
   await store.agentStopped('native-1', 'stopped', { task_id: 'first', source: 'hook' });
-  await store.agentResumed('native-1', 'Second', 'Accepted', { task_id: 'second', source: 'orchestration' });
+  await store.agentResumed('native-1', 'Second', 'Accepted', { task_id: 'second', turn_token: 'turn-2', source: 'orchestration' });
   await store.agentStopped('native-1', 'stopped', { task_id: 'first', source: 'hook' });
   await store.agentStopped('native-1', 'stopped', { source: 'hook' });
   assert.deepEqual((await store.readStatus()).active_agents.map(agent => agent.id), ['native-1']);
-  await store.agentStopped('native-1', 'stopped', { task_id: 'second', source: 'orchestration' });
+  await store.agentStopped('native-1', 'stopped', { task_id: 'second', turn_token: 'turn-2', source: 'orchestration' });
   await store.agentStopped('native-1', 'failed', { task_id: 'first', source: 'hook' });
   assert.equal((await store.readStatus()).agents[0].status, 'stopped');
 });
@@ -136,20 +136,56 @@ test('resume requires an explicit short summary and does not resume a first acti
   const store = new RuntimeStore(await temporaryRoot());
   await store.initialize();
   await store.agentStarted('native-1', 'worker', 'Task', { source: 'orchestration' });
-  await assert.rejects(() => store.agentResumed('native-1', 'Task', 'Accepted', { source: 'orchestration' }), /already active/);
+  await assert.rejects(() => store.agentResumed('native-1', 'Task', 'Accepted', { turn_token: 'turn-2', source: 'orchestration' }), /already active/);
   await store.agentStopped('native-1', 'stopped', { source: 'orchestration' });
-  await assert.rejects(() => store.agentResumed('native-1', 'Second', '', { source: 'orchestration' }), /summary required/);
+  await assert.rejects(() => store.agentResumed('native-1', 'Second', '', { turn_token: 'turn-2', source: 'orchestration' }), /summary required/);
+  await assert.rejects(() => store.agentResumed('native-1', 'Second', 'Accepted', { source: 'orchestration' }), /turn token/);
 });
 
 test('resume CLI records only a short explicit summary for the existing ID', async () => {
   const root = await temporaryRoot();
   await runCli(['agent-start', 'native-1', 'worker', '--task', 'First', '--source', 'orchestration', '--root', root]);
   await runCli(['agent-stop', 'native-1', '--source', 'orchestration', '--root', root]);
-  await runCli(['agent-resume', 'native-1', '--task', 'Second', '--summary', 'A'.repeat(250), '--task-id', 'second', '--source', 'orchestration', '--root', root]);
+  await runCli(['agent-resume', 'native-1', '--task', 'Second', '--summary', 'A'.repeat(250), '--task-id', 'second', '--turn-token', 'turn-2', '--source', 'orchestration', '--root', root]);
   const status = await new RuntimeStore(root).readStatus();
   assert.equal(status.signals.at(-1).summary, 'A'.repeat(200));
   assert.equal(status.agents[0].id, 'native-1');
   assert.equal(status.agents[0].current_task, 'Second');
+  await assert.rejects(() => runCli(['agent-stop', 'native-1', '--source', 'orchestration', '--root', root]), /turn token/);
+  await runCli(['agent-stop', 'native-1', '--turn-token', 'turn-2', '--source', 'orchestration', '--root', root]);
+  assert.deepEqual((await new RuntimeStore(root).readStatus()).active_agents, []);
+});
+
+test('a resumed turn requires its exact follow-up token to stop, even with the same task ID', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'First', { task_id: 'shared', source: 'orchestration' });
+  await store.agentStopped('native-1', 'stopped', { task_id: 'shared', source: 'orchestration' });
+  await store.agentResumed('native-1', 'Second', 'Accepted', { task_id: 'shared', turn_token: 'turn-2', source: 'orchestration' });
+  await assert.rejects(() => store.agentStopped('native-1', 'stopped', { task_id: 'shared', source: 'orchestration' }), /turn token/);
+  await assert.rejects(() => store.agentStopped('native-1', 'stopped', { task_id: 'shared', turn_token: 'turn-1', source: 'orchestration' }), /turn token/);
+  assert.deepEqual((await store.readStatus()).active_agents.map(agent => agent.id), ['native-1']);
+  await store.agentStopped('native-1', 'stopped', { task_id: 'shared', turn_token: 'turn-2', source: 'orchestration' });
+  assert.deepEqual((await store.readStatus()).active_agents, []);
+});
+
+test('a replayed follow-up token does not create a ghost turn after stop', async () => {
+  const store = new RuntimeStore(await temporaryRoot());
+  await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'First', { source: 'orchestration' });
+  await store.agentStopped('native-1', 'stopped', { source: 'orchestration' });
+  await store.agentResumed('native-1', 'Second', 'Accepted', { turn_token: 'turn-2', source: 'orchestration' });
+  await store.agentStopped('native-1', 'stopped', { turn_token: 'turn-2', source: 'orchestration' });
+  const before = await store.readStatus();
+  await store.agentResumed('native-1', 'Second', 'Accepted', { turn_token: 'turn-2', source: 'orchestration' });
+  const after = await store.readStatus();
+  assert.deepEqual(after.active_agents, []);
+  assert.equal(after.signals.length, before.signals.length);
+  await store.agentResumed('native-1', 'Third', 'Accepted', { turn_token: 'turn-3', source: 'orchestration' });
+  assert.deepEqual((await store.readStatus()).active_agents.map(agent => agent.id), ['native-1']);
+  await store.agentStopped('native-1', 'stopped', { turn_token: 'turn-3', source: 'orchestration' });
+  await store.agentResumed('native-1', 'Second', 'Accepted', { turn_token: 'turn-2', source: 'orchestration' });
+  assert.deepEqual((await store.readStatus()).active_agents, []);
 });
 
 test('an unknown stop does not fabricate agent history or a result edge', async () => {

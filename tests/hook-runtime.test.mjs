@@ -55,11 +55,37 @@ test('a stale uncorrelated stop hook cannot end a resumed turn or release its cl
   const store = new RuntimeStore(root); await store.initialize();
   await store.agentStarted('native-1', 'worker', 'First', { task_id: 'first', source: 'hook' });
   await store.agentStopped('native-1', 'stopped', { task_id: 'first', source: 'hook' });
-  await store.agentResumed('native-1', 'Second', 'Accepted', { task_id: 'second', source: 'orchestration' });
+  await store.agentResumed('native-1', 'Second', 'Accepted', { task_id: 'second', turn_token: 'turn-2', source: 'orchestration' });
   await store.claim('native-1', ['src/backend/']);
   await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'native-1', agent_type: 'worker' }, root);
   assert.deepEqual((await store.readStatus()).active_agents.map(agent => agent.id), ['native-1']);
   assert.deepEqual((await store.readClaims()).claims.map(claim => claim.agent_id), ['native-1']);
+});
+
+test('a same-task stale stop hook cannot end a resumed turn or release its claim', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = new RuntimeStore(root); await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'First', { task_id: 'shared', source: 'hook' });
+  await store.agentStopped('native-1', 'stopped', { task_id: 'shared', source: 'hook' });
+  await store.agentResumed('native-1', 'Second', 'Accepted', { task_id: 'shared', turn_token: 'turn-2', source: 'orchestration' });
+  await store.claim('native-1', ['src/backend/']);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'native-1', agent_type: 'worker', task_id: 'shared' }, root);
+  assert.deepEqual((await store.readStatus()).active_agents.map(agent => agent.id), ['native-1']);
+  assert.deepEqual((await store.readClaims()).claims.map(claim => claim.agent_id), ['native-1']);
+});
+
+test('a hook with the exact resumed turn token remains canonical', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = new RuntimeStore(root); await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'First', { task_id: 'shared', source: 'hook' });
+  await store.agentStopped('native-1', 'stopped', { task_id: 'shared', source: 'hook' });
+  await store.agentResumed('native-1', 'Second', 'Accepted', { task_id: 'shared', turn_token: 'turn-2', source: 'orchestration' });
+  await store.claim('native-1', ['src/backend/']);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'native-1', agent_type: 'worker', task_id: 'shared', turn_token: 'turn-2' }, root);
+  const status = await store.readStatus();
+  assert.deepEqual(status.active_agents, []);
+  assert.equal(status.agents[0].stop_source, 'hook');
+  assert.deepEqual((await store.readClaims()).claims, []);
 });
 
 test('session hooks record dispatch evidence without fabricating lifecycle state', async () => {
