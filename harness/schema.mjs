@@ -6,8 +6,6 @@ const fields = ['schemaVersion', 'id', 'description', 'tier', 'intent', 'modelPo
 const targets = ['codex', 'claude', 'opencode', 'antigravity'];
 const capabilities = new Set(['read', 'write', 'shell', 'delegate', 'web']);
 const nonportable = [
-  /\bsil[o](?:server\b|\b|[_-])/i,
-  /prototype[\\/]preview/i,
   /runtime-state\.mjs|docker[\\/]\.env|\.ai[\\/]runtime|localhost/i,
   /\b[A-Za-z]:[\\/]|\/(?:Users|home|root)\/|\\\\[A-Za-z0-9._-]+\\[A-Za-z0-9._-]+/i,
   /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bsk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{20,}\b/i,

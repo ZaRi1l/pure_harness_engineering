@@ -30,8 +30,7 @@ test('core skill selection rejects contaminated optional skill metadata and copi
   await assert.rejects(listSkills(fixture, 'core'), /portable|identity|credential/i);
   await cp(path.join(root, '.agents/skills/context-curation/SKILL.md'), optional);
   const reference = path.join(fixture, '.agents/skills/task-routing/profiles.md');
-  const product = ['S', 'ILO'].join('');
-  await writeFile(reference, (await readFile(reference, 'utf8')) + `\n${product} private notes\n`);
+  await writeFile(reference, (await readFile(reference, 'utf8')) + '\nC:/Users/alice/private.txt\n');
   await assert.rejects(listSkills(fixture, 'core'), /portable|identity|credential/i);
 });
 

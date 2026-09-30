@@ -69,13 +69,9 @@ for (const [name, source, pattern] of [
   ['nonportable runtime path leak', valid.replace('Plan work', 'See .ai/runtime/status.json. Plan work'), /portable/],
 ]) test(`rejects ${name}`, () => assert.throws(() => parseRole(source, 'harness/agents/planner.md'), pattern));
 
-const product = ['S', 'ILO'].join('');
 for (const [label, source] of [
-    ['description', valid.replace('Plans bounded work.', `Plans ${product} work.`)],
-    ['product-prefixed description', valid.replace('Plans bounded work.', `Plans ${product}_server work.`)],
-    ['compound product description', valid.replace('Plans bounded work.', `Plans ${product}Server work.`)],
-    ['model metadata', valid.replace('  claude: inherit', `  claude: ${product}`)],
-    ['product objective path', valid.replace('Plan work', `Read ${['prototype', 'preview', 'data', 'goal.json'].join('/')}. Plan work`)],
+    ['description host path', valid.replace('Plans bounded work.', 'Plans C:/Users/alice/private.txt work.')],
+    ['model metadata host path', valid.replace('  claude: inherit', '  claude: C:/Users/alice/private.txt')],
     ['host path', valid.replace('Plan work', 'Read C:/Users/alice/private.txt. Plan work')],
     ['UNC host path', valid.replace('Plan work', String.raw`Read \\office-server\private\config. Plan work`)],
     ['credential', valid.replace('Plan work', `Use sk-${'A'.repeat(30)}. Plan work`)],
@@ -89,11 +85,10 @@ test('allows generic project-declared goal adapter wording', () => {
 });
 
 for (const [label, metadata] of [
-  ['nested identity key', { inventory: [{ targets: { [product]: 'neutral' } }] }],
   ['nested host-path key', { inventory: [{ targets: { 'C:/Users/alice/private.txt': 'neutral' } }] }],
   ['nested credential key', { inventory: [{ targets: { [`sk-proj-${'A'.repeat(30)}`]: 'neutral' } }] }],
-  ['escaped identity key', JSON.parse(String.raw`{"\u0053ILO":"neutral"}`)],
-  ['escaped identity value', JSON.parse(String.raw`{"neutral":"\u0053ILO"}`)],
+  ['escaped host-path key', JSON.parse(String.raw`{"\u0043:/Users/alice/private.txt":"neutral"}`)],
+  ['escaped host-path value', JSON.parse(String.raw`{"neutral":"\u0043:/Users/alice/private.txt"}`)],
   ['nested host-path value', { inventory: [{ path: 'C:/Users/alice/private.txt' }] }],
   ['nested credential value', { inventory: [{ token: `sk-proj-${'A'.repeat(30)}` }] }],
 ]) test(`rejects decoded compatibility ${label}`, () =>

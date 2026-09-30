@@ -92,15 +92,15 @@ test('validation and dry-run reject contaminated compatibility metadata without 
   assert.deepEqual(await snapshotTree(root), before);
 });
 
-test('validation and dry-run reject decoded compatibility identity hidden by JSON escapes', async t => {
+test('validation and dry-run reject decoded compatibility host path hidden by JSON escapes', async t => {
   const root = await fixture(t);
   const file = path.join(root, 'harness/compatibility.json');
   const record = JSON.parse(await readFile(file, 'utf8'));
-  const product = ['S', 'ILO'].join('');
-  record.inventory.roleFiles = `${product} private deployment`;
-  const encoded = JSON.stringify(record).replace(product, String.raw`\u0053ILO`);
-  assert.ok(!encoded.includes(product));
-  assert.ok(JSON.parse(encoded).inventory.roleFiles.includes(product));
+  const hostPath = 'C:/Users/alice/private.txt';
+  record.inventory.roleFiles = hostPath;
+  const encoded = JSON.stringify(record).replace(hostPath, String.raw`\u0043:/Users/alice/private.txt`);
+  assert.ok(!encoded.includes(hostPath));
+  assert.equal(JSON.parse(encoded).inventory.roleFiles, hostPath);
   await writeFile(file, encoded);
   const before = await snapshotTree(root);
   const validation = await runNode('scripts/validate.mjs', ['--root', root, '--targets', 'codex', '--profile', 'core', '--json']);
@@ -112,15 +112,15 @@ test('validation and dry-run reject decoded compatibility identity hidden by JSO
   assert.deepEqual(await snapshotTree(root), before);
 });
 
-test('validation and dry-run reject a decoded compatibility key hidden by JSON escapes without writes', async t => {
+test('validation and dry-run reject a decoded compatibility host-path key hidden by JSON escapes without writes', async t => {
   const root = await fixture(t);
   const file = path.join(root, 'harness/compatibility.json');
   const record = JSON.parse(await readFile(file, 'utf8'));
-  const product = ['S', 'ILO'].join('');
-  record.inventory.extra = { [product]: 'neutral' };
-  const encoded = JSON.stringify(record).replace(product, String.raw`\u0053ILO`);
-  assert.ok(!encoded.includes(product));
-  assert.equal(JSON.parse(encoded).inventory.extra[product], 'neutral');
+  const hostPath = 'C:/Users/alice/private.txt';
+  record.inventory.extra = { [hostPath]: 'neutral' };
+  const encoded = JSON.stringify(record).replace(hostPath, String.raw`\u0043:/Users/alice/private.txt`);
+  assert.ok(!encoded.includes(hostPath));
+  assert.equal(JSON.parse(encoded).inventory.extra[hostPath], 'neutral');
   await writeFile(file, encoded);
   const before = await snapshotTree(root);
   const validation = await runNode('scripts/validate.mjs', ['--root', root, '--targets', 'codex', '--profile', 'core', '--json']);
