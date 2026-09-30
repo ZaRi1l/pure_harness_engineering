@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isValidatedProjectContext, loadProjectContext } from './project-context.mjs';
@@ -32,6 +32,7 @@ const normalizeScope = scope => {
   return value;
 };
 const scopesOverlap = (left, right) => left === right || left.startsWith(right + '/') || right.startsWith(left + '/');
+const checkoutKey = value => process.platform === 'win32' ? String(value).toLowerCase() : String(value);
 const assertSchema = (value, name) => {
   if (!value || typeof value !== 'object' || Array.isArray(value) || value.schema_version !== 1) throw new Error(`${name} runtime schema unsupported`);
   return value;
@@ -83,7 +84,35 @@ export class RuntimeStore {
     if (this.context && value.project_id !== this.context.projectId) throw new Error(`${name} project identity mismatch`);
     return value;
   }
+  parseEvents(source) {
+    return source.split(/\r?\n/).filter(Boolean).map(line => {
+      const event = JSON.parse(line);
+      if (!event || typeof event !== 'object' || Array.isArray(event)) throw new Error('invalid runtime event');
+      if (this.context?.kind !== 'core' && this.context && event.project_id !== this.context.projectId) throw new Error('event project identity mismatch');
+      return event;
+    });
+  }
   emptyDocument(name) { return { schema_version: 1, ...(this.context ? { project_id: this.context.projectId } : {}), [name]: [] }; }
+  ownsClaim(claim, agentId) { return claim.agent_id === String(agentId) && (!this.context || checkoutKey(claim.checkout_root) === checkoutKey(this.context.checkoutRoot)); }
+  sharesCheckout(claim) { return !this.context || checkoutKey(claim.checkout_root) === checkoutKey(this.context.checkoutRoot); }
+  async assertClaimPath(entry) {
+    if (!this.context) return;
+    const owner = entry.kind === 'installation' ? this.context.harnessRoot : this.context.checkoutRoot;
+    let current = owner;
+    for (const segment of entry.scope.split('/')) {
+      current = path.join(current, segment);
+      let metadata;
+      try { metadata = await lstat(current); }
+      catch (error) { if (error.code === 'ENOENT') break; throw error; }
+      if (metadata.isSymbolicLink()) throw new Error('claim scope traverses symlink');
+      const canonical = await realpath(current);
+      const relative = path.relative(owner, canonical);
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('claim scope escapes context root');
+    }
+  }
+  ownsAgent(agent, agentId) { return agent.id === agentId && (!this.context || checkoutKey(agent.checkout_root) === checkoutKey(this.context.checkoutRoot)); }
+  checkoutMetadata() { return this.context ? { checkout_root: this.context.checkoutRoot } : {}; }
+  ownsLifecycleEvent(event, agentId) { return event.data?.agent_id === agentId && (!this.context || checkoutKey(event.data?.checkout_root) === checkoutKey(this.context.checkoutRoot)); }
   emptyStatus() { return { schema_version: 1, ...(this.context ? { project_id: this.context.projectId } : {}), current_goal: null, phase: 'idle', active_agents: [], agents: [], signals: [], task_counts: { total: 0, completed: 0 }, progress: null, completed_tasks: [], next_tasks: [], verification: { status: 'not_run', checks: [], last_run: null }, blockers: [], warnings: [], recent_events: [], artifact_preview_links: [], last_update: now() }; }
   assertSafeLockPath() { const resolved = path.resolve(this.lockPath); if (path.dirname(resolved) !== path.resolve(this.runtime)) throw new Error('unsafe lock path'); return resolved; }
   async removeOwnedLock(token) { try { const owner = JSON.parse(await readFile(path.join(this.lockPath, 'owner.json'), 'utf8')); if (owner.token !== token) return; } catch { return; } await rm(this.assertSafeLockPath(), { recursive: true, force: true }); }
@@ -108,6 +137,7 @@ export class RuntimeStore {
   async initialize({ force = false } = {}) {
     if (force && this.context) throw new Error('force init forbidden for project or core context');
     await this.withLock(async () => {
+      if (!force) await this.loadUnlocked();
       let status = this.emptyStatus();
       if (!force && existsSync(this.statusPath)) { status = this.assertDocument(JSON.parse(await readFile(this.statusPath, 'utf8')), 'status'); for (const [key, value] of Object.entries(this.emptyStatus())) if (!(key in status)) status[key] = key === 'agents' ? [...(status.active_agents || [])] : value; status.last_update = now(); }
       if (!force && existsSync(this.tasksPath)) this.assertDocument(JSON.parse(await readFile(this.tasksPath, 'utf8')), 'tasks');
@@ -120,7 +150,7 @@ export class RuntimeStore {
   }
   async readStatus() { if (!existsSync(this.statusPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.statusPath, 'utf8')), 'status'); }
   async readTasks() { if (!existsSync(this.tasksPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.tasksPath, 'utf8')), 'tasks'); }
-  async readEvents() { if (!existsSync(this.eventsPath)) await this.initialize(); return (await readFile(this.eventsPath, 'utf8')).split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)); }
+  async readEvents() { if (!existsSync(this.eventsPath)) await this.initialize(); return this.parseEvents(await readFile(this.eventsPath, 'utf8')); }
   async readClaims() { if (!existsSync(this.claimsPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.claimsPath, 'utf8')), 'claims'); }
   async readSnapshot() {
     if (!existsSync(this.statusPath) || !existsSync(this.tasksPath) || !existsSync(this.eventsPath) || !existsSync(this.claimsPath)) await this.initialize();
@@ -129,11 +159,11 @@ export class RuntimeStore {
   async loadUnlocked() {
     const status = existsSync(this.statusPath) ? this.assertDocument(JSON.parse(await readFile(this.statusPath, 'utf8')), 'status') : this.emptyStatus(); status.agents ??= [...(status.active_agents || [])]; status.signals ??= [];
     const tasks = existsSync(this.tasksPath) ? this.assertDocument(JSON.parse(await readFile(this.tasksPath, 'utf8')), 'tasks') : this.emptyDocument('tasks');
-    const events = existsSync(this.eventsPath) ? (await readFile(this.eventsPath, 'utf8')).split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)) : [];
+    const events = existsSync(this.eventsPath) ? this.parseEvents(await readFile(this.eventsPath, 'utf8')) : [];
     const claims = existsSync(this.claimsPath) ? this.assertDocument(JSON.parse(await readFile(this.claimsPath, 'utf8')), 'claims') : this.emptyDocument('claims');
     return { status, tasks, events, claims };
   }
-  event(type, message, data = {}) { const clean = Object.fromEntries(Object.entries(data).filter(([, value]) => value !== null && value !== '' && value !== undefined)); return { time: now(), type, message: String(message).slice(0, 500), ...(Object.keys(clean).length ? { data: clean } : {}) }; }
+  event(type, message, data = {}) { const clean = Object.fromEntries(Object.entries(data).filter(([, value]) => value !== null && value !== '' && value !== undefined)); return { time: now(), ...(this.context ? { project_id: this.context.projectId } : {}), type, message: String(message).slice(0, 500), ...(Object.keys(clean).length ? { data: clean } : {}) }; }
   async persist(status, tasks, events, claims) {
     status.last_update = now(); status.recent_events = events.slice(-10); const completed = tasks.tasks.filter(task => task.status === 'completed');
     status.task_counts = { total: tasks.tasks.length, completed: completed.length }; status.progress = tasks.tasks.length ? { completed: completed.length, total: tasks.tasks.length } : null; status.completed_tasks = completed; status.next_tasks = tasks.tasks.filter(task => ['pending', 'blocked'].includes(task.status));
@@ -145,8 +175,8 @@ export class RuntimeStore {
   async setPhase(phase) { await this.mutate(({ status, events }) => { status.phase = phase; events.push(this.event('phase', `Phase: ${phase}`)); }); }
   async upsertTask(id, title, taskStatus, owner = null) { if (!TASK_STATUSES.has(taskStatus)) throw new Error(`invalid task status: ${taskStatus}`); await this.mutate(({ tasks, events }) => { let record = tasks.tasks.find(task => task.id === id); if (!record) { record = { id, created_at: now() }; tasks.tasks.push(record); } Object.assign(record, { title: String(title).slice(0, 300), status: taskStatus, owner, updated_at: now() }); events.push(this.event('task', `${id}: ${taskStatus}`, { owner })); }); }
   async agentStarted(id, role, task = '', metadata = {}) { await this.mutate(({ status, events }) => {
-    const source = lifecycleSource(metadata.source), active = status.active_agents.find(agent => agent.id === id);
-    let existing = status.agents.find(agent => agent.id === id);
+    const source = lifecycleSource(metadata.source), active = status.active_agents.find(agent => this.ownsAgent(agent, id));
+    let existing = status.agents.find(agent => this.ownsAgent(agent, id));
     if (!existing && active) { existing = { ...active }; status.agents = status.agents.concat(existing).slice(-30); }
     if (existing) {
       if (existing.resumed_at && source === 'hook' && metadata.turn_token !== existing.turn_token) return;
@@ -157,21 +187,21 @@ export class RuntimeStore {
         if (task) existing.current_task = String(task).slice(0, 300);
         const signal = existing.start_signal_id ? status.signals.find(item => item.id === existing.start_signal_id) : undefined;
         if (signal) { signal.summary = existing.current_task || `Start ${role}`; if (metadata.task_id) signal.task_id = String(metadata.task_id).slice(0, 500); }
-        const event = events.findLast(item => item.type === 'agent_started' && item.data?.agent_id === id);
+        const event = events.findLast(item => item.type === 'agent_started' && this.ownsLifecycleEvent(item, id));
         if (event) { event.message = `${role} started`; event.data = { ...event.data, source: 'hook' }; }
       } else if (!existing.current_task && task) existing.current_task = String(task).slice(0, 300);
-      for (const active of status.active_agents) if (active.id === id) Object.assign(active, existing);
+      for (const active of status.active_agents) if (this.ownsAgent(active, id)) Object.assign(active, existing);
       return;
     }
-    const agent = { id, role, status: 'running', current_task: String(task).slice(0, 300), started_at: now(), stopped_at: null, ...(source ? { start_source: source } : {}) };
+    const agent = { id, ...this.checkoutMetadata(), role, status: 'running', current_task: String(task).slice(0, 300), started_at: now(), stopped_at: null, ...(source ? { start_source: source } : {}) };
     const signal = appendSignal(status, { time: now(), from: 'main', to: id, kind: 'delegate', summary: agent.current_task || `Start ${role}`, ...signalMetadata({ task_id: metadata.task_id }) });
     agent.start_signal_id = signal.id;
-    status.active_agents = status.active_agents.filter(item => item.id !== id).concat(agent);
-    status.agents = status.agents.filter(item => item.id !== id).concat({ ...agent }).slice(-30);
-    events.push(this.event('agent_started', `${role} started`, { agent_id: id, source }));
+    status.active_agents = status.active_agents.filter(item => !this.ownsAgent(item, id)).concat(agent);
+    status.agents = status.agents.filter(item => !this.ownsAgent(item, id)).concat({ ...agent }).slice(-30);
+    events.push(this.event('agent_started', `${role} started`, { agent_id: id, ...this.checkoutMetadata(), source }));
   }); }
   async agentResumed(id, task = '', summary = '', metadata = {}) { if (!String(summary).trim()) throw new Error('resume summary required'); if (!String(metadata.turn_token || '').trim()) throw new Error('resume turn token required'); await this.mutate(({ status, events }) => {
-    const agent = status.agents.find(item => item.id === id);
+    const agent = status.agents.find(item => this.ownsAgent(item, id));
     if (!agent) throw new Error(`unknown agent: ${id}`);
     if (agent.resume_tokens?.includes(metadata.turn_token)) return;
     if (!agent.stopped_at) throw new Error(`agent already active: ${id}`);
@@ -181,12 +211,12 @@ export class RuntimeStore {
       start_signal_id: signal.id, task_id: metadata.task_id, start_source: source, resumed_at: startedAt,
       turn_token: metadata.turn_token, resume_tokens: [...(agent.resume_tokens || []), metadata.turn_token] });
     delete agent.stop_signal_id; delete agent.stop_source;
-    status.active_agents = status.active_agents.filter(item => item.id !== id).concat({ ...agent });
-    events.push(this.event('agent_started', `${agent.role || 'agent'} resumed`, { agent_id: id, source }));
+    status.active_agents = status.active_agents.filter(item => !this.ownsAgent(item, id)).concat({ ...agent });
+    events.push(this.event('agent_started', `${agent.role || 'agent'} resumed`, { agent_id: id, ...this.checkoutMetadata(), source }));
   }); }
   async agentStopped(id, outcome = 'stopped', metadata = {}) { await this.mutate(({ status, events, claims }) => {
-    const source = lifecycleSource(metadata.source), active = status.active_agents.find(item => item.id === id);
-    let agent = status.agents.find(item => item.id === id);
+    const source = lifecycleSource(metadata.source), active = status.active_agents.find(item => this.ownsAgent(item, id));
+    let agent = status.agents.find(item => this.ownsAgent(item, id));
     if (!agent && active) { agent = { ...active }; status.agents = status.agents.concat(agent).slice(-30); }
     if (!agent) return;
     if (agent.resumed_at && source === 'hook' && metadata.turn_token !== agent.turn_token) return;
@@ -203,20 +233,20 @@ export class RuntimeStore {
           if (outcome === 'stopped') delete signal.status; else signal.status = String(outcome).slice(0, 500);
           if (metadata.task_id) signal.task_id = String(metadata.task_id).slice(0, 500);
         }
-        const event = events.findLast(item => item.type === 'agent_stopped' && item.data?.agent_id === id);
+        const event = events.findLast(item => item.type === 'agent_stopped' && this.ownsLifecycleEvent(item, id));
         if (event) { event.message = `${agent.role || 'agent'} ${outcome}`; event.data = { ...event.data, source: 'hook' }; }
       }
       return;
     }
     const stoppedAt = now(), stopSource = preferredLifecycleSource(agent.stop_source, source);
-    status.active_agents = status.active_agents.filter(item => item.id !== id);
+    status.active_agents = status.active_agents.filter(item => !this.ownsAgent(item, id));
     Object.assign(agent, { status: outcome, stopped_at: stoppedAt, ...(stopSource ? { stop_source: stopSource } : {}) });
     const signal = appendSignal(status, { time: stoppedAt, from: id, to: 'main', kind: 'result', summary: String(outcome).slice(0, 300), ...signalMetadata({ task_id: metadata.task_id, status: outcome !== 'stopped' ? outcome : undefined }) });
     agent.stop_signal_id = signal.id;
-    events.push(this.event('agent_stopped', `${agent.role || 'agent'} ${outcome}`, { agent_id: id, source }));
+    events.push(this.event('agent_stopped', `${agent.role || 'agent'} ${outcome}`, { agent_id: id, ...this.checkoutMetadata(), source }));
     if (source === 'hook') {
-      claims.claims = claims.claims.filter(claim => claim.agent_id !== id);
-      events.push(this.event('claim_released', `${id} released claims`, { agent_id: id }));
+      claims.claims = claims.claims.filter(claim => !this.ownsClaim(claim, id));
+      events.push(this.event('claim_released', `${id} released claims`, { agent_id: id, ...this.checkoutMetadata() }));
     }
   }); }
   async addSignal(from, to, kind, summary, metadata = {}) { await this.mutate(({ status, events }) => { appendSignal(status, { time: now(), from, to, kind: String(kind).slice(0, 80), summary: String(summary).slice(0, 300), ...signalMetadata(metadata) }); events.push(this.event('agent_signal', `${from} -> ${to}: ${kind}`)); }); }
@@ -251,17 +281,18 @@ export class RuntimeStore {
     });
     const kinds = new Set(entries.map(entry => entry.kind));
     if (kinds.size !== 1) throw new Error('mixed claim roots');
+    for (const entry of entries) await this.assertClaimPath(entry);
     const kind = entries[0]?.kind;
     const normalized = [...new Set(entries.map(entry => entry.scope))];
     if (!normalized.length) throw new Error('claim requires a scope');
     await this.mutate(({ claims, events }) => {
-      const others = claims.claims.filter(claim => claim.agent_id !== agentId);
-      for (const scope of normalized) for (const claim of others) for (const existing of claim.scopes) if ((claim.scope_kind || (this.context ? 'checkout' : 'legacy')) === kind && scopesOverlap(scope, existing)) throw new Error('claim conflict: ' + scope + ' overlaps ' + existing + ' (' + claim.agent_id + ')');
+      const others = claims.claims.filter(claim => !this.ownsClaim(claim, agentId));
+      for (const scope of normalized) for (const claim of others) for (const existing of claim.scopes) if ((kind === 'installation' || this.sharesCheckout(claim)) && (claim.scope_kind || (this.context ? 'checkout' : 'legacy')) === kind && scopesOverlap(scope, existing)) throw new Error('claim conflict: ' + scope + ' overlaps ' + existing + ' (' + claim.agent_id + ')');
       claims.claims = others.concat({ agent_id: String(agentId), scopes: normalized, claimed_at: now(), ...(this.context ? { project_id: this.context.projectId, checkout_root: this.context.checkoutRoot, scope_kind: kind } : {}) });
       events.push(this.event('claim', String(agentId) + ' claimed ' + normalized.join(', '), { agent_id: agentId }));
     });
   }
-  async releaseClaim(agentId) { await this.mutate(({ claims, events }) => { claims.claims = claims.claims.filter(claim => claim.agent_id !== agentId); events.push(this.event('claim_released', String(agentId) + ' released claims', { agent_id: agentId })); }); }
+  async releaseClaim(agentId) { await this.mutate(({ claims, events }) => { claims.claims = claims.claims.filter(claim => !this.ownsClaim(claim, agentId)); events.push(this.event('claim_released', String(agentId) + ' released claims', { agent_id: agentId })); }); }
 }
 
 export function findRoot(start = process.cwd()) { let current = path.resolve(start), instructionRoot = null; while (true) { if (existsSync(path.join(current, '.git'))) return current; if (!instructionRoot && existsSync(path.join(current, 'AGENTS.md'))) instructionRoot = current; const parent = path.dirname(current); if (parent === current) break; current = parent; } return instructionRoot || path.resolve(start); }

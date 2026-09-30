@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -53,6 +53,34 @@ test('linked worktrees share selected project runtime', async () => {
   assert.equal((await secondary.readClaims()).claims[0].agent_id, 'worker-1');
 });
 
+test('linked worktrees keep same agent claims separate and release only own', async () => {
+  const f = await fixture(), linked = path.join(f.root, 'alpha-linked');
+  git(path.join(f.root, 'alpha'), 'worktree', 'add', '-qb', 'linked-fixture', linked);
+  const primaryContext = await f.context('alpha'), linkedContext = await f.context('alpha', linked);
+  const primary = new RuntimeStore(primaryContext), secondary = new RuntimeStore(linkedContext);
+  await primary.claim('shared-agent', ['src']);
+  await secondary.claim('shared-agent', ['src']);
+  assert.deepEqual((await primary.readClaims()).claims.map(claim => claim.checkout_root).sort(), [primaryContext.checkoutRoot, linkedContext.checkoutRoot].sort());
+  await primary.releaseClaim('shared-agent');
+  assert.deepEqual((await secondary.readClaims()).claims.map(claim => claim.checkout_root), [linkedContext.checkoutRoot]);
+});
+
+test('linked hook stop leaves same-ID agent and claim in other checkout active', async () => {
+  const f = await fixture(), linked = path.join(f.root, 'alpha-linked');
+  git(path.join(f.root, 'alpha'), 'worktree', 'add', '-qb', 'linked-fixture', linked);
+  const primaryContext = await f.context('alpha'), linkedContext = await f.context('alpha', linked);
+  const primary = new RuntimeStore(primaryContext), secondary = new RuntimeStore(linkedContext);
+  await primary.agentStarted('shared-agent', 'worker', 'Primary', { source: 'hook' });
+  await secondary.agentStarted('shared-agent', 'worker', 'Linked', { source: 'hook' });
+  await primary.claim('shared-agent', ['src']);
+  await secondary.claim('shared-agent', ['src']);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'shared-agent', cwd: linkedContext.checkoutRoot }, linkedContext);
+  const snapshot = await primary.readSnapshot();
+  assert.deepEqual(snapshot.claims.claims.map(claim => claim.checkout_root), [primaryContext.checkoutRoot]);
+  assert.deepEqual(snapshot.status.active_agents.map(agent => agent.checkout_root), [primaryContext.checkoutRoot]);
+  assert.equal(snapshot.status.agents.find(agent => agent.checkout_root === linkedContext.checkoutRoot)?.status, 'stopped');
+});
+
 test('claim records verified checkout identity', async () => {
   const f = await fixture(), context = await f.context('alpha'), store = new RuntimeStore(context);
   await store.claim('worker-1', ['src']);
@@ -64,6 +92,16 @@ test('claim records verified checkout identity', async () => {
 test('project claim cannot cover engine source', async () => {
   const f = await fixture(), store = new RuntimeStore(await f.context('alpha'));
   await assert.rejects(store.claim('worker-1', [path.resolve('.')]), /scope|root|outside/i);
+  assert.equal(existsSync(store.runtime), false);
+});
+
+test('project claim rejects checkout symlink into engine source', async t => {
+  const f = await fixture(), engineSource = path.join(f.root, 'engine-source');
+  await mkdir(engineSource);
+  try { await symlink(engineSource, path.join(f.root, 'alpha', 'src'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('symlink creation unavailable'); return; } throw error; }
+  const store = new RuntimeStore(await f.context('alpha'));
+  await assert.rejects(store.claim('worker-1', ['src/module.mjs']), /symlink|scope|escape/i);
   assert.equal(existsSync(store.runtime), false);
 });
 
@@ -87,6 +125,16 @@ test('installation claim stays within selected management space', async () => {
   await assert.rejects(store.claim('worker-2', ['installation:projects/beta/tasks']), /scope|project/i);
   await assert.rejects(store.claim('worker-2', ['src', 'installation:projects/alpha/memory']), /mixed|root/i);
   assert.equal((await store.readClaims()).claims.length, 1);
+});
+
+test('linked worktrees still conflict on shared installation files', async () => {
+  const f = await fixture(), linked = path.join(f.root, 'alpha-linked');
+  git(path.join(f.root, 'alpha'), 'worktree', 'add', '-qb', 'linked-fixture', linked);
+  const primary = new RuntimeStore(await f.context('alpha'));
+  const secondary = new RuntimeStore(await f.context('alpha', linked));
+  await primary.claim('worker-1', ['installation:projects/alpha/tasks']);
+  await assert.rejects(secondary.claim('worker-2', ['installation:projects/alpha/tasks']), /claim conflict/);
+  assert.equal((await primary.readClaims()).claims.length, 1);
 });
 
 test('missing binding writes nothing', async () => {
@@ -122,6 +170,26 @@ test('runtime copied from another project is rejected without rewrite', async ()
   await assert.rejects(beta.readStatus(), /project|identity/i);
   assert.equal(await readFile(beta.statusPath, 'utf8'), copied);
   assert.equal(existsSync(beta.tasksPath), false);
+});
+
+test('copied event log is rejected by project identity', async () => {
+  const f = await fixture(), alpha = new RuntimeStore(await f.context('alpha')), beta = new RuntimeStore(await f.context('beta'));
+  await alpha.addEvent('fixture', 'alpha event');
+  const copied = await readFile(alpha.eventsPath, 'utf8');
+  await mkdir(beta.runtime, { recursive: true });
+  await writeFile(beta.eventsPath, copied);
+  await assert.rejects(beta.readEvents(), /event.*project|project.*event/i);
+  assert.equal(await readFile(beta.eventsPath, 'utf8'), copied);
+  assert.equal(existsSync(beta.statusPath), false);
+});
+
+test('initialize rejects malformed events before creating any runtime document', async () => {
+  const f = await fixture(), store = new RuntimeStore(await f.context('alpha'));
+  await mkdir(store.runtime, { recursive: true });
+  await writeFile(store.eventsPath, '{malformed');
+  await assert.rejects(store.initialize(), /JSON|event|Unexpected|property|position/i);
+  assert.equal(await readFile(store.eventsPath, 'utf8'), '{malformed');
+  for (const file of [store.statusPath, store.tasksPath, store.claimsPath]) assert.equal(existsSync(file), false);
 });
 
 test('force init cannot overwrite another project runtime', async () => {
