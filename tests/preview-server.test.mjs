@@ -302,6 +302,20 @@ test('registered route refuses another project root', async () => {
   await assert.rejects(createPreviewServer(context, '127.0.0.1', { projectRoutes: [{ prefix: '/project-preview/', root: foreign, allow: () => true }] }), /outside selected project/);
 });
 
+test('registered route rejects in-root symlink to disallowed target', async t => {
+  const f = await projectPreviewFixture();
+  const context = await f.context('alpha');
+  const mock = path.join(f.alpha, 'mock');
+  await mkdir(path.join(mock, 'data'), { recursive: true });
+  await writeFile(path.join(mock, 'data', 'private.js'), 'in-root private bytes');
+  try { await symlink(path.join(mock, 'data'), path.join(mock, 'public'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('directory links unavailable'); return; } throw error; }
+  const base = await listening(t, context, { projectRoutes: [{ prefix: '/project-preview/', root: mock, allow: relative => !relative.startsWith('data/') && relative.endsWith('.js') }] });
+  const response = await fetch(`${base}/project-preview/public/private.js`);
+  assert.ok([403, 404].includes(response.status));
+  assert.doesNotMatch(await response.text(), /in-root private bytes/);
+});
+
 test('write origin and token remain required', async t => {
   const f = await projectPreviewFixture();
   const context = await f.context('alpha');

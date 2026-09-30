@@ -33,6 +33,8 @@ async function serveAsset(response, root, relative, allow) {
   if (!existsSync(file)) { response.writeHead(404); response.end('Not found'); return; }
   const resolved = await realpath(file);
   if (!within(root, resolved)) { response.writeHead(403); response.end('Forbidden'); return; }
+  const canonicalRelative = path.relative(root, resolved).split(path.sep).join('/');
+  if (!allow(canonicalRelative)) { response.writeHead(403); response.end('Forbidden'); return; }
   if (!(await stat(resolved)).isFile()) { response.writeHead(404); response.end('Not found'); return; }
   response.writeHead(200, { 'Content-Type': MIME[path.extname(resolved)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
   createReadStream(resolved).pipe(response);
