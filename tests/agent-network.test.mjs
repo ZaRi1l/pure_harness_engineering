@@ -462,6 +462,36 @@ test('reported-running mode keeps a neutral main anchor when an active worker ha
   controller.destroy();
 });
 
+test('reported-running task filter does not count the main anchor as linked task data', () => {
+  const { host } = fixture();
+  const controller = api.create(host, { initialState: { filter: 'task', taskId: 'unrelated' } });
+  const current = {
+    status: {
+      agents: [],
+      active_agents: [{ id: 'worker-b', role: 'worker', status: 'running', task_id: 'current' }],
+      signals: []
+    },
+    tasks: { tasks: [{ id: 'unrelated', owner: 'absent-worker' }, { id: 'current', owner: 'worker-b' }] }
+  };
+  controller.update(current, catalog);
+  assert.ok(find(host, 'node-id', 'main'));
+  assert.match(text(host), /No linked network data for the selected task/);
+
+  current.status.signals.push(
+    { id: 'delegate', from: 'main', to: 'worker-b', kind: 'delegate', task_id: 'current' },
+    { id: 'result', from: 'worker-b', to: 'main', kind: 'result', task_id: 'current' }
+  );
+  controller.update(current, catalog);
+  assert.match(text(host), /No linked network data for the selected task/);
+  assert.deepEqual(descendants(host, element => element.getAttribute('data-edge-index') !== null).map(element => element.getAttribute('data-edge-index')), ['0', '1']);
+
+  const task = find(host, 'network-task', '');
+  task.value = 'current'; task.dispatch('change');
+  assert.doesNotMatch(text(host), /No linked network data for the selected task/);
+  assert.equal(find(host, 'node-id', 'worker-b').getAttribute('data-emphasis'), 'true');
+  controller.destroy();
+});
+
 test('reported-running mode leaves an empty snapshot without focusable graph nodes or signals', () => {
   const { host } = fixture();
   const controller = api.create(host);

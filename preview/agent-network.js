@@ -231,7 +231,7 @@
       const running = model.nodes.filter(node => node.id !== 'main' && active(node) && (!activeIds || activeIds.has(node.id)));
       const main = model.nodes.find(node => node.id === 'main');
       const nodes = running.length
-        ? [{ ...main, id: 'main', role: main?.role || 'main', status: 'unknown', claims: main?.claims || [], matchesFilter: true, emphasized: true }, ...running]
+        ? [{ ...main, id: 'main', role: main?.role || 'main', status: 'unknown', claims: main?.claims || [], matchesFilter: Boolean(main?.matchesFilter), emphasized: true }, ...running]
         : [];
       const runningIds = new Set(running.map(node => node.id));
       const ids = new Set(nodes.map(node => node.id));
