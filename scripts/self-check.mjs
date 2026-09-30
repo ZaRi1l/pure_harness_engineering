@@ -70,7 +70,7 @@ export async function checkRepository(root, { exerciseRuntime = true, exerciseHt
       if (hookMap && typeof hookMap === 'object') for (const event of HOOK_EVENTS) { const groups = hookMap[event], handlers = Array.isArray(groups) ? groups.flatMap(group => Array.isArray(group?.hooks) ? group.hooks : []) : []; const valid = handlers.length > 0 && handlers.every(handler => handler.type === 'command' && handler.command && handler.commandWindows); report.require(valid, `Hook event ${event} is configured`, `missing or invalid required hook event: ${event}`); }
     } catch (error) { report.failures.push(`invalid hooks.json: ${error.message}`); }
   }
-  const core = RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'core-runtime') });
+  const core = RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'core-runtime', 'context-v1') });
   const runtimeStatusPath = path.join(core.paths.runtime, 'status.json');
   const dispatch = existsSync(runtimeStatusPath) ? hookDispatchDiagnostic(await new RuntimeStore(core).readSnapshot()) : hookDispatchDiagnostic({ status: { agents: [] }, events: [] });
   if (dispatch.state === 'observed') report.checks.push(dispatch.message);

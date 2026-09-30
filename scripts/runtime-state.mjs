@@ -88,7 +88,7 @@ export class RuntimeStore {
     return source.split(/\r?\n/).filter(Boolean).map(line => {
       const event = JSON.parse(line);
       if (!event || typeof event !== 'object' || Array.isArray(event)) throw new Error('invalid runtime event');
-      if (this.context?.kind !== 'core' && this.context && event.project_id !== this.context.projectId) throw new Error('event project identity mismatch');
+      if (this.context && event.project_id !== this.context.projectId) throw new Error('event project identity mismatch');
       return event;
     });
   }

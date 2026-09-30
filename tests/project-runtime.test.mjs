@@ -183,6 +183,21 @@ test('copied event log is rejected by project identity', async () => {
   assert.equal(existsSync(beta.statusPath), false);
 });
 
+test('core context rejects foreign event log on read and initialization without writes', async () => {
+  const f = await fixture(), alpha = new RuntimeStore(await f.context('alpha'));
+  await alpha.addEvent('fixture', 'alpha event');
+  const engineRoot = path.join(f.root, 'core-engine');
+  await mkdir(engineRoot);
+  const core = new RuntimeStore(RuntimeStore.coreContext({ engineRoot, runtimeRoot: path.join(engineRoot, '.ai', 'runtime') }));
+  const copied = await readFile(alpha.eventsPath, 'utf8');
+  await mkdir(core.runtime, { recursive: true });
+  await writeFile(core.eventsPath, copied);
+  await assert.rejects(core.readEvents(), /event project identity mismatch/);
+  await assert.rejects(core.initialize(), /event project identity mismatch/);
+  assert.equal(await readFile(core.eventsPath, 'utf8'), copied);
+  for (const file of [core.statusPath, core.tasksPath, core.claimsPath]) assert.equal(existsSync(file), false);
+});
+
 test('initialize rejects malformed events before creating any runtime document', async () => {
   const f = await fixture(), store = new RuntimeStore(await f.context('alpha'));
   await mkdir(store.runtime, { recursive: true });

@@ -70,6 +70,20 @@ test('self-check leaves legacy engine runtime as an explicit read fixture', asyn
   assert.equal(await readFile(legacy.statusPath, 'utf8'), before);
 });
 
+test('self-check does not reinterpret pre-context core runtime events', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-check-'));
+  const oldRuntime = path.join(root, '.ai', 'core-runtime');
+  await mkdir(oldRuntime, { recursive: true });
+  const oldStatus = '{"schema_version":1,"project_id":"core","agents":[]}';
+  const oldEvents = '{"type":"fixture","project_id":"alpha"}\n';
+  await writeFile(path.join(oldRuntime, 'status.json'), oldStatus);
+  await writeFile(path.join(oldRuntime, 'events.jsonl'), oldEvents);
+  const report = await checkRepository(root, { exerciseRuntime: false, exerciseHttp: false });
+  assert.equal(Array.isArray(report.warnings), true);
+  assert.equal(await readFile(path.join(oldRuntime, 'status.json'), 'utf8'), oldStatus);
+  assert.equal(await readFile(path.join(oldRuntime, 'events.jsonl'), 'utf8'), oldEvents);
+});
+
 test('self-check serves both dashboard assets and renders the static network', async () => {
   const accepted = () => ({ status: 0, stdout: '{"checks":{"config.load":{"status":"ok"}}}', stderr: '' });
   const report = await checkRepository(path.resolve('.'), { spawnCodex: accepted });
