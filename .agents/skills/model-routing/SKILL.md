@@ -5,7 +5,7 @@ description: Use when spawning a configured subagent requires a model-availabili
 
 # Model routing
 
-Apply the GPT-6 Sol/Luna to GPT-5.6 route below only when the role or target explicitly configures a Codex model policy. For Claude, OpenCode, and Antigravity `inherit`, defer to target-native model availability; do not invent a model override or fallback.
+Use the route below only when the active target is Codex and the selected Codex role policy explicitly uses GPT-6 Sol or Luna. Otherwise follow the active target-native model policy (including Claude, OpenCode, and Antigravity `inherit`), without a Codex fallback or Astra restriction; a dormant Codex field in the role does not activate this route.
 
 Use the role's configured GPT-6 Sol or Luna model first. When native spawn-time model override is available, preserve the role, task, sandbox, and reasoning effort.
 
