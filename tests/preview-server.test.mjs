@@ -304,16 +304,15 @@ test('catalog route refuses a replaced skills-root junction while preserving nor
   assert.doesNotMatch(JSON.stringify(catalog), /PRIVATE_SKILL_SOURCE/);
 });
 
-test('guide commands remain backed by package scripts', async () => {
+test('staged setup guide advertises only backed, non-reset commands', async () => {
   const scripts = JSON.parse(await readFile(path.resolve('package.json'), 'utf8')).scripts;
-  const messages = await readFile(path.resolve('preview/preferences.js'), 'utf8');
-  for (const command of ['init', 'status', 'watchdog', 'preview', 'preview:live', 'demo:network', 'demo:reset', 'test', 'self-check']) {
-    assert.ok(scripts[command]);
-    assert.match(messages, new RegExp(command === 'test' ? 'npm test' : 'npm run ' + command));
-  }
-  assert.match(messages, /Agent Network demo: npm run demo:network\\nReset network demo: npm run demo:reset/);
-  assert.match(messages, /\.ai\/tasks\/\*\.md/);
-  assert.match(messages, /GPT-5\.6/);
+  const context = { globalThis: {}, document: { documentElement: { dataset: {}, setAttribute() {} } } };
+  runInNewContext(await readFile(path.resolve('preview/preferences.js'), 'utf8'), context);
+  const guide = context.globalThis.PreviewPreferences.create(context.document, { storage: null }).t('guide.body');
+  const commands = [...guide.matchAll(/npm(?: run)? [\w:-]+/g)].map(match => match[0]);
+  assert.deepEqual(commands, ['npm test', 'npm run self-check']);
+  for (const command of commands) assert.ok(scripts[command.replace(/^npm(?: run)? /, '')]);
+  assert.doesNotMatch(guide, /Remove-Item|Get-ChildItem|\.ai\/tasks\/\*\.md/i);
 });
 
 test('rejects preview links that resolve outside preview root', async t => {

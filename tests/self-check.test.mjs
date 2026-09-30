@@ -112,7 +112,7 @@ test('self-check rejects tracked Unix and Windows absolute roots in manifests an
   await mkdir(manifestDir, { recursive: true });
   await mkdir(adapterDir);
   await writeFile(path.join(manifestDir, 'project.json'), JSON.stringify({ schemaVersion: 1, id: 'alpha', paths: { tasks: '/var/private/tasks' } }));
-  await writeFile(path.join(adapterDir, 'project.json'), JSON.stringify({ schemaVersion: 1, id: 'alpha', projectRoot: 'C:\\private\\repo' }));
+  await writeFile(path.join(adapterDir, 'project.json'), JSON.stringify({ schemaVersion: 1, id: 'alpha', projectRoot: ['C:', 'private', 'repo'].join('\\') }));
   execFileSync('git', ['init', '-q'], { cwd: root });
   execFileSync('git', ['add', 'projects/alpha/project.json', 'harness-adapter/project.json'], { cwd: root });
   const report = await checkRepository(root, { exerciseRuntime: false, exerciseHttp: false });

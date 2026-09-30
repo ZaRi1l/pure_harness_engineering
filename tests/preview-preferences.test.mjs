@@ -159,3 +159,20 @@ test('dashboard heading and network guide describe reported records, not confirm
   assert.doesNotMatch(preferences.t('guide.networkBody'), /현재 실행자|실시간\/기록/);
   assert.equal(preferences.t('dashboard.futureStart'), '미래 시작 시각');
 });
+
+test('guide keeps project state intact and directs setup to a staged installation in both locales', () => {
+  const { api, document, storage } = fixture();
+  const preferences = api.create(document, { storage });
+  const english = preferences.t('guide.body');
+  assert.match(english, /staged local installation/i);
+  assert.match(english, /selected project.*management paths/i);
+  assert.match(english, /preserve existing.*runtime/i);
+  assert.doesNotMatch(english, /Remove-Item|Get-ChildItem|\.ai\/tasks\/\*\.md/i);
+
+  preferences.setLocale('ko');
+  const korean = preferences.t('guide.body');
+  assert.match(korean, /별도.*설치/);
+  assert.match(korean, /선택한 프로젝트.*관리 경로/);
+  assert.match(korean, /기존.*runtime.*보존/);
+  assert.doesNotMatch(korean, /Remove-Item|Get-ChildItem|\.ai\/tasks\/\*\.md/i);
+});

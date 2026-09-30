@@ -6,25 +6,21 @@ Node.js is used for lightweight scripts and hooks. A persistent Node server is *
 
 ## Start
 
-1. Clone or copy the tracked harness files into a Git repository.
-2. Run `npm run init`.
-3. Open the repository in Codex, inspect and trust hooks with `/hooks`.
-4. Run `npm run self-check`.
-5. Use Codex normally. Use `npm run status` when you need a terminal snapshot.
+1. Prepare a separate staged local installation from the tracked neutral engine files; keep the project checkout independent.
+2. Declare one project and its management paths, then configure a local binding for the selected checkout.
+3. Validate that binding before any stateful command. Open the project checkout in Codex and verify agent, skill, and hook discovery there.
+4. Run the engine tests and self-check. Use project commands only with the validated context.
 
 ```powershell
-npm run init
-npm run status
-npm run preview
-npm run preview:live
-npm run watchdog
 npm test
 npm run self-check
+# For a Node-backed staged installation with a prepared local binding:
+node scripts/project-diagnostic.mjs --checkout <checkout-root> --binding <binding-path> --project <project-id>
 ```
 
-`npm run preview` creates `.ai/runtime/preview.html` from one runtime snapshot and exits. `npm run preview:live` starts an optional dashboard at `http://127.0.0.1:8765/`; it is localhost-only and refreshes runtime state every three seconds.
+With a validated selected project context, `npm run preview` writes one snapshot to that project's declared runtime path and exits. `npm run preview:live` starts an optional localhost dashboard that refreshes selected-project runtime state every three seconds.
 
-Preview Lab is read-only. It shows discovered Planner Task Specs from `.ai/tasks/*.md` and registered UI artifacts. Multiple artifacts appear as tabs with one large selected preview, so route, state, hash, or query-string variants of one app can be reviewed separately. Ask Codex to change a goal or Task Spec; do not edit runtime state through the dashboard.
+Preview Lab is read-only. It shows Planner Task Specs from the selected project's declared management path and registered UI artifacts. Multiple artifacts appear as tabs with one large selected preview, so route, state, hash, or query-string variants of one app can be reviewed separately. Ask Codex to change a goal or Task Spec; do not edit runtime state through the dashboard.
 
 ### Agent Signal Network
 
@@ -43,34 +39,11 @@ npm run demo:reset
 
 The demo reads fixture data from `.ai/demo/network-runtime`, never `.ai/runtime`. `npm run demo:reset` removes exactly `.ai/demo/network-runtime`; it does not clear real runtime state. In the demo Dashboard, select a node and edge, switch Live/History, try task and failure filters, and inspect Active Agents and Signal Timeline. `npm run preview` writes a static HTML snapshot with an interactive network labeled **Snapshot History** and snapshot-based filters; the saved file does not poll or update after generation. The live dashboard refreshes every three seconds while its server runs.
 
-### New Project Setup / Copying Pure Harness
+### Staged Local Installation
 
-When the Pure Harness folder is copied into a completely new project, project-specific state and Pure Harness development records may come with it. `.ai/runtime` can retain the original project's goals, tasks, events, agents, and write claims. `npm run init` creates missing runtime files and fills in missing fields; it does **not** completely clear an existing copied runtime, so remove that directory first.
+Start from a clean neutral engine export in a separate staged local installation, not from a copy of an existing project's runtime. Declare the selected project's Task Spec, memory, and runtime management paths in its project manifest; keep local checkout/binding paths in ignored local configuration. The engine export excludes its own development Task Specs and memory. In a portable/no-Node workflow, use the declared management paths without assuming a source-checkout `.ai/` location.
 
-If `.ai/runtime` is reset while a Codex session is already open, the recorded `SessionStart` history is removed and that hook may not fire again until a later session. This means only that session lifecycle was not observed in the new runtime; Pure Harness does not fabricate a replacement event or treat the missing event alone as a broken harness.
-
-Use this recommended Windows PowerShell sequence from the new project root:
-
-```powershell
-# 1. Reset project-specific runtime state
-Remove-Item -Recurse -Force .ai\runtime
-npm run init
-
-# 2. Remove Pure Harness development Task Specs
-# Run only when starting a completely new project from a copied harness
-Get-ChildItem .ai\tasks\*.md |
-Where-Object { $_.Name -ne "README.md" } |
-Remove-Item -Force
-
-# 3. Verify the copied harness
-npm run self-check
-npm test
-
-# 4. Start the Live Dashboard
-npm run preview:live
-```
-
-The engine export does not include its development Task Specs or memory. Keep each project's Task Specs and durable memory in that project's installation space; do not copy source-development records into a new installation. If `.git` was copied, run `git remote -v` and make sure the destination is not still connected to the original Pure Harness remote.
+Preserve existing project runtime, Task Specs, memory, claims, and open sessions. Do not reset or migrate them during installation. Inventory and review any later migration separately, with quiescence, backup, validation, and rollback evidence. If there is no validated selected project context, stop before stateful commands rather than guessing a default project. In a Node-backed staging setup, use `scripts/project-diagnostic.mjs` with explicit checkout, binding, and project arguments to check the binding; then run `npm test` and `npm run self-check` from the staged engine and verify native discovery in a fresh selected-project session.
 
 ## Runtime
 
@@ -129,7 +102,7 @@ Pure Harness does not run a daemon or script that intercepts Codex-native spawn 
 
 - `.codex/agents/` and `.codex/config.toml`: agent catalog source of truth.
 - `.agents/skills/`: repository Skills, discovered from `SKILL.md` frontmatter.
-- `.ai/runtime/`: ignored generated goal/task/event/claim state.
+- `projects/`: neutral project schema/example; each selected project's declared installation runtime path owns generated state.
 - `scripts/`: dependency-free Node built-in CLI, hook bridge, watchdog, preview, and self-check.
 - `preview/`: optional live dashboard and UI proposals.
 
