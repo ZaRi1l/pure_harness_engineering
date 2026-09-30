@@ -70,9 +70,7 @@ npm test
 npm run preview:live
 ```
 
-Files under `.ai/tasks/*.md` may be Task Specs used to develop Pure Harness itself, and copied specs appear in Preview Lab. Delete existing Task Specs other than `README.md` only when starting a completely new project. Do **not** delete `.ai/tasks` when continuing an existing project or when its Task Specs must be preserved.
-
-Review `.ai/memory` for information specific to the source project, but do not automatically delete the whole directory; it can contain durable project knowledge worth retaining. If `.git` was copied, run `git remote -v` and make sure the destination is not still connected to the original Pure Harness remote.
+The engine export does not include its development Task Specs or memory. Keep each project's Task Specs and durable memory in that project's installation space; do not copy source-development records into a new installation. If `.git` was copied, run `git remote -v` and make sure the destination is not still connected to the original Pure Harness remote.
 
 ## Runtime
 
