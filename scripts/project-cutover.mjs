@@ -8,6 +8,9 @@ const REQUIRED_COMMANDS = ['status', 'preview', 'claim', 'release-claim'];
 
 export async function inventoryRuntime(root) {
   if (typeof root !== 'string' || !path.isAbsolute(root)) throw new Error('legacy runtime root must be absolute');
+  const rootInfo = await lstat(root);
+  if (rootInfo.isSymbolicLink()) throw new Error('legacy runtime root is a link');
+  if (!rootInfo.isDirectory()) throw new Error('legacy runtime root is not a directory');
   const canonical = await realpath(root);
   const entries = [];
   async function visit(directory, relative = '') {

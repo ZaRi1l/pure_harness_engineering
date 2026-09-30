@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -22,6 +22,12 @@ async function fixture() {
   const options = { projectId: 'alpha', checkoutRoot, bindingPath, legacyRuntimeRoot, validationReport: { ok: true }, discoveryEvidence: { roles: ['worker'], skills: ['testing'], hookEvents: ['SessionStart', 'SessionEnd', 'SubagentStart', 'SubagentStop', 'Stop'] }, quiescence: { legacySessions: 0, legacyWriters: 0, activeClaims: 0 }, verifiedCommands: ['status', 'preview', 'claim', 'release-claim'] };
   options.legacyInventory = await inventoryRuntime(legacyRuntimeRoot);
   return { root, options };
+}
+
+async function disposableFixture(t) {
+  const result = await fixture();
+  t.after(() => rm(result.root, { recursive: true, force: true }));
+  return result;
 }
 
 test('cutover refuses live legacy session', async () => {
@@ -84,4 +90,53 @@ test('caller-supplied forged native evidence cannot authorize cutover', async ()
   });
   assert.equal(report.ok, false);
   assert.match(report.failures.join(' '), /native|fresh.session/i);
+});
+
+test('cutover detects same-size runtime content changed after initial inventory', async t => {
+  const { options } = await disposableFixture(t);
+  await writeFile(path.join(options.legacyRuntimeRoot, 'status.json'), '{"old":null}\n');
+  const report = await checkCutover(options);
+  assert.equal(report.ok, false);
+  assert.match(report.failures.join(' '), /inventory.*changed|inventory.*unreadable/i);
+});
+
+test('cutover detects a nested runtime entry added after initial inventory', async t => {
+  const { options } = await disposableFixture(t);
+  await mkdir(path.join(options.legacyRuntimeRoot, 'nested'));
+  await writeFile(path.join(options.legacyRuntimeRoot, 'nested', 'new.json'), '{}\n');
+  const report = await checkCutover(options);
+  assert.equal(report.ok, false);
+  assert.match(report.failures.join(' '), /inventory.*changed|inventory.*unreadable/i);
+});
+
+test('inventory rejects a linked runtime root', async t => {
+  const { root, options } = await disposableFixture(t);
+  const linkedRoot = path.join(root, 'linked-runtime');
+  try { await symlink(options.legacyRuntimeRoot, linkedRoot, process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('link creation unavailable'); return; } throw error; }
+  await assert.rejects(inventoryRuntime(linkedRoot), /link/i);
+});
+
+test('cutover rejects a linked child added after initial inventory', async t => {
+  const { root, options } = await disposableFixture(t);
+  const outside = path.join(root, 'outside');
+  await mkdir(outside);
+  await writeFile(path.join(outside, 'secret.json'), '{}\n');
+  try { await symlink(outside, path.join(options.legacyRuntimeRoot, 'linked'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('link creation unavailable'); return; } throw error; }
+  await assert.rejects(inventoryRuntime(options.legacyRuntimeRoot), /link/i);
+  const report = await checkCutover(options);
+  assert.equal(report.ok, false);
+  assert.match(report.failures.join(' '), /inventory.*unreadable/i);
+});
+
+test('inventory rejects a non-directory runtime root', async t => {
+  const { options } = await disposableFixture(t);
+  await assert.rejects(inventoryRuntime(path.join(options.legacyRuntimeRoot, 'status.json')));
+});
+
+test('inventory rejects unsupported FIFO entries', { skip: process.platform === 'win32' }, async t => {
+  const { options } = await disposableFixture(t);
+  execFileSync('mkfifo', [path.join(options.legacyRuntimeRoot, 'queue')]);
+  await assert.rejects(inventoryRuntime(options.legacyRuntimeRoot), /unsupported entry/i);
 });
