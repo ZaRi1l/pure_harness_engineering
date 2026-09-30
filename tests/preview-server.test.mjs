@@ -4,10 +4,40 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
+import { execFileSync } from 'node:child_process';
 
 import { createPreviewServer } from '../scripts/preview-server.mjs';
 import { RuntimeStore } from '../scripts/runtime-state.mjs';
 import { discoverCatalog, legacyCatalogFixture } from '../scripts/catalog.mjs';
+import { loadProjectContext } from '../scripts/project-context.mjs';
+
+async function projectPreviewFixture() {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-project-preview-'));
+  const installation = path.join(root, 'installation');
+  await mkdir(path.join(installation, 'preview'), { recursive: true });
+  await writeFile(path.join(installation, 'preview', 'index.html'), '<h1>Generic dashboard</h1>');
+  const registrations = [];
+  for (const id of ['alpha', 'beta']) {
+    const projectRoot = path.join(root, id);
+    await mkdir(path.join(projectRoot, 'harness-adapter'), { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+    await writeFile(path.join(projectRoot, 'harness-adapter', 'project.json'), JSON.stringify({ schemaVersion: 1, id, displayName: id, paths: { tasks: `projects/${id}/tasks`, memory: `projects/${id}/memory`, runtime: `projects/${id}/runtime` }, adapters: {} }));
+    await mkdir(path.join(installation, 'projects', id, 'tasks'), { recursive: true });
+    await writeFile(path.join(installation, 'projects', id, 'tasks', `${id}.md`), `# ${id} private plan`);
+    registrations.push({ projectId: id, harnessRoot: installation, projectRoot });
+  }
+  const bindingPath = path.join(root, 'binding.json');
+  await writeFile(bindingPath, JSON.stringify({ schemaVersion: 1, registrations }));
+  const context = id => loadProjectContext({ projectId: id, checkoutRoot: path.join(root, id), bindingPath });
+  return { root, installation, context, alpha: path.join(root, 'alpha'), beta: path.join(root, 'beta') };
+}
+
+async function listening(t, context, options) {
+  const server = await createPreviewServer(context, '127.0.0.1', options);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  return `http://127.0.0.1:${server.address().port}`;
+}
 
 test('serves dashboard, task specs, and runtime JSON while rejecting traversal', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-preview-'));
@@ -202,4 +232,85 @@ test('rejects preview links that resolve outside preview root', async t => {
   t.after(() => new Promise(resolve => server.close(resolve)));
   const response = await fetch(`http://127.0.0.1:${server.address().port}/preview/linked/secret.txt`);
   assert.equal(response.status, 403);
+});
+
+test('dashboard reads selected project', async t => {
+  const f = await projectPreviewFixture();
+  const alpha = await f.context('alpha'), beta = await f.context('beta');
+  await new RuntimeStore(alpha).setGoal('alpha-only goal');
+  await new RuntimeStore(beta).setGoal('beta-only goal');
+  const base = await listening(t, alpha);
+  const snapshot = await (await fetch(`${base}/runtime/snapshot`)).json();
+  const specs = await (await fetch(`${base}/runtime/task-specs`)).json();
+  const page = await (await fetch(base)).text();
+  assert.equal(snapshot.status.current_goal, 'alpha-only goal');
+  assert.deepEqual(specs.taskSpecs.map(spec => spec.title), ['alpha private plan']);
+  assert.match(page, /Generic dashboard/);
+});
+
+test('second project data is absent', async t => {
+  const f = await projectPreviewFixture();
+  const alpha = await f.context('alpha'), beta = await f.context('beta');
+  await new RuntimeStore(alpha).setGoal('alpha-only goal');
+  await new RuntimeStore(beta).setGoal('beta-only secret');
+  const base = await listening(t, alpha);
+  const snapshot = await (await fetch(`${base}/runtime/snapshot`)).text();
+  const specs = await (await fetch(`${base}/runtime/task-specs`)).text();
+  assert.doesNotMatch(snapshot + specs, /beta-only secret|beta private plan/);
+  assert.ok([403, 404].includes((await fetch(`${base}/projects/beta/runtime/status.json`)).status));
+});
+
+test('registered route rejects escaped private file', async t => {
+  const f = await projectPreviewFixture();
+  const context = await f.context('alpha');
+  const mock = path.join(f.alpha, 'mock');
+  await mkdir(mock);
+  await writeFile(path.join(mock, 'index.html'), 'alpha public mock');
+  await writeFile(path.join(f.alpha, 'private.html'), 'alpha private bytes');
+  const base = await listening(t, context, { projectRoutes: [{ prefix: '/project-preview/', root: mock, allow: relative => relative.endsWith('.html') }] });
+  assert.equal(await (await fetch(`${base}/project-preview/`)).text(), 'alpha public mock');
+  for (const url of ['/project-preview/%2e%2e%2fprivate.html', '/project-preview/%5cprivate.html']) {
+    const response = await fetch(base + url);
+    assert.ok([403, 404].includes(response.status));
+    assert.doesNotMatch(await response.text(), /alpha private bytes/);
+  }
+  try { await symlink(path.join(f.alpha, 'private.html'), path.join(mock, 'linked.html'), 'file'); }
+  catch (error) { if (error.code !== 'EPERM') throw error; return; }
+  const escaped = await fetch(`${base}/project-preview/linked.html`);
+  assert.ok([403, 404].includes(escaped.status));
+  assert.doesNotMatch(await escaped.text(), /alpha private bytes/);
+});
+
+test('runtime JSON route remains blocked', async t => {
+  const f = await projectPreviewFixture();
+  const context = await f.context('alpha');
+  const mock = path.join(f.alpha, 'mock');
+  await mkdir(path.join(mock, 'data'), { recursive: true });
+  await writeFile(path.join(mock, 'data', 'private.json'), '{"private":"hidden bytes"}');
+  const base = await listening(t, context, { projectRoutes: [{ prefix: '/project-preview/', root: mock, allow: relative => /\.(?:html|js|css)$/.test(relative) }] });
+  const response = await fetch(`${base}/project-preview/data/private.json`);
+  assert.ok([403, 404].includes(response.status));
+  assert.doesNotMatch(await response.text(), /hidden bytes/);
+});
+
+test('registered route refuses another project root', async () => {
+  const f = await projectPreviewFixture();
+  const context = await f.context('alpha');
+  const foreign = path.join(f.beta, 'mock');
+  await mkdir(foreign);
+  await writeFile(path.join(foreign, 'index.html'), 'beta private mock');
+  await assert.rejects(createPreviewServer(context, '127.0.0.1', { projectRoutes: [{ prefix: '/project-preview/', root: foreign, allow: () => true }] }), /outside selected project/);
+});
+
+test('write origin and token remain required', async t => {
+  const f = await projectPreviewFixture();
+  const context = await f.context('alpha');
+  const store = new RuntimeStore(context);
+  await store.setGoal('unchanged');
+  const base = await listening(t, context);
+  for (const headers of [{}, { origin: base, 'x-task-write-token': 'invented' }]) {
+    const response = await fetch(`${base}/runtime/tasks`, { method: 'PUT', headers, body: '{}' });
+    assert.ok([403, 405].includes(response.status));
+  }
+  assert.equal((await store.readStatus()).current_goal, 'unchanged');
 });
