@@ -230,9 +230,11 @@
         ? new Set(snapshot.status.active_agents.filter(item => item?.id).map(item => item.id)) : null;
       const running = model.nodes.filter(node => node.id !== 'main' && active(node) && (!activeIds || activeIds.has(node.id)));
       const main = model.nodes.find(node => node.id === 'main');
-      const nodes = [{ ...main, id: 'main', role: main?.role || 'main', status: 'unknown', claims: main?.claims || [], matchesFilter: true, emphasized: true }, ...running];
+      const nodes = running.length
+        ? [{ ...main, id: 'main', role: main?.role || 'main', status: 'unknown', claims: main?.claims || [], matchesFilter: true, emphasized: true }, ...running]
+        : [];
       const runningIds = new Set(running.map(node => node.id));
-      const ids = new Set(['main', ...runningIds]);
+      const ids = new Set(nodes.map(node => node.id));
       return { nodes, edges: model.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to) && (runningIds.has(edge.from) || runningIds.has(edge.to))), tasks: model.tasks };
     }
     function scaleAround(factor, x = bounds.width / 2, y = bounds.height / 2) {

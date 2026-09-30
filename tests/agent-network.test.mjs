@@ -462,11 +462,23 @@ test('reported-running mode keeps a neutral main anchor when an active worker ha
   controller.destroy();
 });
 
+test('reported-running mode leaves an empty snapshot without focusable graph nodes or signals', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  controller.update({ status: { agents: [], active_agents: [], signals: [] } }, catalog);
+  const svg = descendants(host, element => element.tagName === 'SVG')[0];
+  assert.equal(descendants(svg, element => element.getAttribute('tabindex') === '0').length, 0);
+  assert.equal(find(host, 'node-id', 'main'), undefined);
+  assert.match(text(host), /No agents or signals in this snapshot/);
+  controller.destroy();
+});
+
 test('reported-running mode explains how to view history when no agents are listed', () => {
   const { host } = fixture();
   const controller = api.create(host);
   controller.update({ status: { agents: [{ id: 'completed', status: 'completed' }], active_agents: [], signals: [] } }, catalog);
   assert.match(text(host), /No agents reported running.*Switch to Full history/);
+  assert.equal(find(host, 'node-id', 'main'), undefined);
   assert.equal(find(host, 'node-id', 'completed'), undefined);
   controller.destroy();
 });
