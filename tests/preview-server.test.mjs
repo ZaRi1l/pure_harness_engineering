@@ -248,6 +248,33 @@ test('dashboard reads selected project', async t => {
   assert.match(page, /Generic dashboard/);
 });
 
+test('explicit asset root serves trusted preview bytes instead of installation bytes', async t => {
+  const f = await projectPreviewFixture();
+  const context = await f.context('alpha');
+  const trustedRoot = path.join(f.root, 'trusted-engine');
+  await mkdir(path.join(trustedRoot, 'preview'), { recursive: true });
+  await writeFile(path.join(f.installation, 'preview', 'index.html'), 'MALICIOUS_INSTALLATION_PAGE');
+  await writeFile(path.join(f.installation, 'preview', 'dashboard.js'), 'MALICIOUS_INSTALLATION_SCRIPT');
+  await writeFile(path.join(trustedRoot, 'preview', 'index.html'), 'TRUSTED_ENGINE_PAGE');
+  await writeFile(path.join(trustedRoot, 'preview', 'dashboard.js'), 'TRUSTED_ENGINE_SCRIPT');
+  await new RuntimeStore(context).setGoal('selected project runtime');
+
+  const base = await listening(t, context, { assetRoot: trustedRoot });
+  const page = await (await fetch(base)).text();
+  const script = await (await fetch(`${base}/preview/dashboard.js`)).text();
+  const snapshot = await (await fetch(`${base}/runtime/snapshot`)).json();
+  assert.equal(page, 'TRUSTED_ENGINE_PAGE');
+  assert.equal(script, 'TRUSTED_ENGINE_SCRIPT');
+  assert.equal(snapshot.status.current_goal, 'selected project runtime');
+  assert.equal((await fetch(`${base}/runtime/undeclared-goals`)).status, 404);
+  assert.equal((await fetch(`${base}/runtime/tasks`, { method: 'PUT', headers: { origin: base, 'x-task-write-token': 'invented' }, body: '{}' })).status, 405);
+});
+
+test('explicit asset root requires an absolute path', async () => {
+  const f = await projectPreviewFixture();
+  await assert.rejects(createPreviewServer(await f.context('alpha'), '127.0.0.1', { assetRoot: '.' }), /assetRoot must be an absolute path/);
+});
+
 test('second project data is absent', async t => {
   const f = await projectPreviewFixture();
   const alpha = await f.context('alpha'), beta = await f.context('beta');

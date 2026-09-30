@@ -45,7 +45,9 @@ export async function createPreviewServer(context, host = '127.0.0.1', options =
   const root = legacy ? context.root : context?.harnessRoot;
   if (!root) throw new Error('validated project context required');
   if (host !== '127.0.0.1') throw new Error('preview must bind to localhost');
-  const previewRoot = path.resolve(root, 'preview'), previewReal = await realpath(previewRoot);
+  const assetRoot = options.assetRoot === undefined ? root : options.assetRoot;
+  if (typeof assetRoot !== 'string' || !path.isAbsolute(assetRoot)) throw new Error('assetRoot must be an absolute path');
+  const previewRoot = path.resolve(assetRoot, 'preview'), previewReal = await realpath(previewRoot);
   const routes = await registeredRoutes(context, options.projectRoutes || []);
   const goalAdapter = getGoalAdapter(context, options.goalAdapters);
   const store = legacy ? RuntimeStore.legacyFixture(root, { runtimeDir: options.runtimeDir }) : new RuntimeStore(context);
