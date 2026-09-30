@@ -328,3 +328,12 @@ test('write origin and token remain required', async t => {
   }
   assert.equal((await store.readStatus()).current_goal, 'unchanged');
 });
+
+test('unregistered GOAL runtime route returns 404', async t => {
+  const f = await projectPreviewFixture();
+  const base = await listening(t, await f.context('alpha'));
+  for (const route of ['/runtime/undeclared-goals', '/runtime/undeclared-proposals']) {
+    const response = await fetch(base + route);
+    assert.equal(response.status, 404, route);
+  }
+});

@@ -57,6 +57,7 @@ export async function createPreviewServer(context, host = '127.0.0.1', options =
       if (request.method !== 'GET') { response.writeHead(405, { 'Cache-Control': 'no-store' }); response.end('Method not allowed'); return; }
       const runtime = { '/runtime/snapshot': () => store.readSnapshot(), '/runtime/status': () => store.readStatus(), '/runtime/tasks': () => store.readTasks(), '/runtime/events': async () => ({ events: await store.readEvents() }), '/runtime/catalog': () => discoverCatalog(context), '/runtime/task-specs': () => ({ taskSpecs: discoverTaskSpecs(context) }) };
       if (runtime[pathname]) { response.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' }); response.end(JSON.stringify(await runtime[pathname]())); return; }
+      if (pathname.startsWith('/runtime/')) { response.writeHead(404, { 'Cache-Control': 'no-store' }); response.end('Not found'); return; }
       for (const route of routes) {
         if (pathname === route.prefix.slice(0, -1)) { response.writeHead(308, { Location: route.prefix, 'Cache-Control': 'no-store' }); response.end(); return; }
         if (pathname.startsWith(route.prefix)) {

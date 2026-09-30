@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { checkRepository, hookDispatchDiagnostic } from '../scripts/self-check.mjs';
+import { checkRepository, hookDispatchDiagnostic, main as selfCheckMain } from '../scripts/self-check.mjs';
 import { rolesFor } from '../scripts/route-task.mjs';
 import { discoverCatalog, legacyCatalogFixture } from '../scripts/catalog.mjs';
 import { RuntimeStore } from '../scripts/runtime-state.mjs';
@@ -139,4 +139,66 @@ test('self-check fails closed when tracked-file inventory is unavailable', async
   const root = await mkdtemp(path.join(tmpdir(), 'pure-no-index-check-'));
   const report = await checkRepository(root, { exerciseRuntime: false, exerciseHttp: false });
   assert.ok(report.failures.some(item => item.includes('tracked manifest') && item.includes('unavailable')));
+});
+
+test('self-check accepts non-Git installation only with a valid explicit project binding', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-install-check-'));
+  const checkoutRoot = path.join(root, 'checkout');
+  const harnessRoot = path.join(root, 'installation');
+  await mkdir(path.join(checkoutRoot, 'harness-adapter'), { recursive: true });
+  await mkdir(harnessRoot);
+  execFileSync('git', ['init', '-q'], { cwd: checkoutRoot });
+  await writeFile(path.join(checkoutRoot, 'harness-adapter', 'project.json'), JSON.stringify({ schemaVersion: 1, id: 'alpha', displayName: 'Alpha', paths: { tasks: 'projects/alpha/tasks', memory: 'projects/alpha/memory', runtime: 'projects/alpha/runtime' }, adapters: {} }));
+  const bindingPath = path.join(root, 'binding.json');
+  await writeFile(bindingPath, JSON.stringify({ schemaVersion: 1, registrations: [{ projectId: 'alpha', harnessRoot, projectRoot: checkoutRoot }] }));
+  const report = await checkRepository(harnessRoot, { exerciseRuntime: false, exerciseHttp: false, projectBinding: { projectId: 'alpha', checkoutRoot, bindingPath } });
+  assert.ok(report.checks.some(item => item.includes('binding is valid')));
+  assert.ok(report.warnings.some(item => item.includes('non-Git installation')));
+  assert.ok(!report.failures.some(item => item.includes('tracked manifest inventory unavailable')));
+});
+
+test('self-check CLI forwards explicit binding into non-Git installation check', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-install-cli-'));
+  const checkoutRoot = path.join(root, 'checkout');
+  const harnessRoot = path.join(root, 'installation');
+  await mkdir(path.join(checkoutRoot, 'harness-adapter'), { recursive: true });
+  await mkdir(harnessRoot);
+  execFileSync('git', ['init', '-q'], { cwd: checkoutRoot });
+  await writeFile(path.join(checkoutRoot, 'harness-adapter', 'project.json'), JSON.stringify({ schemaVersion: 1, id: 'alpha', displayName: 'Alpha', paths: { tasks: 'projects/alpha/tasks', memory: 'projects/alpha/memory', runtime: 'projects/alpha/runtime' }, adapters: {} }));
+  const bindingPath = path.join(root, 'binding.json');
+  await writeFile(bindingPath, JSON.stringify({ schemaVersion: 1, registrations: [{ projectId: 'alpha', harnessRoot, projectRoot: checkoutRoot }] }));
+  const warnings = [], failures = [];
+  const originalLog = console.log, originalError = console.error;
+  console.log = message => { if (message.startsWith('WARN')) warnings.push(message); if (message.startsWith('FAIL')) failures.push(message); };
+  console.error = message => failures.push(message);
+  try { await selfCheckMain(['--project', 'alpha', '--checkout', checkoutRoot, '--binding', bindingPath], harnessRoot); }
+  finally { console.log = originalLog; console.error = originalError; }
+  assert.ok(warnings.some(item => item.includes('non-Git installation')));
+  assert.ok(!failures.some(item => item.includes('tracked manifest inventory unavailable')));
+});
+
+test('non-Git installation self-check report and CLI exit are green with valid binding', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-complete-install-'));
+  const checkoutRoot = path.join(root, 'checkout');
+  const harnessRoot = path.join(root, 'installation');
+  await mkdir(path.join(checkoutRoot, 'harness-adapter'), { recursive: true });
+  await mkdir(harnessRoot);
+  execFileSync('git', ['init', '-q'], { cwd: checkoutRoot });
+  await writeFile(path.join(checkoutRoot, 'harness-adapter', 'project.json'), JSON.stringify({ schemaVersion: 1, id: 'alpha', displayName: 'Alpha', paths: { tasks: 'projects/alpha/tasks', memory: 'projects/alpha/memory', runtime: 'projects/alpha/runtime' }, adapters: {} }));
+  for (const directory of ['.codex', '.agents', 'preview']) await cp(path.resolve(directory), path.join(harnessRoot, directory), { recursive: true });
+  const bindingPath = path.join(root, 'binding.json');
+  await writeFile(bindingPath, JSON.stringify({ schemaVersion: 1, registrations: [{ projectId: 'alpha', harnessRoot, projectRoot: checkoutRoot }] }));
+  let codexChecks = 0;
+  const spawnCodex = () => { codexChecks++; return { status: 0, stdout: '{"checks":{"config.load":{"status":"ok"}}}', stderr: '' }; };
+  const projectBinding = { projectId: 'alpha', checkoutRoot, bindingPath };
+  const report = await checkRepository(harnessRoot, { projectBinding, spawnCodex });
+  assert.equal(report.ok, true, report.failures.join('; '));
+  assert.ok(report.warnings.some(item => item.includes('non-Git installation')));
+  const originalLog = console.log;
+  console.log = () => {};
+  let exit;
+  try { exit = await selfCheckMain(['--project', 'alpha', '--checkout', checkoutRoot, '--binding', bindingPath], harnessRoot, { spawnCodex }); }
+  finally { console.log = originalLog; }
+  assert.equal(exit, 0);
+  assert.ok(codexChecks >= 2);
 });

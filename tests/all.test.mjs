@@ -5,6 +5,7 @@ import './project-context.test.mjs';
 import './goal-adapters.test.mjs';
 import './project-runtime.test.mjs';
 import './project-diagnostic.test.mjs';
+import './project-cutover.test.mjs';
 import './hook-runtime.test.mjs';
 import './watchdog.test.mjs';
 import './status-preview.test.mjs';

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, realpath } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,7 @@ import { discoverCatalog, legacyCatalogFixture } from './catalog.mjs';
 import { hookDispatchDiagnostic, inspectRuntime } from './watchdog.mjs';
 import { renderStaticPreview } from './generate-preview.mjs';
 import { inspectProjectBinding } from './project-diagnostic.mjs';
+import { loadProjectContext } from './project-context.mjs';
 
 const HOOK_EVENTS = ['SessionStart', 'SessionEnd', 'SubagentStart', 'SubagentStop', 'Stop'];
 const MODEL = /^gpt-6-(sol|luna)$/;
@@ -25,9 +26,13 @@ function basicTomlShape(text) {
   return text.split(/\r?\n/).every(line => { const value = line.trim(); return !value.startsWith('[') || /^\[[^\[\]]+\]$/.test(value); });
 }
 
-function trackedManifestChecks(root, report) {
+function trackedManifestChecks(root, report, { nonGitInstallation = false } = {}) {
   const listing = spawnSync('git', ['ls-files', '-z', '--cached'], { cwd: root, encoding: 'utf8', windowsHide: true });
-  if (listing.status !== 0) { report.failures.push('tracked manifest inventory unavailable'); return; }
+  if (listing.status !== 0) {
+    if (nonGitInstallation && !existsSync(path.join(root, '.git'))) report.warnings.push('non-Git installation: tracked manifest inventory is not applicable');
+    else report.failures.push('tracked manifest inventory unavailable');
+    return;
+  }
   const files = listing.stdout.split('\0').filter(file => /(^|\/)project\.json$/.test(file) && (file.startsWith('projects/') || file === 'harness-adapter/project.json'));
   const isAbsolute = value => typeof value === 'string' && (path.posix.isAbsolute(value) || path.win32.isAbsolute(value));
   const containsAbsolute = value => isAbsolute(value) || (value && typeof value === 'object' && Object.values(value).some(containsAbsolute));
@@ -57,11 +62,16 @@ function validateCodex(root, text, executableOverride, spawnCodex = spawnSync) {
 
 export async function checkRepository(root, { exerciseRuntime = true, exerciseHttp = true, codexExecutable, spawnCodex, projectBinding } = {}) {
   root = path.resolve(root); const report = reportObject(), configPath = path.join(root, '.codex', 'config.toml'), hooksPath = path.join(root, '.codex', 'hooks.json');
+  let nonGitInstallation = false;
   if (projectBinding !== undefined) {
     const diagnostic = await inspectProjectBinding(projectBinding);
     report.require(diagnostic.ok, `Project ${diagnostic.projectId} binding is valid`, `project binding ${diagnostic.code}: ${diagnostic.message}`);
+    if (diagnostic.ok) {
+      const context = await loadProjectContext(projectBinding);
+      nonGitInstallation = (await realpath(root)) === context.harnessRoot;
+    }
   }
-  trackedManifestChecks(root, report);
+  trackedManifestChecks(root, report, { nonGitInstallation });
   report.require(Number(process.versions.node.split('.')[0]) >= 20, 'Node.js 20+ is available', 'Node.js 20+ is required');
   report.require(existsSync(configPath), 'Codex config exists', 'missing .codex/config.toml'); report.require(existsSync(hooksPath), 'Hook config exists', 'missing .codex/hooks.json');
   if (existsSync(hooksPath)) {
@@ -107,5 +117,16 @@ export async function checkRepository(root, { exerciseRuntime = true, exerciseHt
   return report;
 }
 
-export async function main() { const report = await checkRepository(findRoot()); for (const item of report.checks) console.log(`PASS ${item}`); for (const item of report.warnings) console.log(`WARN ${item}`); for (const item of report.failures) console.log(`FAIL ${item}`); return report.ok ? 0 : 1; }
+export async function main(argv = process.argv.slice(2), root = findRoot(), checkOptions = {}) {
+  let projectBinding;
+  if (argv.length) {
+    if (argv.length !== 6 || argv[0] !== '--project' || argv[2] !== '--checkout' || argv[4] !== '--binding') { console.error('arguments: expected --project <id> --checkout <path> --binding <path>'); return 1; }
+    projectBinding = { projectId: argv[1], checkoutRoot: argv[3], bindingPath: argv[5] };
+  }
+  const report = await checkRepository(root, { ...checkOptions, projectBinding });
+  for (const item of report.checks) console.log(`PASS ${item}`);
+  for (const item of report.warnings) console.log(`WARN ${item}`);
+  for (const item of report.failures) console.log(`FAIL ${item}`);
+  return report.ok ? 0 : 1;
+}
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) process.exitCode = await main();
