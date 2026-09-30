@@ -233,6 +233,21 @@ test('v2 review rejects an unexpected file at the reviewed absent path without w
   assert.match(await readFile(path.join(root, record.files[0].path), 'utf8'), /existing unmarked/);
 });
 
+test('v2 absent registration rejects commented and quoted TOML agent tables', async t => {
+  for (const header of ['[agents.goal-manager] # enabled', '["agents"."goal-manager"]']) {
+    await t.test(header, async subtest => {
+      const { root, rendered, record } = await neutralFixture(subtest);
+      const configPath = path.join(root, '.codex/config.toml');
+      const config = `${await readFile(configPath, 'utf8')}\n${header}\ndescription = "old goal-manager"\nconfig_file = "./agents/goal-manager.toml"\n`;
+      await writeFile(configPath, config);
+      record.configSha256 = sha(config);
+      await assert.rejects(adoptReviewed({ root, rendered, record }), /config registration|ambiguous.*agents/i);
+      await assert.rejects(readFile(path.join(root, 'harness/.sync-journal.json')), { code: 'ENOENT' });
+      await assert.rejects(readFile(path.join(root, 'harness/generated-manifest.json')), { code: 'ENOENT' });
+    });
+  }
+});
+
 test('v2 review rejects an all-absent baseline before creating an unrecoverable journal', async t => {
   const { root, rendered, record } = await fixture(t);
   for (const file of record.files) await rm(path.join(root, file.path));
@@ -257,6 +272,30 @@ test('reviewed recovery completes a partial mixed adopt/create journal and ordin
   assert.equal(reviewed.partialFailure, false, reviewed.error);
   assert.deepEqual(reviewed.changedPaths, ['harness/generated-manifest.json']);
   assert.equal(JSON.parse(await readFile(path.join(root, 'harness/generated-manifest.json'))).entries.length, 15);
+});
+
+test('CLI reviewed recovery reports the missing goal-manager registration gate', async t => {
+  const { root, record, recordPath, run } = await cliFixture(t);
+  const missing = record.files.find(file => file.roleId === 'goal-manager');
+  await rm(path.join(root, missing.path));
+  const configPath = path.join(root, '.codex/config.toml');
+  const config = (await readFile(configPath, 'utf8')).replace(/\[agents\.goal-manager\][\s\S]*?(?=\n\[agents\.|$)/, '');
+  await writeFile(configPath, config);
+  const reviewed = { ...record, schemaVersion: 2, configSha256: sha(config), files: record.files.map(file => file.roleId === 'goal-manager'
+    ? { ...file, baselineState: 'absent', registrationState: 'absent', oldSha256: null }
+    : { ...file, baselineState: 'existing', registrationState: 'registered' }) };
+  await writeFile(recordPath, JSON.stringify(reviewed));
+  const compatibility = JSON.parse(await readFile(path.join(root, 'harness/compatibility.json'), 'utf8'));
+  const roles = await loadRoles(root, 'all');
+  const rendered = roles.map(role => ({ ...renderCodexRole(role, { compatibility, profile: 'all' }), target: 'codex',
+    roleId: role.id, sourcePath: role.sourcePath, sourceSha256: role.sourceSha256 }));
+  await assert.rejects(adoptReviewed({ root, record: reviewed, rendered,
+    beforeWrite: relative => { if (relative === 'harness/generated-manifest.json') throw new Error('interrupted'); },
+  }), /interrupted/);
+  const result = await run('--recover');
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).missingRegistrations, ['goal-manager']);
+  assert.equal(await readFile(configPath, 'utf8'), config);
 });
 
 test('reviewed recovery rejects a mismatched record and a tampered journal without writes', async t => {

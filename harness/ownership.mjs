@@ -162,6 +162,35 @@ function configRegistration(config, roleId) {
   };
   return { description: value('description'), configFile: value('config_file') };
 }
+function assertAbsentRegistration(config, roleId) {
+  for (const line of config.split(/\r?\n/)) {
+    if (!/^\s*\[/.test(line)) continue;
+    const header = /^\s*\[([^\]\r\n]*)\]\s*(?:#.*)?$/.exec(line);
+    if (!header) {
+      if (line.includes('agents')) throw new Error(`ambiguous agents table syntax: ${roleId}`);
+      continue;
+    }
+    const parts = [], tokens = header[1].match(/"(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+|\.|\s+|./g) ?? [];
+    let expectKey = true, valid = true;
+    for (const token of tokens) {
+      if (/^\s+$/.test(token)) continue;
+      if (expectKey) {
+        if (token === '.') { valid = false; break; }
+        if (token.startsWith('"')) {
+          try { parts.push(JSON.parse(token)); } catch { valid = false; break; }
+        } else if (token.startsWith("'")) parts.push(token.slice(1, -1));
+        else if (/^[A-Za-z0-9_-]+$/.test(token)) parts.push(token);
+        else { valid = false; break; }
+      } else if (token !== '.') { valid = false; break; }
+      expectKey = !expectKey;
+    }
+    if (!valid || expectKey) {
+      if (header[1].includes('agents')) throw new Error(`ambiguous agents table syntax: ${roleId}`);
+      continue;
+    }
+    if (parts[0] === 'agents' && parts[1] === roleId) throw new Error(`config registration unexpectedly present: ${roleId}`);
+  }
+}
 async function reviewedIntent(root, record, rendered) {
   if (!path.isAbsolute(root) || !record || ![1, 2].includes(record.schemaVersion) || !Array.isArray(record.files)
       || !record.files.length || !Array.isArray(rendered) || rendered.length !== record.files.length
@@ -191,7 +220,7 @@ async function reviewedIntent(root, record, rendered) {
         || generated.entry.sourcePath !== file.sourcePath || file.configFile !== `./agents/${file.roleId}.toml`
         || generated.entry.fileSha256 !== file.intendedNewDigest) throw new Error(`adoption record/output mismatch: ${file.path}`);
     if (record.schemaVersion === 2 && file.registrationState === 'absent') {
-      if (new RegExp(`^\\[agents\\.${file.roleId}\\]\\r?$`, 'm').test(configText)) throw new Error(`config registration unexpectedly present: ${file.roleId}`);
+      assertAbsentRegistration(configText, file.roleId);
       missingRegistrations.push(file.roleId);
     } else {
       const registration = configRegistration(configText, file.roleId);
@@ -392,6 +421,7 @@ function parseJournal(raw) {
 export async function recoverPartial({ root, targets, record, rendered }, { beforeWrite } = {}) {
   if (!path.isAbsolute(root) || !Array.isArray(targets) || !targets.length) throw new Error('invalid recovery inputs');
   const changedPaths = [];
+  let missingRegistrations;
   let releaseLock;
   try {
     releaseLock = await acquireRootLock(root);
@@ -404,7 +434,9 @@ export async function recoverPartial({ root, targets, record, rendered }, { befo
     if (record) {
       if (!hasAdoption) throw new Error('reviewed recovery requires an adopt journal');
       if (sha(JSON.stringify(record)) !== journal.reviewedRecordSha256) throw new Error('reviewed recovery record digest mismatch');
-      const { reviewed } = await reviewedIntent(root, record, rendered);
+      const review = await reviewedIntent(root, record, rendered);
+      const { reviewed } = review;
+      missingRegistrations = review.missingRegistrations;
       if (journal.actions.length !== reviewed.size) throw new Error('reviewed recovery journal path count mismatch');
       for (const action of journal.actions) {
         const intent = reviewed.get(action.path);
@@ -456,7 +488,7 @@ export async function recoverPartial({ root, targets, record, rendered }, { befo
     await unlink(path.join(root, journalPath));
     await releaseLock();
     releaseLock = null;
-    return { changedPaths, partialFailure: false };
+    return { changedPaths, partialFailure: false, ...(record ? { missingRegistrations } : {}) };
   } catch (error) {
     if (releaseLock) try { await releaseLock(); } catch (releaseError) { return { changedPaths, partialFailure: true, error: `${error.message}; ${releaseError.message}` }; }
     return { changedPaths, partialFailure: true, error: error.message };
