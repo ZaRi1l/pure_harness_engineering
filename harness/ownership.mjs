@@ -162,35 +162,6 @@ function configRegistration(config, roleId) {
   };
   return { description: value('description'), configFile: value('config_file') };
 }
-function assertAbsentRegistration(config, roleId) {
-  for (const line of config.split(/\r?\n/)) {
-    if (!/^\s*\[/.test(line)) continue;
-    const header = /^\s*\[([^\]\r\n]*)\]\s*(?:#.*)?$/.exec(line);
-    if (!header) {
-      if (line.includes('agents')) throw new Error(`ambiguous agents table syntax: ${roleId}`);
-      continue;
-    }
-    const parts = [], tokens = header[1].match(/"(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+|\.|\s+|./g) ?? [];
-    let expectKey = true, valid = true;
-    for (const token of tokens) {
-      if (/^\s+$/.test(token)) continue;
-      if (expectKey) {
-        if (token === '.') { valid = false; break; }
-        if (token.startsWith('"')) {
-          try { parts.push(JSON.parse(token)); } catch { valid = false; break; }
-        } else if (token.startsWith("'")) parts.push(token.slice(1, -1));
-        else if (/^[A-Za-z0-9_-]+$/.test(token)) parts.push(token);
-        else { valid = false; break; }
-      } else if (token !== '.') { valid = false; break; }
-      expectKey = !expectKey;
-    }
-    if (!valid || expectKey) {
-      if (header[1].includes('agents')) throw new Error(`ambiguous agents table syntax: ${roleId}`);
-      continue;
-    }
-    if (parts[0] === 'agents' && parts[1] === roleId) throw new Error(`config registration unexpectedly present: ${roleId}`);
-  }
-}
 async function reviewedIntent(root, record, rendered) {
   if (!path.isAbsolute(root) || !record || ![1, 2].includes(record.schemaVersion) || !Array.isArray(record.files)
       || !record.files.length || !Array.isArray(rendered) || rendered.length !== record.files.length
@@ -205,7 +176,7 @@ async function reviewedIntent(root, record, rendered) {
     proposed.set(item.path, generated);
   }
   const reviewed = new Map();
-  const missingRegistrations = [];
+  const manualRegistrationReview = [];
   for (const file of record.files) {
     if (!file || file.target !== 'codex' || typeof file.path !== 'string' || typeof file.roleId !== 'string'
         || typeof file.sourcePath !== 'string' || typeof file.configFile !== 'string' || typeof file.configDescription !== 'string'
@@ -220,8 +191,12 @@ async function reviewedIntent(root, record, rendered) {
         || generated.entry.sourcePath !== file.sourcePath || file.configFile !== `./agents/${file.roleId}.toml`
         || generated.entry.fileSha256 !== file.intendedNewDigest) throw new Error(`adoption record/output mismatch: ${file.path}`);
     if (record.schemaVersion === 2 && file.registrationState === 'absent') {
-      assertAbsentRegistration(configText, file.roleId);
-      missingRegistrations.push(file.roleId);
+      const review = file.registrationReview;
+      if (!review || typeof review !== 'object' || Array.isArray(review)
+          || Object.keys(review).sort().join() !== 'configSha256,reviewerDecision'
+          || review.reviewerDecision !== 'approved') throw new Error(`approved config review required: ${file.roleId}`);
+      if (review.configSha256 !== record.configSha256) throw new Error(`config review hash mismatch: ${file.roleId}`);
+      manualRegistrationReview.push(file.roleId);
     } else {
       const registration = configRegistration(configText, file.roleId);
       if (registration.description !== file.configDescription || registration.configFile !== file.configFile) throw new Error(`config registration description/path mismatch: ${file.roleId}`);
@@ -231,10 +206,10 @@ async function reviewedIntent(root, record, rendered) {
   if (reviewed.size !== proposed.size) throw new Error('adoption record does not name every rendered path');
   if (![...reviewed.values()].some(intent => intent.state === 'existing'))
     throw new Error('all-absent reviewed adoption is unsupported; use ordinary sync');
-  return { reviewed, missingRegistrations };
+  return { reviewed, manualRegistrationReview };
 }
 export async function adoptReviewed({ root, record, rendered, beforeWrite }) {
-  const { reviewed, missingRegistrations } = await reviewedIntent(root, record, rendered);
+  const { reviewed, manualRegistrationReview } = await reviewedIntent(root, record, rendered);
   const oldBytes = new Map();
   for (const [relative, { file, state }] of reviewed) {
     const absolute = await safeAbsolute(root, relative);
@@ -272,7 +247,7 @@ export async function adoptReviewed({ root, record, rendered, beforeWrite }) {
   plan.reviewedRecordSha256 = sha(JSON.stringify(record));
   const result = await applyPlan(plan, { beforeWrite });
   if (result.partialFailure) throw new Error(`adoption failed; changed paths: ${result.changedPaths.join(', ')}; ${result.error}`);
-  return { adoptedPaths: plan.actions.map(action => action.path), missingRegistrations };
+  return { adoptedPaths: plan.actions.map(action => action.path), manualRegistrationReview };
 }
 async function atomicWrite(absolute, content) {
   const temp = `${absolute}.${randomUUID()}.tmp`;
@@ -421,7 +396,7 @@ function parseJournal(raw) {
 export async function recoverPartial({ root, targets, record, rendered }, { beforeWrite } = {}) {
   if (!path.isAbsolute(root) || !Array.isArray(targets) || !targets.length) throw new Error('invalid recovery inputs');
   const changedPaths = [];
-  let missingRegistrations;
+  let manualRegistrationReview;
   let releaseLock;
   try {
     releaseLock = await acquireRootLock(root);
@@ -436,7 +411,7 @@ export async function recoverPartial({ root, targets, record, rendered }, { befo
       if (sha(JSON.stringify(record)) !== journal.reviewedRecordSha256) throw new Error('reviewed recovery record digest mismatch');
       const review = await reviewedIntent(root, record, rendered);
       const { reviewed } = review;
-      missingRegistrations = review.missingRegistrations;
+      manualRegistrationReview = review.manualRegistrationReview;
       if (journal.actions.length !== reviewed.size) throw new Error('reviewed recovery journal path count mismatch');
       for (const action of journal.actions) {
         const intent = reviewed.get(action.path);
@@ -488,7 +463,7 @@ export async function recoverPartial({ root, targets, record, rendered }, { befo
     await unlink(path.join(root, journalPath));
     await releaseLock();
     releaseLock = null;
-    return { changedPaths, partialFailure: false, ...(record ? { missingRegistrations } : {}) };
+    return { changedPaths, partialFailure: false, ...(record ? { manualRegistrationReview } : {}) };
   } catch (error) {
     if (releaseLock) try { await releaseLock(); } catch (releaseError) { return { changedPaths, partialFailure: true, error: `${error.message}; ${releaseError.message}` }; }
     return { changedPaths, partialFailure: true, error: error.message };

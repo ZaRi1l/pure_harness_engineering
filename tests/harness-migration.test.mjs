@@ -44,7 +44,8 @@ async function neutralFixture(t) {
   const config = data.protectedFiles['.codex/config.toml'].replace(/\[agents\.goal-manager\][\s\S]*?(?=\n\[agents\.|$)/, '');
   await writeFile(path.join(data.root, '.codex/config.toml'), config);
   data.record = { schemaVersion: 2, configSha256: sha(config), files: data.record.files.map(file => file.roleId === 'goal-manager'
-    ? { ...file, baselineState: 'absent', registrationState: 'absent', oldSha256: null }
+    ? { ...file, baselineState: 'absent', registrationState: 'absent', oldSha256: null,
+      registrationReview: { configSha256: sha(config), reviewerDecision: 'approved' } }
     : { ...file, baselineState: 'existing', registrationState: 'registered' }) };
   return data;
 }
@@ -217,11 +218,11 @@ test('reviewed adoption owns only named exact paths and preserves hand-owned byt
   assert.deepEqual(manifest.entries.map(entry => entry.path).sort(), selected.map(item => item.path).sort());
 });
 
-test('v2 review creates only the absent role and reports its manual registration gate', async t => {
+test('v2 review creates only the absent role and reports its manual registration review', async t => {
   const { root, rendered, record, protectedFiles } = await neutralFixture(t);
   const result = await adoptReviewed({ root, rendered, record });
   assert.equal(result.adoptedPaths.length, 15);
-  assert.deepEqual(result.missingRegistrations, ['goal-manager']);
+  assert.deepEqual(result.manualRegistrationReview, ['goal-manager']);
   assert.equal(await readFile(path.join(root, '.codex/config.toml'), 'utf8'), protectedFiles['.codex/config.toml'].replace(/\[agents\.goal-manager\][\s\S]*?(?=\n\[agents\.|$)/, ''));
   assert.match(await readFile(path.join(root, '.codex/agents/goal-manager.toml'), 'utf8'), /^# @pure-harness-generated /);
 });
@@ -233,19 +234,28 @@ test('v2 review rejects an unexpected file at the reviewed absent path without w
   assert.match(await readFile(path.join(root, record.files[0].path), 'utf8'), /existing unmarked/);
 });
 
-test('v2 absent registration rejects commented and quoted TOML agent tables', async t => {
-  for (const header of ['[agents.goal-manager] # enabled', '["agents"."goal-manager"]']) {
-    await t.test(header, async subtest => {
-      const { root, rendered, record } = await neutralFixture(subtest);
-      const configPath = path.join(root, '.codex/config.toml');
-      const config = `${await readFile(configPath, 'utf8')}\n${header}\ndescription = "old goal-manager"\nconfig_file = "./agents/goal-manager.toml"\n`;
-      await writeFile(configPath, config);
-      record.configSha256 = sha(config);
-      await assert.rejects(adoptReviewed({ root, rendered, record }), /config registration|ambiguous.*agents/i);
-      await assert.rejects(readFile(path.join(root, 'harness/.sync-journal.json')), { code: 'ENOENT' });
-      await assert.rejects(readFile(path.join(root, 'harness/generated-manifest.json')), { code: 'ENOENT' });
-    });
-  }
+test('v2 creation requires an explicit human config review decision bound to the config hash', async t => {
+  const { root, rendered, record } = await neutralFixture(t);
+  const unreviewed = { ...record, files: record.files.map(file => file.roleId === 'goal-manager'
+    ? { ...file, registrationReview: undefined } : file) };
+  await assert.rejects(adoptReviewed({ root, rendered, record: unreviewed }), /config review/i);
+  const wrongHash = { ...record, files: record.files.map(file => file.roleId === 'goal-manager'
+    ? { ...file, registrationReview: { ...file.registrationReview, configSha256: '0'.repeat(64) } } : file) };
+  await assert.rejects(adoptReviewed({ root, rendered, record: wrongHash }), /config review.*hash/i);
+  await assert.rejects(readFile(path.join(root, 'harness/.sync-journal.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(root, 'harness/generated-manifest.json')), { code: 'ENOENT' });
+});
+
+test('v2 manual review does not claim a TOML semantic absence', async t => {
+  const { root, rendered, record } = await neutralFixture(t);
+  const configPath = path.join(root, '.codex/config.toml');
+  const config = `${await readFile(configPath, 'utf8')}\n["ag\\U00000065nts"."goal-manager"]\nconfig_file = "./agents/goal-manager.toml"\n`;
+  await writeFile(configPath, config);
+  record.configSha256 = sha(config);
+  record.files.find(file => file.roleId === 'goal-manager').registrationReview.configSha256 = sha(config);
+  const result = await adoptReviewed({ root, rendered, record });
+  assert.deepEqual(result.manualRegistrationReview, ['goal-manager']);
+  assert.equal(await readFile(configPath, 'utf8'), config);
 });
 
 test('v2 review rejects an all-absent baseline before creating an unrecoverable journal', async t => {
@@ -254,6 +264,7 @@ test('v2 review rejects an all-absent baseline before creating an unrecoverable 
   await writeFile(path.join(root, '.codex/config.toml'), '');
   const allAbsent = { schemaVersion: 2, configSha256: sha(''), files: record.files.map(file => ({
     ...file, baselineState: 'absent', registrationState: 'absent', oldSha256: null,
+    registrationReview: { configSha256: sha(''), reviewerDecision: 'approved' },
   })) };
   await assert.rejects(adoptReviewed({ root, rendered, record: allAbsent }), /all.absent|existing baseline/i);
   await assert.rejects(readFile(path.join(root, 'harness/.sync-journal.json')), { code: 'ENOENT' });
@@ -271,10 +282,11 @@ test('reviewed recovery completes a partial mixed adopt/create journal and ordin
   const reviewed = await recoverPartial({ root, targets: ['codex'], record, rendered });
   assert.equal(reviewed.partialFailure, false, reviewed.error);
   assert.deepEqual(reviewed.changedPaths, ['harness/generated-manifest.json']);
+  assert.deepEqual(reviewed.manualRegistrationReview, ['goal-manager']);
   assert.equal(JSON.parse(await readFile(path.join(root, 'harness/generated-manifest.json'))).entries.length, 15);
 });
 
-test('CLI reviewed recovery reports the missing goal-manager registration gate', async t => {
+test('CLI reviewed recovery reports the goal-manager manual registration review', async t => {
   const { root, record, recordPath, run } = await cliFixture(t);
   const missing = record.files.find(file => file.roleId === 'goal-manager');
   await rm(path.join(root, missing.path));
@@ -282,7 +294,8 @@ test('CLI reviewed recovery reports the missing goal-manager registration gate',
   const config = (await readFile(configPath, 'utf8')).replace(/\[agents\.goal-manager\][\s\S]*?(?=\n\[agents\.|$)/, '');
   await writeFile(configPath, config);
   const reviewed = { ...record, schemaVersion: 2, configSha256: sha(config), files: record.files.map(file => file.roleId === 'goal-manager'
-    ? { ...file, baselineState: 'absent', registrationState: 'absent', oldSha256: null }
+    ? { ...file, baselineState: 'absent', registrationState: 'absent', oldSha256: null,
+      registrationReview: { configSha256: sha(config), reviewerDecision: 'approved' } }
     : { ...file, baselineState: 'existing', registrationState: 'registered' }) };
   await writeFile(recordPath, JSON.stringify(reviewed));
   const compatibility = JSON.parse(await readFile(path.join(root, 'harness/compatibility.json'), 'utf8'));
@@ -294,7 +307,7 @@ test('CLI reviewed recovery reports the missing goal-manager registration gate',
   }), /interrupted/);
   const result = await run('--recover');
   assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout).missingRegistrations, ['goal-manager']);
+  assert.deepEqual(JSON.parse(result.stdout).manualRegistrationReview, ['goal-manager']);
   assert.equal(await readFile(configPath, 'utf8'), config);
 });
 
