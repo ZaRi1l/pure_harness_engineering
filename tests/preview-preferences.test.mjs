@@ -127,3 +127,21 @@ test('declarative snapshot labels are retranslated when the language changes', (
   assert.equal(title.textContent, '목표');
   assert.equal(generated.textContent, '정적 snapshot 생성 시각: 2026-09-27T00:00:00Z');
 });
+
+test('reported-running and age-bucket copy never implies a live liveness check in either locale', () => {
+  const { api, document, storage } = fixture();
+  const preferences = api.create(document, { storage });
+  assert.match(preferences.t('dashboard.reportedRunning'), /reported running/i);
+  assert.match(preferences.t('dashboard.startedRecent'), /liveness unconfirmed/i);
+  assert.match(preferences.t('dashboard.startedOutside'), /liveness unconfirmed/i);
+  assert.match(preferences.t('dashboard.agentCount', { reported: 4, recent: 2, outside: 2 }), /Reported running: 4.*past hour: 2.*unknown start: 2.*No live liveness check/i);
+  assert.match(preferences.t('network.reportedRunning'), /liveness unconfirmed/i);
+  assert.match(preferences.t('network.observed', { agents: 4, time: '2026-09-25T12:00:00Z' }), /No live liveness check.*2026-09-25T12:00:00Z/i);
+  preferences.setLocale('ko');
+  assert.match(preferences.t('dashboard.reportedRunning'), /실행 중으로 기록됨/);
+  assert.match(preferences.t('dashboard.startedRecent'), /생존 여부 미확인/);
+  assert.match(preferences.t('dashboard.startedOutside'), /생존 여부 미확인/);
+  assert.match(preferences.t('dashboard.agentCount', { reported: 4, recent: 2, outside: 2 }), /4명.*2명.*2명.*실시간 생존 확인 기능은 없습니다/);
+  assert.match(preferences.t('network.reportedRunning'), /생존 여부 미확인/);
+  assert.match(preferences.t('network.observed', { agents: 4, time: '2026-09-25T12:00:00Z' }), /생존 여부 미확인.*2026-09-25T12:00:00Z/);
+});

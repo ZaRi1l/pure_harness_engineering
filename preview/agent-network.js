@@ -139,14 +139,16 @@
   function create(host, options = {}) {
     const document = host.ownerDocument;
     const fallback = {
-      'network.modeLabel': 'Network mode', 'network.live': 'Live', 'network.history': 'History',
+      'network.modeLabel': 'Network mode', 'network.live': 'Reported running only', 'network.history': 'Full history',
       'network.snapshotHistory': 'Snapshot History', 'network.filterLabel': 'Network filter', 'network.all': 'All',
-      'network.active': 'Active', 'network.failures': 'Failures', 'network.currentTask': 'Current Task',
+      'network.active': 'Reported running', 'network.failures': 'Failures', 'network.currentTask': 'Current Task',
       'network.taskLabel': 'Network task', 'network.zoomIn': 'Zoom in', 'network.zoomOut': 'Zoom out',
       'network.fit': 'Fit', 'network.reset': 'Reset', 'network.graphLabel': 'Agent Signal Network',
       'network.empty': 'Select an agent or signal. {agents} agents, {signals} signals.',
       'network.noData': 'No agents or signals in this snapshot.',
-      'network.noActive': 'No active flow. Retained history is still shown.',
+      'network.noActive': 'No agents reported running in this snapshot. Retained history is still shown.',
+      'network.observed': 'Harness hooks report {agents} running agents. No live liveness check; last snapshot update: {time}. This is not the full native agent list.',
+      'network.reportedRunning': 'reported running; liveness unconfirmed',
       'network.noTaskData': 'No linked network data for the selected task.',
       'network.historyNote': 'History includes only agents and signals retained in this runtime.',
       'network.agent': 'Agent', 'network.role': 'Role', 'network.status': 'Status', 'network.model': 'Model',
@@ -161,10 +163,11 @@
       const message = translate?.(key, values) ?? fallback[key] ?? key;
       return String(message).replace(/\{([^}]+)\}/g, (_match, name) => String(values[name] ?? ''));
     };
+    const shownStatus = value => value === 'active' ? t('network.reportedRunning') : value;
     if (!document.querySelector?.('[data-agent-network-styles]')) {
       const style = element(document, 'style');
       data(style, 'agent-network-styles', '');
-      style.textContent = '.asn{font:13px/1.45 system-ui,sans-serif;color:inherit}.asn-controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.asn-controls button,.asn-controls select{font:inherit;width:auto;max-width:100%;padding:5px 9px;border:1px solid var(--graph-border,#607383);border-radius:6px;background:var(--graph-control,#172730);color:inherit}.asn-main{display:grid;grid-template-columns:minmax(0,2fr) minmax(220px,1fr);gap:12px}.asn-svg{display:block;width:100%;height:auto;min-height:360px;border:1px solid var(--graph-border,#53616c);border-radius:8px;background:var(--graph-bg,#0e1a22);touch-action:none}.asn-detail{padding:12px;border:1px solid var(--graph-border,#53616c);border-radius:8px;overflow-wrap:anywhere}.asn-detail-row{margin:4px 0}.asn-edge{fill:none;stroke:var(--graph-edge,#6f8794);stroke-width:2}.asn-edge[data-emphasis="false"]{opacity:.23}.asn-edge[data-failure="true"]{stroke:#d94f68;stroke-dasharray:7 4}.asn-edge[data-kind="retry"]{stroke:#c98b16;stroke-width:3;stroke-dasharray:6 4}.asn-hit{fill:none;stroke:transparent;stroke-width:16;cursor:pointer}.asn-node{cursor:pointer}.asn-node circle{fill:#397f9b;stroke:var(--graph-node-stroke,#c1dae5);stroke-width:2}.asn-node[data-status="active"] circle{fill:#238c70}.asn-node[data-status="completed"] circle{fill:#60798b}.asn-node[data-status="failed"] circle,.asn-node[data-status="blocked"] circle{fill:#ad4058}.asn-node[data-emphasis="false"]{opacity:.3}.asn-node text{fill:var(--graph-text,#f1f5f8);text-anchor:middle;font:11px system-ui,sans-serif;pointer-events:none}.asn-selected circle,.asn-selected path,.asn-node:focus-visible circle,.asn-hit:focus-visible{stroke:#d3a700;stroke-width:4;outline:none}.asn-note{margin:5px 0;color:var(--m,#9bb2bf)}@media(max-width:760px){.asn-main{grid-template-columns:1fr}.asn-svg{min-height:280px}.asn-detail{min-height:100px}}';
+      style.textContent = '.asn{font:13px/1.45 system-ui,sans-serif;color:inherit}.asn-controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.asn-controls button,.asn-controls select{font:inherit;width:auto;max-width:100%;padding:5px 9px;border:1px solid var(--graph-border,#607383);border-radius:6px;background:var(--graph-control,#172730);color:inherit}.asn-main{display:grid;grid-template-columns:minmax(0,2fr) minmax(220px,1fr);gap:12px}.asn-svg{display:block;width:100%;height:auto;min-height:360px;border:1px solid var(--graph-border,#53616c);border-radius:8px;background:var(--graph-bg,#0e1a22);touch-action:none}.asn-detail{padding:12px;border:1px solid var(--graph-border,#53616c);border-radius:8px;overflow-wrap:anywhere}.asn-detail-row{margin:4px 0}.asn-edge{fill:none;stroke:var(--graph-edge,#6f8794);stroke-width:2}.asn-edge[data-emphasis="false"]{opacity:.23}.asn-edge[data-failure="true"]{stroke:#d94f68;stroke-dasharray:7 4}.asn-edge[data-kind="retry"]{stroke:#c98b16;stroke-width:3;stroke-dasharray:6 4}.asn-hit{fill:none;stroke:transparent;stroke-width:16;cursor:pointer}.asn-node{cursor:pointer}.asn-node circle{fill:#397f9b;stroke:var(--graph-node-stroke,#c1dae5);stroke-width:2}.asn-node[data-status="reported-running"] circle{fill:#9b792c;stroke-dasharray:4 3}.asn-node[data-status="completed"] circle{fill:#60798b}.asn-node[data-status="failed"] circle,.asn-node[data-status="blocked"] circle{fill:#ad4058}.asn-node[data-emphasis="false"]{opacity:.3}.asn-node text{fill:var(--graph-text,#f1f5f8);text-anchor:middle;font:11px system-ui,sans-serif;pointer-events:none}.asn-selected circle,.asn-selected path,.asn-node:focus-visible circle,.asn-hit:focus-visible{stroke:#d3a700;stroke-width:4;outline:none}.asn-note{margin:5px 0;color:var(--m,#9bb2bf)}@media(max-width:760px){.asn-main{grid-template-columns:1fr}.asn-svg{min-height:280px}.asn-detail{min-height:100px}}';
       document.head.append(style);
     }
     const root = element(document, 'section', 'asn');
@@ -201,7 +204,8 @@
     const detail = data(element(document, 'aside', 'asn-detail'), 'network-detail', '');
     main.append(svg, detail);
     const note = element(document, 'p', 'asn-note');
-    root.append(controls, note, main);
+    const provenance = element(document, 'p', 'asn-note');
+    root.append(controls, note, provenance, main);
     host.replaceChildren(root);
 
     const initial = options.initialState || {};
@@ -242,7 +246,7 @@
       }
       if (state.selection.type === 'node') {
         for (const [label, value] of [
-          [t('network.agent'), record.id], [t('network.role'), record.role], [t('network.status'), record.status], [t('network.model'), record.catalog?.model],
+          [t('network.agent'), record.id], [t('network.role'), record.role], [t('network.status'), shownStatus(record.status)], [t('network.model'), record.catalog?.model],
           [t('network.reasoning'), record.catalog?.reasoning], [t('network.currentLastTask'), record.current_task], [t('network.started'), displayTime(record.started_at)],
           [t('network.finished'), displayTime(record.stopped_at)], [t('network.claims'), record.claims.join(', ')],
           [t('network.inbound'), model.edges.filter(edge => edge.to === record.id).length],
@@ -299,7 +303,7 @@
       }
       for (const position of positions) {
         const node = model.nodes.find(item => item.id === position.id);
-        const group = data(svgElement(document, 'g', { class: state.selection?.type === 'node' && state.selection.id === node.id ? 'asn-node asn-selected' : 'asn-node', 'data-status': node.status, 'data-emphasis': node.emphasized, 'aria-label': `${node.id}, ${node.status}` }), 'node-id', node.id);
+        const group = data(svgElement(document, 'g', { class: state.selection?.type === 'node' && state.selection.id === node.id ? 'asn-node asn-selected' : 'asn-node', 'data-status': node.status === 'active' ? 'reported-running' : node.status, 'data-emphasis': node.emphasized, 'aria-label': `${node.id}, ${shownStatus(node.status)}` }), 'node-id', node.id);
         group.append(svgElement(document, 'circle', { cx: position.x, cy: position.y, r: 18 }));
         const label = svgElement(document, 'text', { x: position.x, y: position.y + 34 }); label.textContent = node.id; group.append(label);
         if (state.selection?.type === 'node' && state.selection.id === node.id) focusTarget = group;
@@ -312,6 +316,10 @@
           : state.filter === 'task' && state.taskId && !model.nodes.some(node => node.matchesFilter) && !model.edges.some(edge => edge.matchesFilter)
             ? t('network.noTaskData')
             : t('network.historyNote');
+      provenance.textContent = t('network.observed', {
+        agents: Array.isArray(snapshot?.status?.active_agents) ? snapshot.status.active_agents.length : model.nodes.filter(node => node.id !== 'main' && active(node)).length,
+        time: displayTime(snapshot?.status?.last_update) || t('common.unknown')
+      });
       drawDetail();
       if (focused) focusedTarget?.focus();
       else if (focusAfterDraw) focusTarget?.focus();

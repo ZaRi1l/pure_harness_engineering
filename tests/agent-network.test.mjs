@@ -378,6 +378,22 @@ test('detail dates omit missing values, show unknown for invalid values, and pre
   controller.destroy();
 });
 
+test('reported-running nodes use an amber cue and accessible uncertainty label while signal time remains visible', () => {
+  const { host, document } = fixture();
+  const controller = api.create(host);
+  const observed = structuredClone(snapshot);
+  observed.status.last_update = '2026-09-25T00:03:00Z';
+  controller.update(observed, catalog);
+  const running = find(host, 'node-id', 'worker-b');
+  assert.equal(running.getAttribute('data-status'), 'reported-running');
+  assert.match(running.getAttribute('aria-label'), /reported running; liveness unconfirmed/i);
+  assert.match(document.head.textContent, /data-status="reported-running".*#9b792c/i);
+  assert.match(text(host), /No live liveness check; last snapshot update: 2026-09-25T00:03:00Z/);
+  find(host, 'edge-index', '0').click();
+  assert.match(text(find(host, 'network-detail', '')), /Sent: 2026-09-25T00:00:00Z/);
+  controller.destroy();
+});
+
 test('named mode, filter, and task controls apply Active and Failures views', () => {
   const { host } = fixture();
   const controller = api.create(host);

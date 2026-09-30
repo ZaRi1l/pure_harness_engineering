@@ -57,9 +57,14 @@ async function dashboard() {
   paint();
 }
 
-function elapsed(at) {
+function elapsed(at, observedAt) {
   const parsed = Date.parse(at || '');
-  return Number.isFinite(parsed) ? `${Math.max(0, Math.floor((Date.now() - parsed) / 60000))}m` : t('common.unknown');
+  return Number.isFinite(parsed) ? `${Math.max(0, Math.floor((observedAt - parsed) / 60000))}m` : t('common.unknown');
+}
+
+function startedWithinPastHour(agent, observedAt) {
+  const started = Date.parse(agent.started_at || '');
+  return Number.isFinite(started) && started <= observedAt && observedAt - started <= 3600000;
 }
 
 function updateNetwork(snapshot) {
@@ -94,12 +99,18 @@ async function paint() {
       bar.value = status.progress.completed;
       progress.append(bar);
     }
-    fill('#agents', status.active_agents, (li, agent) => { li.textContent = `${q(agent.role)} — ${q(agent.current_task || t('dashboard.noTask'))} (${elapsed(agent.started_at)})`; });
+    const reportedAgents = status.active_agents || [];
+    const observedAt = Date.now();
+    fill('#agents', reportedAgents, (li, agent) => {
+      li.textContent = `${q(agent.role)} — ${q(agent.current_task || t('dashboard.noTask'))} (${elapsed(agent.started_at, observedAt)}) — ${t('dashboard.reportedRunning')} · ${t(startedWithinPastHour(agent, observedAt) ? 'dashboard.startedRecent' : 'dashboard.startedOutside')}`;
+    });
+    const recentCount = reportedAgents.filter(agent => startedWithinPastHour(agent, observedAt)).length;
+    document.querySelector('#agents').append(el('p', 'muted', t('dashboard.agentCount', { reported: reportedAgents.length, recent: recentCount, outside: reportedAgents.length - recentCount })));
     fill('#tasks', snapshot.tasks.tasks, (li, task) => { li.textContent = `${q(task.status)} — ${q(task.title)} — ${q(task.owner || t('dashboard.unassigned'))}`; });
     fill('#claims', snapshot.claims.claims, (li, claim) => { li.textContent = `${q(claim.agent_id)} — ${claim.scopes.join(', ')}`; });
     fill('#warnings', status.warnings, (li, warning) => { li.className = 'bad'; li.textContent = q(warning.message); });
     fill('#blockers', status.blockers, (li, blocker) => { li.textContent = q(blocker.message); });
-    fill('#signals', status.signals?.slice(-10).reverse(), (li, signal) => { li.textContent = `${q(signal.from)} → ${q(signal.to)} — ${q(signal.kind)} — ${q(signal.summary)}`; });
+    fill('#signals', status.signals?.slice(-10).reverse(), (li, signal) => { li.textContent = `${signal.time ? `${q(signal.time)} — ` : ''}${q(signal.from)} → ${q(signal.to)} — ${q(signal.kind)} — ${q(signal.summary)}`; });
     fill('#events', snapshot.events?.slice(-10).reverse(), (li, event) => { li.textContent = `${q(event.time)} — ${q(event.message)}`; });
     fill('#artifacts', status.artifact_preview_links, (li, artifact) => { const link = el('a', '', q(artifact.label)); link.href = q(artifact.href); li.append(link); });
     const verification = document.querySelector('#verification');

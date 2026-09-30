@@ -167,6 +167,52 @@ test('live dashboard reuses its network controller during polling and destroys i
   assert.equal(controllers.at(-1).host, nodes.get('#agent-network'));
 });
 
+test('dashboard buckets reported agents by start age including exact hour, missing, and future starts and shows signal time', async () => {
+  const source = await readFile(path.resolve('preview/dashboard.js'), 'utf8');
+  const nodes = new Map();
+  const element = () => ({
+    children: [], className: '', classList: { toggle() {} },
+    append(...children) { this.children.push(...children); },
+    replaceChildren(...children) { this.children = children; },
+    set innerHTML(value) { for (const [, id] of value.matchAll(/id="([^"]+)"/g)) nodes.set(`#${id}`, element()); },
+    set textContent(value) { this.text = value; this.children = []; },
+    get textContent() { return this.text ?? this.children.map(child => child.textContent).join(''); }
+  });
+  for (const selector of ['#app', '#preview-preferences', '#app-tagline', '#sidebar-note']) nodes.set(selector, element());
+  const snapshot = {
+    status: {
+      active_agents: [
+        { id: 'recent', role: 'worker', current_task: 'recent', started_at: '2026-09-25T11:30:00Z' },
+        { id: 'boundary', role: 'worker', current_task: 'boundary', started_at: '2026-09-25T11:00:00Z' },
+        { id: 'missing', role: 'worker', current_task: 'missing' },
+        { id: 'future', role: 'worker', current_task: 'future', started_at: '2026-09-25T12:00:01Z' }
+      ], signals: [{ time: '2026-09-25T11:59:00Z', from: 'main', to: 'recent', kind: 'delegate', summary: 'ready' }],
+      verification: { status: 'passed' }, warnings: [], blockers: [], artifact_preview_links: []
+    }, tasks: { tasks: [] }, claims: { claims: [] }, events: []
+  };
+  const FixedDate = class extends Date { static now() { return Date.parse('2026-09-25T12:00:00Z'); } };
+  runInNewContext(source.replace(/^import .*?;\s*/m, 'const renderArtifactTabs = () => {};\n'), {
+    Date: FixedDate, document: { querySelector: selector => nodes.get(selector), querySelectorAll: () => [], createElement: element },
+    location: { hash: '#dashboard' }, addEventListener() {}, setInterval() {},
+    fetch: async url => ({ json: async () => url === '/runtime/catalog' ? { agents: [], skills: [] } : snapshot }),
+    PreviewPreferences: { create: () => ({ locale: 'en', t: (key, values = {}) => ({
+      'dashboard.reportedRunning': 'reported running', 'dashboard.startedRecent': 'started/resumed within past hour; liveness unconfirmed',
+      'dashboard.startedOutside': 'outside past hour or unknown start; liveness unconfirmed',
+      'dashboard.agentCount': `Reported running: ${values.reported}; recent: ${values.recent}; outside: ${values.outside}`
+    }[key] ?? key), mount() {}, subscribe() {} }) },
+    AgentSignalNetwork: { create: () => ({ update() {}, destroy() {} }) }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const items = nodes.get('#agents').children[0].children.map(child => child.textContent);
+  assert.equal(items.length, 4);
+  assert.match(items[0], /recent.*30m.*reported running.*within past hour/);
+  assert.match(items[1], /boundary.*60m.*reported running.*within past hour/);
+  assert.match(items[2], /missing.*unknown.*outside past hour/);
+  assert.match(items[3], /future.*outside past hour/);
+  assert.match(nodes.get('#agents').children[1].textContent, /Reported running: 4; recent: 2; outside: 2/);
+  assert.match(nodes.get('#signals').children[0].children[0].textContent, /^2026-09-25T11:59:00Z — main → recent/);
+});
+
 test('runtimeDir changes only live runtime data and keeps repository catalog and Task Specs', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-preview-root-'));
   const runtimeDir = await mkdtemp(path.join(tmpdir(), 'pure-preview-runtime-'));
