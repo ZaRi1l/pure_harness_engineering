@@ -7,7 +7,8 @@ import test from 'node:test';
 
 import { checkRepository, hookDispatchDiagnostic } from '../scripts/self-check.mjs';
 import { rolesFor } from '../scripts/route-task.mjs';
-import { discoverCatalog } from '../scripts/catalog.mjs';
+import { discoverCatalog, legacyCatalogFixture } from '../scripts/catalog.mjs';
+import { RuntimeStore } from '../scripts/runtime-state.mjs';
 
 test('routing keeps SMALL light and expands larger work', () => {
   assert.deepEqual(rolesFor('small'), ['worker']);
@@ -16,7 +17,7 @@ test('routing keeps SMALL light and expands larger work', () => {
 });
 
 test('discovered role policies use only supported cost-aware defaults', () => {
-  const catalog = discoverCatalog(path.resolve('.'));
+  const catalog = discoverCatalog(legacyCatalogFixture(path.resolve('.')));
   assert.ok(catalog.agents.length > 0);
   for (const agent of catalog.agents) {
     assert.match(agent.model, /^gpt-6-(sol|luna)$/);
@@ -57,6 +58,16 @@ test('self-check warns when Codex is not installed', async () => {
   const unavailable = () => ({ error: Object.assign(new Error('not found'), { code: 'ENOENT' }) });
   const report = await checkRepository(root, { exerciseRuntime: false, exerciseHttp: false, spawnCodex: unavailable });
   assert.ok(report.warnings.some(warning => warning.includes('Codex executable unavailable')));
+});
+
+test('self-check leaves legacy engine runtime as an explicit read fixture', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-check-'));
+  const legacy = RuntimeStore.legacyFixture(root);
+  await legacy.initialize();
+  const before = await readFile(legacy.statusPath, 'utf8');
+  const report = await checkRepository(root, { exerciseRuntime: false, exerciseHttp: false });
+  assert.equal(Array.isArray(report.failures), true);
+  assert.equal(await readFile(legacy.statusPath, 'utf8'), before);
 });
 
 test('self-check serves both dashboard assets and renders the static network', async () => {

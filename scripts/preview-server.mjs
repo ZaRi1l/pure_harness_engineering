@@ -4,16 +4,21 @@ import { realpath, stat } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { RuntimeStore, findRoot } from './runtime-state.mjs';
+import { RuntimeStore, contextFromArgs } from './runtime-state.mjs';
 import { discoverCatalog, discoverTaskSpecs } from './catalog.mjs';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
-export async function createPreviewServer(root, host = '127.0.0.1', options = {}) {
-  root = path.resolve(root); const previewRoot = path.resolve(root, 'preview'), previewReal = await realpath(previewRoot), store = new RuntimeStore(root, { runtimeDir: options.runtimeDir }); await store.initialize();
+export async function createPreviewServer(context, host = '127.0.0.1', options = {}) {
+  const legacy = context?.kind === 'legacy-fixture';
+  const root = legacy ? context.root : context?.harnessRoot;
+  if (!root) throw new Error('validated project context required');
+  const previewRoot = path.resolve(root, 'preview'), previewReal = await realpath(previewRoot);
+  const store = legacy ? RuntimeStore.legacyFixture(root, { runtimeDir: options.runtimeDir }) : new RuntimeStore(context);
+  await store.initialize();
   return http.createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url, `http://${host}`).pathname);
-      const runtime = { '/runtime/snapshot': () => store.readSnapshot(), '/runtime/status': () => store.readStatus(), '/runtime/tasks': () => store.readTasks(), '/runtime/events': async () => ({ events: await store.readEvents() }), '/runtime/catalog': () => discoverCatalog(root), '/runtime/task-specs': () => ({ taskSpecs: discoverTaskSpecs(root) }) };
+      const runtime = { '/runtime/snapshot': () => store.readSnapshot(), '/runtime/status': () => store.readStatus(), '/runtime/tasks': () => store.readTasks(), '/runtime/events': async () => ({ events: await store.readEvents() }), '/runtime/catalog': () => discoverCatalog(context), '/runtime/task-specs': () => ({ taskSpecs: discoverTaskSpecs(context) }) };
       if (runtime[pathname]) { response.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' }); response.end(JSON.stringify(await runtime[pathname]())); return; }
       const relative = ['/', '/preview', '/preview/'].includes(pathname) ? 'index.html' : pathname.replace(/^\/preview\//, '');
       const file = path.resolve(previewRoot, relative), lexical = file === previewRoot || file.startsWith(`${previewRoot}${path.sep}`);
@@ -25,4 +30,4 @@ export async function createPreviewServer(root, host = '127.0.0.1', options = {}
     } catch (error) { response.writeHead(500); response.end(`Server error: ${error.message}`); }
   });
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) { const host = '127.0.0.1', port = Number(process.env.PURE_HARNESS_PORT || 8765), server = await createPreviewServer(findRoot(), host); server.listen(port, host, () => console.log(`Pure Harness preview: http://${host}:${server.address().port}/`)); }
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) { const host = '127.0.0.1', port = Number(process.env.PURE_HARNESS_PORT || 8765), { context } = await contextFromArgs(process.argv.slice(2)); const server = await createPreviewServer(context, host); server.listen(port, host, () => console.log(`Pure Harness preview: http://${host}:${server.address().port}/`)); }

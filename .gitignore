@@ -5,6 +5,7 @@ projects/*/project.local.json
 harness-adapter/binding.local.json
 
 # Generated Pure Harness runtime state
+.ai/core-runtime/
 .ai/runtime/status.json
 .ai/runtime/tasks.json
 .ai/runtime/events.jsonl

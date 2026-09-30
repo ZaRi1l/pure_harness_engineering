@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { RuntimeStore, findRoot } from './runtime-state.mjs';
+import { RuntimeStore, contextFromArgs } from './runtime-state.mjs';
 import { pathToFileURL } from 'node:url';
 import { discoverCatalog, discoverTaskSpecs } from './catalog.mjs';
 
@@ -26,10 +26,11 @@ export function renderStaticPreview(snapshot, taskSpecs = [], catalog = { agents
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const root = findRoot(), store = new RuntimeStore(root), snapshot = await store.readSnapshot(), output = path.join(root, '.ai', 'runtime', 'preview.html');
+  const { context } = await contextFromArgs(process.argv.slice(2));
+  const root = context.harnessRoot, store = new RuntimeStore(context), snapshot = await store.readSnapshot(), output = path.join(context.paths.runtime, 'preview.html');
   await mkdir(path.dirname(output), { recursive: true });
   const networkSource = await readFile(path.join(root, 'preview', 'agent-network.js'), 'utf8');
   const preferencesSource = await readFile(path.join(root, 'preview', 'preferences.js'), 'utf8');
-  await writeFile(output, renderStaticPreview(snapshot, discoverTaskSpecs(root), discoverCatalog(root), networkSource, preferencesSource), 'utf8');
+  await writeFile(output, renderStaticPreview(snapshot, discoverTaskSpecs(context), discoverCatalog(context), networkSource, preferencesSource), 'utf8');
   console.log(output);
 }

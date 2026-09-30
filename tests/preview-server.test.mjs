@@ -7,7 +7,7 @@ import { runInNewContext } from 'node:vm';
 
 import { createPreviewServer } from '../scripts/preview-server.mjs';
 import { RuntimeStore } from '../scripts/runtime-state.mjs';
-import { discoverCatalog } from '../scripts/catalog.mjs';
+import { discoverCatalog, legacyCatalogFixture } from '../scripts/catalog.mjs';
 
 test('serves dashboard, task specs, and runtime JSON while rejecting traversal', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-preview-'));
@@ -19,8 +19,8 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   await copyFile(path.resolve('preview/dashboard.js'), path.join(root, 'preview/dashboard.js'));
   await mkdir(path.join(root, '.ai', 'tasks'), { recursive: true });
   await writeFile(path.join(root, '.ai', 'tasks', 'example.md'), '# Example task spec\n\nPlan content.');
-  await new RuntimeStore(root).initialize();
-  const server = await createPreviewServer(root, '127.0.0.1', 0);
+  await RuntimeStore.legacyFixture(root).initialize();
+  const server = await createPreviewServer(legacyCatalogFixture(root), '127.0.0.1', 0);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const port = server.address().port;
@@ -144,10 +144,10 @@ test('runtimeDir changes only live runtime data and keeps repository catalog and
   await mkdir(path.join(root, '.ai', 'tasks'), { recursive: true });
   await copyFile(path.resolve('preview/index.html'), path.join(root, 'preview/index.html'));
   await writeFile(path.join(root, '.ai', 'tasks', 'example.md'), '# Source task');
-  const store = new RuntimeStore(root, { runtimeDir });
+  const store = RuntimeStore.legacyFixture(root, { runtimeDir });
   await store.initialize();
   await store.setGoal('Injected runtime');
-  const server = await createPreviewServer(root, '127.0.0.1', { runtimeDir });
+  const server = await createPreviewServer(legacyCatalogFixture(root), '127.0.0.1', { runtimeDir });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -160,7 +160,7 @@ test('runtimeDir changes only live runtime data and keeps repository catalog and
 });
 
 test('catalog exposes read-only source and role policy metadata', () => {
-  const catalog = discoverCatalog(path.resolve('.'));
+  const catalog = discoverCatalog(legacyCatalogFixture(path.resolve('.')));
   const planner = catalog.agents.find(agent => agent.id === 'planner');
   const testing = catalog.skills.find(skill => skill.id === 'testing');
   assert.equal(planner.model, 'gpt-6-sol');
@@ -196,8 +196,8 @@ test('rejects preview links that resolve outside preview root', async t => {
     }
     throw error;
   }
-  await new RuntimeStore(root).initialize();
-  const server = await createPreviewServer(root, '127.0.0.1', 0);
+  await RuntimeStore.legacyFixture(root).initialize();
+  const server = await createPreviewServer(legacyCatalogFixture(root), '127.0.0.1', 0);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const response = await fetch(`http://127.0.0.1:${server.address().port}/preview/linked/secret.txt`);

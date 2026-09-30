@@ -7,13 +7,15 @@ import test from 'node:test';
 
 import { RuntimeStore, findRoot, runCli } from '../scripts/runtime-state.mjs';
 
+const legacyCli = argv => runCli(argv, { legacyFixtureRoot: argv[argv.indexOf('--root') + 1] });
+
 async function temporaryRoot() {
   return mkdtemp(path.join(tmpdir(), 'pure-harness-'));
 }
 
 test('initializes empty deterministic runtime state', async () => {
   const root = await temporaryRoot();
-  const store = new RuntimeStore(root);
+  const store = RuntimeStore.legacyFixture(root);
   await store.initialize();
   const status = await store.readStatus();
   assert.equal(status.phase, 'idle');
@@ -24,7 +26,7 @@ test('initializes empty deterministic runtime state', async () => {
 });
 
 test('derives task progress from real task transitions', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.upsertTask('t1', 'Implement', 'in_progress', 'worker');
   await store.upsertTask('t2', 'Review', 'pending', 'reviewer');
@@ -36,7 +38,7 @@ test('derives task progress from real task transitions', async () => {
 });
 
 test('records lifecycle and explicit agent signals without message bodies', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.agentStarted('worker-1', 'worker', 'Implement core');
   await store.addSignal('planner-1', 'worker-1', 'handoff', 'Task spec ready');
@@ -50,7 +52,7 @@ test('records lifecycle and explicit agent signals without message bodies', asyn
 });
 
 test('repeated hook and orchestration starts reconcile one native agent instance', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   const NativeDate = globalThis.Date; let tick = 0;
   globalThis.Date = class extends NativeDate { constructor(...args) { super(...(args.length ? args : [1700000000000 + tick++])); } static now() { return NativeDate.now(); } };
@@ -73,7 +75,7 @@ test('repeated hook and orchestration starts reconcile one native agent instance
 });
 
 test('repeated stops are idempotent and a hook stop becomes canonical', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.agentStarted('native-1', 'worker', 'Implement UI', { source: 'orchestration' });
   await store.agentStopped('native-1', 'stopped', { task_id: 'ui-1', source: 'orchestration' });
@@ -93,7 +95,7 @@ test('repeated stops are idempotent and a hook stop becomes canonical', async ()
 });
 
 test('a hook stop releases its claim in the same lifecycle transition', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.agentStarted('native-1', 'worker', 'Task', { source: 'hook' });
   await store.claim('native-1', ['src/backend/']);
@@ -102,7 +104,7 @@ test('a hook stop releases its claim in the same lifecycle transition', async ()
 });
 
 test('a stopped native agent resumes by exact ID with a fresh neutral return', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.agentStarted('native-1', 'worker', 'First turn', { task_id: 'first', source: 'orchestration' });
   await store.agentStopped('native-1', 'stopped', { task_id: 'first', source: 'orchestration' });
@@ -127,7 +129,7 @@ test('a stopped native agent resumes by exact ID with a fresh neutral return', a
 });
 
 test('resume refuses unknown IDs and a stale task stop cannot close a newer turn', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await assert.rejects(() => store.agentResumed('missing', 'Task', 'Accepted', { turn_token: 'turn-2', source: 'orchestration' }), /unknown agent/);
   await store.agentStarted('native-1', 'worker', 'First', { task_id: 'first', source: 'hook' });
@@ -142,7 +144,7 @@ test('resume refuses unknown IDs and a stale task stop cannot close a newer turn
 });
 
 test('resume requires an explicit short summary and does not resume a first active turn', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.agentStarted('native-1', 'worker', 'Task', { source: 'orchestration' });
   await assert.rejects(() => store.agentResumed('native-1', 'Task', 'Accepted', { turn_token: 'turn-2', source: 'orchestration' }), /already active/);
@@ -153,20 +155,20 @@ test('resume requires an explicit short summary and does not resume a first acti
 
 test('resume CLI records only a short explicit summary for the existing ID', async () => {
   const root = await temporaryRoot();
-  await runCli(['agent-start', 'native-1', 'worker', '--task', 'First', '--source', 'orchestration', '--root', root]);
-  await runCli(['agent-stop', 'native-1', '--source', 'orchestration', '--root', root]);
-  await runCli(['agent-resume', 'native-1', '--task', 'Second', '--summary', 'A'.repeat(250), '--task-id', 'second', '--turn-token', 'turn-2', '--source', 'orchestration', '--root', root]);
-  const status = await new RuntimeStore(root).readStatus();
+  await legacyCli(['agent-start', 'native-1', 'worker', '--task', 'First', '--source', 'orchestration', '--root', root]);
+  await legacyCli(['agent-stop', 'native-1', '--source', 'orchestration', '--root', root]);
+  await legacyCli(['agent-resume', 'native-1', '--task', 'Second', '--summary', 'A'.repeat(250), '--task-id', 'second', '--turn-token', 'turn-2', '--source', 'orchestration', '--root', root]);
+  const status = await RuntimeStore.legacyFixture(root).readStatus();
   assert.equal(status.signals.at(-1).summary, 'A'.repeat(200));
   assert.equal(status.agents[0].id, 'native-1');
   assert.equal(status.agents[0].current_task, 'Second');
-  await assert.rejects(() => runCli(['agent-stop', 'native-1', '--source', 'orchestration', '--root', root]), /turn token/);
-  await runCli(['agent-stop', 'native-1', '--turn-token', 'turn-2', '--source', 'orchestration', '--root', root]);
-  assert.deepEqual((await new RuntimeStore(root).readStatus()).active_agents, []);
+  await assert.rejects(() => legacyCli(['agent-stop', 'native-1', '--source', 'orchestration', '--root', root]), /turn token/);
+  await legacyCli(['agent-stop', 'native-1', '--turn-token', 'turn-2', '--source', 'orchestration', '--root', root]);
+  assert.deepEqual((await RuntimeStore.legacyFixture(root).readStatus()).active_agents, []);
 });
 
 test('a resumed turn requires its exact follow-up token to stop, even with the same task ID', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.agentStarted('native-1', 'worker', 'First', { task_id: 'shared', source: 'orchestration' });
   await store.agentStopped('native-1', 'stopped', { task_id: 'shared', source: 'orchestration' });
@@ -179,7 +181,7 @@ test('a resumed turn requires its exact follow-up token to stop, even with the s
 });
 
 test('a replayed follow-up token does not create a ghost turn after stop', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.agentStarted('native-1', 'worker', 'First', { source: 'orchestration' });
   await store.agentStopped('native-1', 'stopped', { source: 'orchestration' });
@@ -198,7 +200,7 @@ test('a replayed follow-up token does not create a ghost turn after stop', async
 });
 
 test('an unknown stop does not fabricate agent history or a result edge', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.agentStopped('missing-agent', 'stopped', { source: 'hook' });
   const status = await store.readStatus(), events = await store.readEvents();
@@ -210,10 +212,10 @@ test('an unknown stop does not fabricate agent history or a result edge', async 
 
 test('lifecycle CLI forwards source and task metadata for concurrent workers', async () => {
   const root = await temporaryRoot();
-  await runCli(['agent-start', 'worker-a', 'worker', '--task', 'Task A', '--task-id', 'task-a', '--source', 'orchestration', '--root', root]);
-  await runCli(['agent-start', 'worker-b', 'worker', '--task', 'Task B', '--task-id', 'task-b', '--source', 'orchestration', '--root', root]);
-  await runCli(['agent-stop', 'worker-a', '--source', 'orchestration', '--root', root]);
-  const status = await new RuntimeStore(root).readStatus();
+  await legacyCli(['agent-start', 'worker-a', 'worker', '--task', 'Task A', '--task-id', 'task-a', '--source', 'orchestration', '--root', root]);
+  await legacyCli(['agent-start', 'worker-b', 'worker', '--task', 'Task B', '--task-id', 'task-b', '--source', 'orchestration', '--root', root]);
+  await legacyCli(['agent-stop', 'worker-a', '--source', 'orchestration', '--root', root]);
+  const status = await RuntimeStore.legacyFixture(root).readStatus();
   assert.deepEqual(status.active_agents.map(agent => agent.id), ['worker-b']);
   assert.deepEqual(status.agents.map(agent => [agent.id, agent.start_source, agent.stop_source || null]), [
     ['worker-a', 'orchestration', 'orchestration'],
@@ -224,7 +226,7 @@ test('lifecycle CLI forwards source and task metadata for concurrent workers', a
 });
 
 test('stopping an active agent still works after the history registry cap prunes it', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   for (let index = 0; index < 31; index += 1) await store.agentStarted(`worker-${index}`, 'worker', `Task ${index}`, { source: 'orchestration' });
   const pruned = await store.readStatus(), startedAt = pruned.active_agents.find(agent => agent.id === 'worker-0').started_at;
@@ -241,7 +243,7 @@ test('stopping an active agent still works after the history registry cap prunes
 });
 
 test('signal metadata is optional, allowlisted, and backward compatible', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.addSignal('main', 'worker-ui', 'handoff', 'Implement UI');
   await store.addSignal('worker-ui', 'verifier', 'verify', 'Verify UI', {
@@ -262,7 +264,7 @@ test('signal metadata is optional, allowlisted, and backward compatible', async 
 });
 
 test('writer IDs stay unique for identical signals and cannot be supplied by callers', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.agentStarted('worker-1', 'worker', 'Implement', { id: 'spoofed-delegate' });
   await store.addSignal('worker-1', 'main', 'handoff', 'Same', { id: 'spoofed-explicit' });
@@ -280,7 +282,7 @@ test('old schema-version-1 id-less signals remain unchanged after a new append',
   await mkdir(runtime, { recursive: true });
   const legacy = { time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker', kind: 'delegate', summary: 'Old' };
   await writeFile(path.join(runtime, 'status.json'), JSON.stringify({ schema_version: 1, signals: [legacy] }));
-  const store = new RuntimeStore(root);
+  const store = RuntimeStore.legacyFixture(root);
   await store.addSignal('worker', 'main', 'result', 'New');
   const status = await store.readStatus();
   assert.equal(status.schema_version, 1);
@@ -289,7 +291,7 @@ test('old schema-version-1 id-less signals remain unchanged after a new append',
 });
 
 test('legacy agents without lifecycle signal IDs never rewrite unrelated id-less signals', async () => {
-  const root = await temporaryRoot(), store = new RuntimeStore(root);
+  const root = await temporaryRoot(), store = RuntimeStore.legacyFixture(root);
   await store.initialize();
   const runtime = path.join(root, '.ai', 'runtime'), started = '2026-01-01T00:00:00.000Z', stopped = '2026-01-01T00:01:00.000Z';
   const active = { id: 'legacy-active', role: 'worker', status: 'running', current_task: 'old task', started_at: started, stopped_at: null, start_source: 'orchestration' };
@@ -305,7 +307,7 @@ test('legacy agents without lifecycle signal IDs never rewrite unrelated id-less
 });
 
 test('the 51st signal prunes only the oldest stored ID', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   for (let index = 0; index < 50; index++) await store.addSignal('main', 'worker', 'handoff', `Signal ${index}`);
   const before = (await store.readStatus()).signals;
@@ -319,7 +321,7 @@ test('the 51st signal prunes only the oldest stored ID', async () => {
 test('an injected runtime directory never initializes the default runtime', async () => {
   const root = await temporaryRoot();
   const isolated = path.join(root, '.ai', 'demo', 'network-runtime');
-  const store = new RuntimeStore(root, { runtimeDir: isolated });
+  const store = RuntimeStore.legacyFixture(root, { runtimeDir: isolated });
   await store.initialize();
   for (const name of ['status.json', 'tasks.json', 'events.jsonl', 'claims.json']) {
     assert.equal(existsSync(path.join(isolated, name)), true, name);
@@ -329,9 +331,9 @@ test('an injected runtime directory never initializes the default runtime', asyn
 
 test('signal CLI forwards optional metadata', async () => {
   const root = await temporaryRoot();
-  await runCli(['signal', 'main', 'worker-ui', 'handoff', 'Implement UI', '--root', root,
+  await legacyCli(['signal', 'main', 'worker-ui', 'handoff', 'Implement UI', '--root', root,
     '--task', 'ui-task', '--status', 'running', '--artifact', '/preview/ui.html', '--verification', 'ui-tests', '--id', 'spoofed-cli']);
-  const signal = (await new RuntimeStore(root).readStatus()).signals[0];
+  const signal = (await RuntimeStore.legacyFixture(root).readStatus()).signals[0];
   assert.notEqual(signal.id, 'spoofed-cli');
   assert.deepEqual({ task_id: signal.task_id, status: signal.status,
     artifact_href: signal.artifact_href, verification_name: signal.verification_name }, {
@@ -340,7 +342,7 @@ test('signal CLI forwards optional metadata', async () => {
 });
 
 test('aggregate verification cannot hide an outstanding failed check', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.setVerification('failed', 'tests', '1 failed');
   await store.setVerification('passed', 'lint', 'clean');
@@ -355,14 +357,14 @@ test('migrates active agents into the durable agent registry', async () => {
   await mkdir(runtime, { recursive: true });
   const active = { id: 'worker-1', role: 'worker', status: 'running', current_task: 'Migrate' };
   await writeFile(path.join(runtime, 'status.json'), JSON.stringify({ schema_version: 1, active_agents: [active] }));
-  const store = new RuntimeStore(root);
+  const store = RuntimeStore.legacyFixture(root);
   await store.initialize();
   assert.deepEqual((await store.readStatus()).agents, [active]);
 });
 
 test('operating process exit does not permanently block runtime updates', async () => {
   const root = await temporaryRoot();
-  const store = new RuntimeStore(root);
+  const store = RuntimeStore.legacyFixture(root);
   await store.initialize();
   await mkdir(store.lockPath);
   await writeFile(path.join(store.lockPath, 'owner.json'), JSON.stringify({ pid: 2147483647, token: 'abandoned' }));
@@ -371,7 +373,7 @@ test('operating process exit does not permanently block runtime updates', async 
 });
 
 test('concurrent stale-lock recovery loses no updates', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await mkdir(store.lockPath);
   await writeFile(path.join(store.lockPath, 'owner.json'), JSON.stringify({ pid: 2147483647, token: 'abandoned' }));
@@ -389,7 +391,7 @@ test('findRoot prefers the Git root over nested AGENTS.md', async () => {
 });
 
 test('event history stays readable during atomic capped updates', async () => {
-  const store = new RuntimeStore(await temporaryRoot(), { eventLimit: 3 });
+  const store = RuntimeStore.legacyFixture(await temporaryRoot(), { eventLimit: 3 });
   await store.initialize();
   await store.addEvent('seed', 'event-0');
   let done = false, writerError = null, concurrentReads = 0;
@@ -406,7 +408,7 @@ test('event history stays readable during atomic capped updates', async () => {
 });
 
 test('snapshot reads expose one consistent runtime generation', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   let writing = true;
   const writer = (async () => {
@@ -421,7 +423,7 @@ test('snapshot reads expose one consistent runtime generation', async () => {
 });
 
 test('claims reject overlapping write scopes and preserve independent siblings', async () => {
-  const store = new RuntimeStore(await temporaryRoot());
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();
   await store.claim('worker-backend', ['src/backend/']);
   await store.claim('worker-ui', ['src/frontend/']);

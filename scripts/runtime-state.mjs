@@ -4,11 +4,14 @@ import { existsSync } from 'node:fs';
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isValidatedProjectContext, loadProjectContext } from './project-context.mjs';
 
 export const TASK_STATUSES = new Set(['pending', 'in_progress', 'blocked', 'completed', 'cancelled']);
 export const VERIFICATION_STATUSES = new Set(['not_run', 'running', 'passed', 'failed', 'blocked']);
 const SIGNAL_METADATA_FIELDS = ['task_id', 'status', 'artifact_href', 'verification_name'];
 const LIFECYCLE_SOURCES = new Set(['hook', 'orchestration']);
+const coreContexts = new WeakSet();
+export const isCoreContext = value => value !== null && typeof value === 'object' && coreContexts.has(value);
 function signalMetadata(value = {}) {
   return Object.fromEntries(SIGNAL_METADATA_FIELDS
     .filter(key => value[key] !== undefined && value[key] !== null && value[key] !== '')
@@ -25,10 +28,14 @@ const now = () => new Date().toISOString();
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const normalizeScope = scope => {
   const value = String(scope || '').split('\\').join('/').split('/').filter(Boolean).join('/');
-  if (!value || value === '.' || value.split('/').includes('..')) throw new Error('invalid claim scope');
+  if (!value || value === '.' || value.split('/').some(segment => segment === '..' || segment === '.') || String(scope).includes(':') || path.isAbsolute(String(scope)) || path.win32.isAbsolute(String(scope))) throw new Error('invalid claim scope');
   return value;
 };
 const scopesOverlap = (left, right) => left === right || left.startsWith(right + '/') || right.startsWith(left + '/');
+const assertSchema = (value, name) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.schema_version !== 1) throw new Error(`${name} runtime schema unsupported`);
+  return value;
+};
 
 async function atomicWrite(file, content) {
   await mkdir(path.dirname(file), { recursive: true });
@@ -51,13 +58,33 @@ function processAlive(pid) {
 }
 
 export class RuntimeStore {
-  constructor(root, { eventLimit = 100, lockTimeoutMs = 5000, runtimeDir } = {}) {
-    this.root = path.resolve(root); this.runtime = runtimeDir ? path.resolve(runtimeDir) : path.join(this.root, '.ai', 'runtime');
+  static coreContext({ engineRoot, runtimeRoot }) {
+    if (!path.isAbsolute(engineRoot) || !path.isAbsolute(runtimeRoot)) throw new Error('core context requires absolute roots');
+    const relative = path.relative(path.resolve(engineRoot), path.resolve(runtimeRoot));
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('core runtime outside engine root');
+    const context = Object.freeze({ kind: 'core', projectId: 'core', checkoutRoot: path.resolve(engineRoot), harnessRoot: path.resolve(engineRoot), paths: Object.freeze({ runtime: path.resolve(runtimeRoot) }) });
+    coreContexts.add(context);
+    return context;
+  }
+  static legacyFixture(root, options = {}) { return new RuntimeStore(root, { ...options, legacyFixture: true }); }
+  constructor(context, { eventLimit = 100, lockTimeoutMs = 5000, runtimeDir, legacyFixture = false } = {}) {
+    if (legacyFixture && typeof context === 'string') {
+      this.context = null; this.root = path.resolve(context); this.runtime = runtimeDir ? path.resolve(runtimeDir) : path.join(this.root, '.ai', 'runtime');
+    } else if (isValidatedProjectContext(context) || isCoreContext(context)) {
+      if (runtimeDir) throw new Error('runtime override forbidden for context');
+      this.context = context; this.root = context.checkoutRoot; this.runtime = context.paths.runtime;
+    } else throw new Error('validated project or explicit core context required');
     this.statusPath = path.join(this.runtime, 'status.json'); this.tasksPath = path.join(this.runtime, 'tasks.json');
     this.eventsPath = path.join(this.runtime, 'events.jsonl'); this.claimsPath = path.join(this.runtime, 'claims.json'); this.lockPath = path.join(this.runtime, '.state.lock');
     this.eventLimit = Math.max(1, eventLimit); this.lockTimeoutMs = lockTimeoutMs;
   }
-  emptyStatus() { return { schema_version: 1, current_goal: null, phase: 'idle', active_agents: [], agents: [], signals: [], task_counts: { total: 0, completed: 0 }, progress: null, completed_tasks: [], next_tasks: [], verification: { status: 'not_run', checks: [], last_run: null }, blockers: [], warnings: [], recent_events: [], artifact_preview_links: [], last_update: now() }; }
+  assertDocument(value, name) {
+    assertSchema(value, name);
+    if (this.context && value.project_id !== this.context.projectId) throw new Error(`${name} project identity mismatch`);
+    return value;
+  }
+  emptyDocument(name) { return { schema_version: 1, ...(this.context ? { project_id: this.context.projectId } : {}), [name]: [] }; }
+  emptyStatus() { return { schema_version: 1, ...(this.context ? { project_id: this.context.projectId } : {}), current_goal: null, phase: 'idle', active_agents: [], agents: [], signals: [], task_counts: { total: 0, completed: 0 }, progress: null, completed_tasks: [], next_tasks: [], verification: { status: 'not_run', checks: [], last_run: null }, blockers: [], warnings: [], recent_events: [], artifact_preview_links: [], last_update: now() }; }
   assertSafeLockPath() { const resolved = path.resolve(this.lockPath); if (path.dirname(resolved) !== path.resolve(this.runtime)) throw new Error('unsafe lock path'); return resolved; }
   async removeOwnedLock(token) { try { const owner = JSON.parse(await readFile(path.join(this.lockPath, 'owner.json'), 'utf8')); if (owner.token !== token) return; } catch { return; } await rm(this.assertSafeLockPath(), { recursive: true, force: true }); }
   async recoverStaleLock() {
@@ -79,28 +106,31 @@ export class RuntimeStore {
     try { return await operation(); } finally { await this.removeOwnedLock(token); }
   }
   async initialize({ force = false } = {}) {
+    if (force && this.context) throw new Error('force init forbidden for project or core context');
     await this.withLock(async () => {
       let status = this.emptyStatus();
-      if (!force && existsSync(this.statusPath)) { status = JSON.parse(await readFile(this.statusPath, 'utf8')); for (const [key, value] of Object.entries(this.emptyStatus())) if (!(key in status)) status[key] = key === 'agents' ? [...(status.active_agents || [])] : value; status.last_update = now(); }
+      if (!force && existsSync(this.statusPath)) { status = this.assertDocument(JSON.parse(await readFile(this.statusPath, 'utf8')), 'status'); for (const [key, value] of Object.entries(this.emptyStatus())) if (!(key in status)) status[key] = key === 'agents' ? [...(status.active_agents || [])] : value; status.last_update = now(); }
+      if (!force && existsSync(this.tasksPath)) this.assertDocument(JSON.parse(await readFile(this.tasksPath, 'utf8')), 'tasks');
+      if (!force && existsSync(this.claimsPath)) this.assertDocument(JSON.parse(await readFile(this.claimsPath, 'utf8')), 'claims');
       await atomicWrite(this.statusPath, `${JSON.stringify(status, null, 2)}\n`);
-      if (force || !existsSync(this.tasksPath)) await atomicWrite(this.tasksPath, `${JSON.stringify({ schema_version: 1, tasks: [] }, null, 2)}\n`);
+      if (force || !existsSync(this.tasksPath)) await atomicWrite(this.tasksPath, `${JSON.stringify(this.emptyDocument('tasks'), null, 2)}\n`);
       if (force || !existsSync(this.eventsPath)) await atomicWrite(this.eventsPath, '');
-      if (force || !existsSync(this.claimsPath)) await atomicWrite(this.claimsPath, JSON.stringify({ schema_version: 1, claims: [] }, null, 2) + '\n');
+      if (force || !existsSync(this.claimsPath)) await atomicWrite(this.claimsPath, JSON.stringify(this.emptyDocument('claims'), null, 2) + '\n');
     });
   }
-  async readStatus() { if (!existsSync(this.statusPath)) await this.initialize(); return JSON.parse(await readFile(this.statusPath, 'utf8')); }
-  async readTasks() { if (!existsSync(this.tasksPath)) await this.initialize(); return JSON.parse(await readFile(this.tasksPath, 'utf8')); }
+  async readStatus() { if (!existsSync(this.statusPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.statusPath, 'utf8')), 'status'); }
+  async readTasks() { if (!existsSync(this.tasksPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.tasksPath, 'utf8')), 'tasks'); }
   async readEvents() { if (!existsSync(this.eventsPath)) await this.initialize(); return (await readFile(this.eventsPath, 'utf8')).split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)); }
-  async readClaims() { if (!existsSync(this.claimsPath)) await this.initialize(); return JSON.parse(await readFile(this.claimsPath, 'utf8')); }
+  async readClaims() { if (!existsSync(this.claimsPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.claimsPath, 'utf8')), 'claims'); }
   async readSnapshot() {
     if (!existsSync(this.statusPath) || !existsSync(this.tasksPath) || !existsSync(this.eventsPath) || !existsSync(this.claimsPath)) await this.initialize();
     return this.withLock(async () => this.loadUnlocked());
   }
   async loadUnlocked() {
-    const status = existsSync(this.statusPath) ? JSON.parse(await readFile(this.statusPath, 'utf8')) : this.emptyStatus(); status.agents ??= [...(status.active_agents || [])]; status.signals ??= [];
-    const tasks = existsSync(this.tasksPath) ? JSON.parse(await readFile(this.tasksPath, 'utf8')) : { schema_version: 1, tasks: [] };
+    const status = existsSync(this.statusPath) ? this.assertDocument(JSON.parse(await readFile(this.statusPath, 'utf8')), 'status') : this.emptyStatus(); status.agents ??= [...(status.active_agents || [])]; status.signals ??= [];
+    const tasks = existsSync(this.tasksPath) ? this.assertDocument(JSON.parse(await readFile(this.tasksPath, 'utf8')), 'tasks') : this.emptyDocument('tasks');
     const events = existsSync(this.eventsPath) ? (await readFile(this.eventsPath, 'utf8')).split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)) : [];
-    const claims = existsSync(this.claimsPath) ? JSON.parse(await readFile(this.claimsPath, 'utf8')) : { schema_version: 1, claims: [] };
+    const claims = existsSync(this.claimsPath) ? this.assertDocument(JSON.parse(await readFile(this.claimsPath, 'utf8')), 'claims') : this.emptyDocument('claims');
     return { status, tasks, events, claims };
   }
   event(type, message, data = {}) { const clean = Object.fromEntries(Object.entries(data).filter(([, value]) => value !== null && value !== '' && value !== undefined)); return { time: now(), type, message: String(message).slice(0, 500), ...(Object.keys(clean).length ? { data: clean } : {}) }; }
@@ -197,12 +227,37 @@ export class RuntimeStore {
   async addEvent(type, message, data = {}) { await this.mutate(({ events }) => events.push(this.event(type, message, data))); }
   async setWarnings(warnings) { await this.mutate(({ status, events }) => { status.warnings = warnings.map(warning => ({ id: String(warning.id).slice(0, 120), message: String(warning.message).slice(0, 500), time: now() })); events.push(this.event('watchdog', warnings.length ? String(warnings.length) + ' watchdog warning(s)' : 'Watchdog clear')); }); }
   async claim(agentId, scopes) {
-    const normalized = [...new Set((Array.isArray(scopes) ? scopes : [scopes]).map(normalizeScope))];
+    const entries = (Array.isArray(scopes) ? scopes : [scopes]).map(scope => {
+      if (!this.context) return { scope: normalizeScope(scope), kind: 'legacy' };
+      const raw = String(scope || '');
+      const installation = raw.startsWith('installation:');
+      if (installation && this.context.kind === 'core') throw new Error('core claim cannot use installation scope');
+      const scoped = installation ? raw.slice('installation:'.length) : raw;
+      let relative, managementScope = installation;
+      if (path.isAbsolute(raw) || path.win32.isAbsolute(raw)) {
+        const checkoutRelative = path.relative(this.context.checkoutRoot, path.resolve(raw));
+        const managementRelative = path.relative(this.context.harnessRoot, path.resolve(raw));
+        const inside = value => value && value !== '..' && !value.startsWith(`..${path.sep}`) && !path.isAbsolute(value);
+        if (inside(checkoutRelative)) return { scope: normalizeScope(checkoutRelative), kind: 'checkout' };
+        if (this.context.kind !== 'core' && inside(managementRelative)) { relative = managementRelative; managementScope = true; }
+        else throw new Error('claim scope outside context root');
+      } else relative = scoped;
+      const normalized = normalizeScope(relative);
+      if (managementScope) {
+        if (!normalized.startsWith(`projects/${this.context.projectId}/`)) throw new Error('installation claim outside selected project');
+        return { scope: normalized, kind: 'installation' };
+      }
+      return { scope: normalized, kind: 'checkout' };
+    });
+    const kinds = new Set(entries.map(entry => entry.kind));
+    if (kinds.size !== 1) throw new Error('mixed claim roots');
+    const kind = entries[0]?.kind;
+    const normalized = [...new Set(entries.map(entry => entry.scope))];
     if (!normalized.length) throw new Error('claim requires a scope');
     await this.mutate(({ claims, events }) => {
       const others = claims.claims.filter(claim => claim.agent_id !== agentId);
-      for (const scope of normalized) for (const claim of others) for (const existing of claim.scopes) if (scopesOverlap(scope, existing)) throw new Error('claim conflict: ' + scope + ' overlaps ' + existing + ' (' + claim.agent_id + ')');
-      claims.claims = others.concat({ agent_id: String(agentId), scopes: normalized, claimed_at: now() });
+      for (const scope of normalized) for (const claim of others) for (const existing of claim.scopes) if ((claim.scope_kind || (this.context ? 'checkout' : 'legacy')) === kind && scopesOverlap(scope, existing)) throw new Error('claim conflict: ' + scope + ' overlaps ' + existing + ' (' + claim.agent_id + ')');
+      claims.claims = others.concat({ agent_id: String(agentId), scopes: normalized, claimed_at: now(), ...(this.context ? { project_id: this.context.projectId, checkout_root: this.context.checkoutRoot, scope_kind: kind } : {}) });
       events.push(this.event('claim', String(agentId) + ' claimed ' + normalized.join(', '), { agent_id: agentId }));
     });
   }
@@ -211,8 +266,21 @@ export class RuntimeStore {
 
 export function findRoot(start = process.cwd()) { let current = path.resolve(start), instructionRoot = null; while (true) { if (existsSync(path.join(current, '.git'))) return current; if (!instructionRoot && existsSync(path.join(current, 'AGENTS.md'))) instructionRoot = current; const parent = path.dirname(current); if (parent === current) break; current = parent; } return instructionRoot || path.resolve(start); }
 function option(args, name, fallback = null) { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : fallback; }
-export async function runCli(argv = process.argv.slice(2)) {
-  const copy = [...argv], rootIndex = copy.indexOf('--root'), root = rootIndex >= 0 ? copy.splice(rootIndex, 2)[1] : findRoot(); const store = new RuntimeStore(root); const [command, ...args] = copy;
+export async function contextFromArgs(argv) {
+  const copy = [...argv];
+  const take = name => { const index = copy.indexOf(name); return index < 0 ? undefined : copy.splice(index, 2)[1]; };
+  const projectId = take('--project'), checkoutRoot = take('--checkout'), bindingPath = take('--binding');
+  if (!projectId || !checkoutRoot || !bindingPath) throw new Error('project, checkout, and binding are required');
+  return { context: await loadProjectContext({ projectId, checkoutRoot, bindingPath }), args: copy };
+}
+export async function runCli(argv = process.argv.slice(2), { legacyFixtureRoot } = {}) {
+  const copy = [...argv];
+  const rootIndex = copy.indexOf('--root');
+  const root = rootIndex < 0 ? undefined : copy.splice(rootIndex, 2)[1];
+  if (root && (!legacyFixtureRoot || path.resolve(root) !== path.resolve(legacyFixtureRoot))) throw new Error('--root is only available to explicit legacy fixtures');
+  const resolved = legacyFixtureRoot ? { context: null, args: copy } : await contextFromArgs(copy);
+  const store = legacyFixtureRoot ? RuntimeStore.legacyFixture(legacyFixtureRoot) : new RuntimeStore(resolved.context);
+  const [command, ...args] = resolved.args;
   const actions = { init: () => store.initialize({ force: args.includes('--force') }), goal: () => store.setGoal(args[0], option(args, '--phase', 'planning')), phase: () => store.setPhase(args[0]), task: () => store.upsertTask(args[0], args[1], args[2], option(args, '--owner')), 'agent-start': () => store.agentStarted(args[0], args[1], option(args, '--task', ''), { task_id: option(args, '--task-id'), source: option(args, '--source') }), 'agent-resume': () => store.agentResumed(args[0], option(args, '--task', ''), option(args, '--summary', ''), { task_id: option(args, '--task-id'), turn_token: option(args, '--turn-token'), source: option(args, '--source') }), 'agent-stop': () => store.agentStopped(args[0], option(args, '--outcome', 'stopped'), { task_id: option(args, '--task-id'), turn_token: option(args, '--turn-token'), source: option(args, '--source') }), verify: () => store.setVerification(args[0], args[1], option(args, '--detail', '')), blocker: () => store.addBlocker(args[0], args[1]), 'clear-blocker': () => store.clearBlocker(args[0]), artifact: () => store.addArtifact(args[0], args[1]), event: () => store.addEvent(args[0], args[1]), signal: () => store.addSignal(args[0], args[1], args[2], args[3], { task_id: option(args, '--task'), status: option(args, '--status'), artifact_href: option(args, '--artifact'), verification_name: option(args, '--verification') }) };
   actions.claim = () => store.claim(args[0], args.slice(1));
   actions['release-claim'] = () => store.releaseClaim(args[0]);

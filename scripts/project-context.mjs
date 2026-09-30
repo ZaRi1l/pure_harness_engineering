@@ -3,6 +3,8 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 const MAX_MESSAGE = 160;
+const validatedContexts = new WeakSet();
+export const isValidatedProjectContext = value => value !== null && typeof value === 'object' && validatedContexts.has(value);
 class ContextError extends Error {
   constructor(code, field) { super(`${field}: ${code.replaceAll('_', ' ')}`); this.code = code; }
 }
@@ -145,7 +147,9 @@ export async function loadProjectContext({ checkoutRoot, bindingPath, projectId 
     adapters[name] = Object.freeze({ ...adapter });
   }
   const safeManifest = Object.freeze({ schemaVersion: 1, id: manifest.id, displayName: manifest.displayName, paths: Object.freeze({ ...manifest.paths }), adapters: Object.freeze(adapters) });
-  return Object.freeze({ projectId, harnessRoot, projectRoot, checkoutRoot: checkout, manifest: safeManifest, paths: Object.freeze(paths), adapters: Object.freeze(adapters) });
+  const context = Object.freeze({ projectId, harnessRoot, projectRoot, checkoutRoot: checkout, manifest: safeManifest, paths: Object.freeze(paths), adapters: Object.freeze(adapters) });
+  validatedContexts.add(context);
+  return context;
 }
 
 export async function diagnoseProjectContext(options) {

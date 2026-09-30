@@ -85,13 +85,15 @@ test('ambiguous registration exits nonzero without project writes', async () => 
   assert.deepEqual(await readdir(f.harnessRoot), before);
 });
 
-test('legacy command retains old runtime before cutover', async () => {
+test('legacy runtime remains an explicit read fixture after context cutover', async () => {
   const f = await fixture();
-  const store = new RuntimeStore(f.checkoutRoot);
+  const store = RuntimeStore.legacyFixture(f.checkoutRoot);
   await store.setGoal('Legacy fixture goal', 'execution');
   const oldStatus = await readFile(path.join(f.checkoutRoot, '.ai', 'runtime', 'status.json'), 'utf8');
-  const output = execFileSync(process.execPath, [statusScript], { cwd: f.checkoutRoot, encoding: 'utf8' });
-  assert.match(output, /Legacy fixture goal/);
+  const unbound = spawnSync(process.execPath, [statusScript], { cwd: f.checkoutRoot, encoding: 'utf8' });
+  assert.notEqual(unbound.status, 0);
+  assert.match(unbound.stderr, /project, checkout, and binding are required/);
+  assert.equal((await store.readStatus()).current_goal, 'Legacy fixture goal');
   assert.equal(await readFile(path.join(f.checkoutRoot, '.ai', 'runtime', 'status.json'), 'utf8'), oldStatus);
   assert.deepEqual(await readdir(f.harnessRoot), []);
 });

@@ -1,11 +1,22 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { isValidatedProjectContext } from './project-context.mjs';
+import { isCoreContext } from './runtime-state.mjs';
+
+function roots(context) {
+  if (isValidatedProjectContext(context)) return { catalogRoot: context.harnessRoot, taskRoot: context.paths.tasks, taskPrefix: `projects/${context.projectId}/tasks` };
+  if (isCoreContext(context)) return { catalogRoot: context.checkoutRoot, taskRoot: path.join(context.checkoutRoot, '.ai', 'tasks'), taskPrefix: '.ai/tasks' };
+  if (context?.kind === 'legacy-fixture' && typeof context.root === 'string') return { catalogRoot: context.root, taskRoot: path.join(context.root, '.ai', 'tasks'), taskPrefix: '.ai/tasks' };
+  throw new Error('validated project context required');
+}
+export const legacyCatalogFixture = root => Object.freeze({ kind: 'legacy-fixture', root });
 
 const field = (text, name) => text.match(new RegExp('(?:^|\\n)' + name + '\\s*=\\s*"([^"]+)"'))?.[1] || '';
 const frontmatter = text => text.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] || '';
 const yaml = (text, name) => text.match(new RegExp('(?:^|\\n)' + name + ':\\s*([^\\n]+)'))?.[1]?.trim().replace(/^['"]|['"]$/g, '') || '';
 
-export function discoverCatalog(root) {
+export function discoverCatalog(context) {
+  const { catalogRoot: root } = roots(context);
   const configPath = path.join(root, '.codex', 'config.toml');
   const config = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '';
   const agents = [...config.matchAll(/^\[agents\.([^\]]+)\]([\s\S]*?)(?=^\[|(?![\s\S]))/gm)].map(match => {
@@ -22,8 +33,8 @@ export function discoverCatalog(root) {
   return { agents, skills };
 }
 
-export function discoverTaskSpecs(root) {
-  const taskRoot = path.join(root, '.ai', 'tasks');
+export function discoverTaskSpecs(context) {
+  const { taskRoot, taskPrefix } = roots(context);
   if (!existsSync(taskRoot)) return [];
   return readdirSync(taskRoot, { withFileTypes: true })
     .filter(entry => entry.isFile() && entry.name.endsWith('.md'))
@@ -31,7 +42,7 @@ export function discoverTaskSpecs(root) {
       const file = path.join(taskRoot, entry.name), content = readFileSync(file, 'utf8');
       return {
         name: path.basename(entry.name, '.md'),
-        path: '.ai/tasks/' + entry.name,
+        path: taskPrefix + '/' + entry.name,
         title: content.match(/^#\s+(.+)$/m)?.[1] || path.basename(entry.name, '.md'),
         modifiedAt: statSync(file).mtime.toISOString(),
         content
