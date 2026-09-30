@@ -120,6 +120,43 @@ test('rejects management paths into another project space', async () => {
   await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /memory|path/i);
 });
 
+test('rejects selected project symlink into another project space', async () => {
+  const f = await fixture();
+  const projects = path.join(f.installation, 'projects');
+  await mkdir(path.join(projects, 'beta', 'memory'), { recursive: true });
+  try { await symlink(path.join(projects, 'beta'), path.join(projects, 'alpha'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') return; throw error; }
+  await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /path|project/i);
+});
+
+test('rejects management leaf symlink into another project space', async () => {
+  const f = await fixture();
+  const projects = path.join(f.installation, 'projects');
+  await mkdir(path.join(projects, 'alpha'), { recursive: true });
+  await mkdir(path.join(projects, 'beta', 'memory'), { recursive: true });
+  try { await symlink(path.join(projects, 'beta', 'memory'), path.join(projects, 'alpha', 'memory'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') return; throw error; }
+  await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /memory|path/i);
+});
+
+test('rejects primary checkout with unrelated empty Git directory', async () => {
+  const f = await fixture();
+  const fake = path.join(f.root, 'fake');
+  await mkdir(path.join(fake, '.git'), { recursive: true });
+  await mkdir(path.join(fake, 'harness-adapter'));
+  await writeFile(path.join(fake, 'harness-adapter', 'project.json'), JSON.stringify(manifest('alpha')));
+  await writeFile(f.bindingPath, JSON.stringify({ schemaVersion: 1, registrations: [{ ...f.registration, projectRoot: fake }] }));
+  await assert.rejects(loadProjectContext({ checkoutRoot: fake, bindingPath: f.bindingPath, projectId: 'alpha' }), /git|projectRoot/i);
+});
+
+test('rejects empty adapter type', async () => {
+  const f = await fixture();
+  const invalid = manifest('alpha');
+  invalid.adapters.goal = { type: '' };
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(invalid));
+  await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /adapter/i);
+});
+
 test('rejects invalid manifest version', async () => {
   const f = await fixture();
   await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify({ ...manifest('alpha'), schemaVersion: 2 }));

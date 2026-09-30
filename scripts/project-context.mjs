@@ -1,4 +1,5 @@
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { lstat, readFile, realpath, stat } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 const MAX_MESSAGE = 160;
@@ -47,11 +48,33 @@ async function containedPath(owner, relative, field) {
   return resolved;
 }
 
+async function rejectManagementSymlinks(owner, target, field) {
+  let current = owner;
+  for (const segment of path.relative(owner, target).split(path.sep)) {
+    current = path.join(current, segment);
+    try { if ((await lstat(current)).isSymbolicLink()) fail('PATH_ESCAPE', field); }
+    catch (error) { if (error instanceof ContextError) throw error; if (error.code === 'ENOENT') break; fail('UNAVAILABLE_PATH', field); }
+  }
+}
+
 async function primaryGitDir(projectRoot) {
   const dotGit = path.join(projectRoot, '.git');
   try { if (!(await stat(dotGit)).isDirectory()) fail('INVALID_GIT', 'projectRoot'); }
   catch (error) { if (error instanceof ContextError) throw error; fail('INVALID_GIT', 'projectRoot'); }
-  return realpath(dotGit);
+  const gitdir = await realpath(dotGit);
+  await verifyGitIdentity(projectRoot, gitdir, 'projectRoot');
+  return gitdir;
+}
+
+async function verifyGitIdentity(checkoutRoot, expectedGitdir, field) {
+  const result = spawnSync('git', ['rev-parse', '--show-toplevel', '--absolute-git-dir', '--is-inside-work-tree'], { cwd: checkoutRoot, encoding: 'utf8', windowsHide: true });
+  if (result.status !== 0) fail('INVALID_GIT', field);
+  const [top, gitdir, inside] = result.stdout.trim().split(/\r?\n/);
+  if (inside !== 'true') fail('INVALID_GIT', field);
+  let canonicalTop, canonicalGitdir;
+  try { canonicalTop = await realpath(top); canonicalGitdir = await realpath(gitdir); }
+  catch { fail('INVALID_GIT', field); }
+  if (!same(canonicalTop, checkoutRoot) || !same(canonicalGitdir, expectedGitdir)) fail('INVALID_GIT', field);
 }
 
 async function verifyCheckout(projectRoot, checkoutRoot) {
@@ -72,6 +95,7 @@ async function verifyCheckout(projectRoot, checkoutRoot) {
     common = await realpath(path.resolve(gitdir, (await readFile(path.join(gitdir, 'commondir'), 'utf8')).trim()));
   } catch { fail('INVALID_WORKTREE_BACKPOINTER', 'checkoutRoot'); }
   if (!same(backpointer, await realpath(pointer)) || !same(common, primaryGit)) fail('INVALID_WORKTREE_BACKPOINTER', 'checkoutRoot');
+  await verifyGitIdentity(checkoutRoot, gitdir, 'checkoutRoot');
 }
 
 function validatedManifest(value, projectId) {
@@ -107,14 +131,16 @@ export async function loadProjectContext({ checkoutRoot, bindingPath, projectId 
   const manifest = validatedManifest(await jsonFile(manifestPath, 'manifest'), projectId);
   const paths = {};
   const managementRoot = await containedPath(harnessRoot, `projects/${projectId}`, 'manifest.paths');
+  await rejectManagementSymlinks(harnessRoot, managementRoot, 'manifest.paths');
   for (const name of ['tasks', 'memory', 'runtime']) {
     paths[name] = await containedPath(harnessRoot, manifest.paths[name], `manifest.paths.${name}`);
     if (same(paths[name], managementRoot) || !isInside(managementRoot, paths[name])) fail('PATH_ESCAPE', `manifest.paths.${name}`);
+    await rejectManagementSymlinks(harnessRoot, paths[name], `manifest.paths.${name}`);
   }
   if (new Set(Object.values(paths).map(key)).size !== 3 || Object.values(paths).some(item => same(item, harnessRoot))) fail('INVALID_PATHS', 'manifest.paths');
   const adapters = {};
   for (const [name, adapter] of Object.entries(manifest.adapters)) {
-    if (!adapter || typeof adapter !== 'object' || Array.isArray(adapter) || typeof adapter.type !== 'string') fail('INVALID_ADAPTER', `manifest.adapters.${name}`);
+    if (!adapter || typeof adapter !== 'object' || Array.isArray(adapter) || typeof adapter.type !== 'string' || !adapter.type.trim()) fail('INVALID_ADAPTER', `manifest.adapters.${name}`);
     if (adapter.projectRelativePath !== undefined) await containedPath(projectRoot, adapter.projectRelativePath, `manifest.adapters.${name}.projectRelativePath`);
     adapters[name] = Object.freeze({ ...adapter });
   }

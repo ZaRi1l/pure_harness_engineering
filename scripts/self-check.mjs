@@ -26,13 +26,15 @@ function basicTomlShape(text) {
 
 function trackedManifestChecks(root, report) {
   const listing = spawnSync('git', ['ls-files', '-z', '--cached'], { cwd: root, encoding: 'utf8', windowsHide: true });
-  if (listing.status !== 0) return;
+  if (listing.status !== 0) { report.failures.push('tracked manifest inventory unavailable'); return; }
   const files = listing.stdout.split('\0').filter(file => /(^|\/)project\.json$/.test(file) && (file.startsWith('projects/') || file === 'harness-adapter/project.json'));
   const isAbsolute = value => typeof value === 'string' && (path.posix.isAbsolute(value) || path.win32.isAbsolute(value));
   const containsAbsolute = value => isAbsolute(value) || (value && typeof value === 'object' && Object.values(value).some(containsAbsolute));
   for (const file of files) {
     try {
-      const manifest = JSON.parse(readFileSync(path.join(root, file), 'utf8'));
+      const indexed = spawnSync('git', ['show', `:${file}`], { cwd: root, encoding: 'utf8', windowsHide: true });
+      if (indexed.status !== 0) throw new Error('indexed content unavailable');
+      const manifest = JSON.parse(indexed.stdout);
       report.require(!containsAbsolute(manifest), `Tracked manifest ${file} contains no absolute path`, `tracked manifest ${file} contains absolute path`);
     } catch {
       report.failures.push(`tracked manifest ${file} is unreadable or invalid JSON`);

@@ -95,3 +95,23 @@ test('self-check rejects tracked Unix and Windows absolute roots in manifests an
   assert.equal(report.failures.filter(item => item.includes('tracked manifest') && item.includes('absolute')).length, 2);
   assert.doesNotMatch(JSON.stringify(report), /private/);
 });
+
+test('self-check inspects indexed manifest bytes even when worktree differs', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-index-check-'));
+  const directory = path.join(root, 'projects', 'alpha');
+  await mkdir(directory, { recursive: true });
+  const file = path.join(directory, 'project.json');
+  await writeFile(file, JSON.stringify({ paths: { tasks: '/private/staged' } }));
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['add', 'projects/alpha/project.json'], { cwd: root });
+  await writeFile(file, JSON.stringify({ paths: { tasks: 'projects/alpha/tasks' } }));
+  const report = await checkRepository(root, { exerciseRuntime: false, exerciseHttp: false });
+  assert.ok(report.failures.some(item => item.includes('tracked manifest') && item.includes('absolute')));
+  assert.doesNotMatch(JSON.stringify(report), /private/);
+});
+
+test('self-check fails closed when tracked-file inventory is unavailable', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-no-index-check-'));
+  const report = await checkRepository(root, { exerciseRuntime: false, exerciseHttp: false });
+  assert.ok(report.failures.some(item => item.includes('tracked manifest') && item.includes('unavailable')));
+});
