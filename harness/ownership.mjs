@@ -162,8 +162,8 @@ function configRegistration(config, roleId) {
   };
   return { description: value('description'), configFile: value('config_file') };
 }
-export async function adoptReviewed({ root, record, rendered, beforeWrite }) {
-  if (!path.isAbsolute(root) || !record || record.schemaVersion !== 1 || !Array.isArray(record.files)
+async function reviewedIntent(root, record, rendered) {
+  if (!path.isAbsolute(root) || !record || ![1, 2].includes(record.schemaVersion) || !Array.isArray(record.files)
       || !record.files.length || !Array.isArray(rendered) || rendered.length !== record.files.length
       || !/^[a-f0-9]{64}$/.test(record.configSha256)) throw new Error('invalid adoption inputs');
   const configBytes = await readFile(await safeAbsolute(root, '.codex/config.toml'));
@@ -175,44 +175,75 @@ export async function adoptReviewed({ root, record, rendered, beforeWrite }) {
     if (item.target !== 'codex' || proposed.has(item.path)) throw new Error('invalid or duplicate adoption target');
     proposed.set(item.path, generated);
   }
-  const oldBytes = new Map();
+  const reviewed = new Map();
+  const missingRegistrations = [];
   for (const file of record.files) {
     if (!file || file.target !== 'codex' || typeof file.path !== 'string' || typeof file.roleId !== 'string'
         || typeof file.sourcePath !== 'string' || typeof file.configFile !== 'string' || typeof file.configDescription !== 'string'
-        || !/^[a-f0-9]{64}$/.test(file.oldSha256) || !/^[a-f0-9]{64}$/.test(file.intendedNewDigest)) throw new Error('invalid adoption record');
+        || !/^[a-f0-9]{64}$/.test(file.intendedNewDigest)) throw new Error('invalid adoption record');
+    const state = record.schemaVersion === 1 ? 'existing' : file.baselineState;
+    if (!['existing', 'absent'].includes(state)
+        || (state === 'existing' ? !/^[a-f0-9]{64}$/.test(file.oldSha256) : file.oldSha256 !== null)
+        || (record.schemaVersion === 2 && !['registered', 'absent'].includes(file.registrationState))) throw new Error('invalid adoption record state');
     if (file.reviewerDecision !== 'approved') throw new Error(`missing approved reviewer decision: ${file.path}`);
     const generated = proposed.get(file.path);
-    if (!generated || oldBytes.has(file.path) || generated.entry.roleId !== file.roleId
+    if (!generated || reviewed.has(file.path) || generated.entry.roleId !== file.roleId
         || generated.entry.sourcePath !== file.sourcePath || file.configFile !== `./agents/${file.roleId}.toml`
         || generated.entry.fileSha256 !== file.intendedNewDigest) throw new Error(`adoption record/output mismatch: ${file.path}`);
-    const registration = configRegistration(configText, file.roleId);
-    if (registration.description !== file.configDescription || registration.configFile !== file.configFile) throw new Error(`config registration description/path mismatch: ${file.roleId}`);
-    const absolute = await safeAbsolute(root, file.path);
-    if (!(await metadata(absolute))?.isFile()) throw new Error(`baseline file missing: ${file.path}`);
+    if (record.schemaVersion === 2 && file.registrationState === 'absent') {
+      if (new RegExp(`^\\[agents\\.${file.roleId}\\]\\r?$`, 'm').test(configText)) throw new Error(`config registration unexpectedly present: ${file.roleId}`);
+      missingRegistrations.push(file.roleId);
+    } else {
+      const registration = configRegistration(configText, file.roleId);
+      if (registration.description !== file.configDescription || registration.configFile !== file.configFile) throw new Error(`config registration description/path mismatch: ${file.roleId}`);
+    }
+    reviewed.set(file.path, { file, generated, state });
+  }
+  if (reviewed.size !== proposed.size) throw new Error('adoption record does not name every rendered path');
+  if (![...reviewed.values()].some(intent => intent.state === 'existing'))
+    throw new Error('all-absent reviewed adoption is unsupported; use ordinary sync');
+  return { reviewed, missingRegistrations };
+}
+export async function adoptReviewed({ root, record, rendered, beforeWrite }) {
+  const { reviewed, missingRegistrations } = await reviewedIntent(root, record, rendered);
+  const oldBytes = new Map();
+  for (const [relative, { file, state }] of reviewed) {
+    const absolute = await safeAbsolute(root, relative);
+    const meta = await metadata(absolute);
+    if (state === 'absent') {
+      if (meta) throw new Error(`reviewed absent path collision: ${relative}`);
+      continue;
+    }
+    if (!meta?.isFile()) throw new Error(`baseline file missing: ${relative}`);
     const raw = await readFile(absolute);
     const bytes = raw.toString('utf8');
-    if (!Buffer.from(bytes, 'utf8').equals(raw)) throw new Error(`baseline file is not UTF-8: ${file.path}`);
-    if (sha(raw) !== file.oldSha256) throw new Error(`baseline hash mismatch: ${file.path}`);
-    oldBytes.set(file.path, bytes);
+    if (!Buffer.from(bytes, 'utf8').equals(raw)) throw new Error(`baseline file is not UTF-8: ${relative}`);
+    if (sha(raw) !== file.oldSha256) throw new Error(`baseline hash mismatch: ${relative}`);
+    oldBytes.set(relative, bytes);
   }
-  if (oldBytes.size !== proposed.size) throw new Error('adoption record does not name every rendered path');
   let manifest;
   try { manifest = JSON.parse(await readFile(await safeAbsolute(root, manifestPath), 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT') throw error; manifest = { entries: [] }; }
   const plan = await planSync({ root, targets: ['codex'], profile: 'all', rendered, manifest });
-  if (plan.actions.length !== proposed.size || plan.actions.some(action => action.kind !== 'conflict' || action.reason !== 'unowned output collision')) throw new Error('adoption preflight conflict');
+  if (plan.actions.length !== reviewed.size || plan.actions.some(action => {
+    const state = reviewed.get(action.path)?.state;
+    return state === 'existing' ? action.kind !== 'conflict' || action.reason !== 'unowned output collision' : action.kind !== 'create';
+  })) throw new Error('adoption preflight conflict');
   for (const action of plan.actions) {
-    action.kind = 'adopt';
-    action.reason = undefined;
-    action.beforeFile = oldBytes.get(action.path);
-    if (action.beforeFile === undefined) throw new Error(`adoption record missing path: ${action.path}`);
+    if (reviewed.get(action.path).state === 'existing') {
+      action.kind = 'adopt';
+      action.reason = undefined;
+      action.beforeFile = oldBytes.get(action.path);
+    }
   }
   plan.manifestText = `${JSON.stringify({ entries: [...plan.prior, ...plan.actions.map(action => action.after)].sort(compare) }, null, 2)}\n`;
   plan.manifestDirty = plan.manifestBytes !== plan.manifestText;
   plan.writable = true;
+  plan.adoptionConfigSha256 = record.configSha256;
+  plan.reviewedRecordSha256 = sha(JSON.stringify(record));
   const result = await applyPlan(plan, { beforeWrite });
   if (result.partialFailure) throw new Error(`adoption failed; changed paths: ${result.changedPaths.join(', ')}; ${result.error}`);
-  return { adoptedPaths: plan.actions.map(action => action.path) };
+  return { adoptedPaths: plan.actions.map(action => action.path), missingRegistrations };
 }
 async function atomicWrite(absolute, content) {
   const temp = `${absolute}.${randomUUID()}.tmp`;
@@ -249,6 +280,11 @@ export async function applyPlan(plan, { beforeWrite } = {}) {
     const manifestMeta = await metadata(path.join(plan.root, manifestPath));
     const currentManifest = manifestMeta ? await readFile(path.join(plan.root, manifestPath), 'utf8') : null;
     if (currentManifest !== plan.manifestBytes) throw new Error('manifest changed after planning');
+    const checkAdoptionConfig = async () => {
+      if (plan.adoptionConfigSha256 && sha(await readFile(await safeAbsolute(plan.root, '.codex/config.toml'))) !== plan.adoptionConfigSha256)
+        throw new Error('config baseline hash changed during adoption');
+    };
+    await checkAdoptionConfig();
     // Complete preflight for every selected target before recording intent or changing output.
     for (const target of plan.targets) {
       const actions = plan.actions.filter(action => action.target === target);
@@ -261,7 +297,9 @@ export async function applyPlan(plan, { beforeWrite } = {}) {
     }
     const mutations = plan.actions.filter(action => action.kind !== 'unchanged');
     if (mutations.length) {
-      const journal = { version: 1, targets: plan.targets, manifestBefore: plan.manifestBytes, manifestAfter: plan.manifestText, actions: [] };
+      const journal = { version: 2, mode: plan.reviewedRecordSha256 ? 'adopt-reviewed' : 'sync',
+        reviewedRecordSha256: plan.reviewedRecordSha256 ?? null,
+        targets: plan.targets, manifestBefore: plan.manifestBytes, manifestAfter: plan.manifestText, actions: [] };
       for (const action of mutations) journal.actions.push({ kind: action.kind, path: action.path, target: action.target,
         before: action.before ?? null, after: action.kind === 'prune' ? null : action.after,
         beforeFile: action.before ? await currentOwned(plan.root, action.before) : action.kind === 'adopt' ? action.beforeFile : null,
@@ -272,6 +310,7 @@ export async function applyPlan(plan, { beforeWrite } = {}) {
     }
     for (const action of mutations) {
       if (beforeWrite) await beforeWrite(action.path, action);
+      await checkAdoptionConfig();
       const absolute = await safeAbsolute(plan.root, action.path);
       if (action.kind === 'create' && await metadata(absolute)) throw new Error(`unowned output collision: ${action.path}`);
       if (action.kind === 'adopt' && await readFile(absolute, 'utf8') !== action.beforeFile) throw new Error(`baseline hash changed: ${action.path}`);
@@ -284,6 +323,7 @@ export async function applyPlan(plan, { beforeWrite } = {}) {
     const current = plan.manifestExisted ? await readFile(absolute, 'utf8') : null;
     if (current !== plan.manifestText) {
       if (beforeWrite) await beforeWrite(manifestPath);
+      await checkAdoptionConfig();
       const latestMeta = await metadata(absolute);
       const latest = latestMeta ? await readFile(absolute, 'utf8') : null;
       if (latest !== plan.manifestBytes) throw new Error('manifest changed before final write');
@@ -307,7 +347,12 @@ function assertStoredFile(file, entry) {
 function parseJournal(raw) {
   let journal;
   try { journal = JSON.parse(raw); } catch { throw new Error('invalid recovery journal JSON'); }
-  if (!journal || Object.keys(journal).join() !== 'version,targets,manifestBefore,manifestAfter,actions' || journal.version !== 1
+  const legacy = journal?.version === 1;
+  const expectedFields = legacy ? 'version,targets,manifestBefore,manifestAfter,actions'
+    : 'version,mode,reviewedRecordSha256,targets,manifestBefore,manifestAfter,actions';
+  if (!journal || Object.keys(journal).join() !== expectedFields || ![1, 2].includes(journal.version)
+      || (!legacy && (!['sync', 'adopt-reviewed'].includes(journal.mode)
+        || (journal.mode === 'sync' ? journal.reviewedRecordSha256 !== null : !/^[a-f0-9]{64}$/.test(journal.reviewedRecordSha256))))
       || !Array.isArray(journal.targets) || !journal.targets.length || new Set(journal.targets).size !== journal.targets.length
       || journal.targets.some(target => !Object.hasOwn(roots, target)) || !Array.isArray(journal.actions) || !journal.actions.length) throw new Error('invalid recovery journal schema');
   const before = journal.manifestBefore === null ? { entries: [] } : JSON.parse(journal.manifestBefore);
@@ -338,10 +383,13 @@ function parseJournal(raw) {
         || (action.after && (action.after.path !== action.path || action.after.target !== action.target))) throw new Error('recovery path mismatch');
     if (action.after) next.set(action.path, action.after); else next.delete(action.path);
   }
+  if (!legacy && ((journal.mode === 'sync' && journal.actions.some(action => action.kind === 'adopt'))
+      || (journal.mode === 'adopt-reviewed' && (journal.targets.length !== 1 || journal.targets[0] !== 'codex'
+        || !journal.actions.some(action => action.kind === 'adopt'))))) throw new Error('recovery journal mode/action mismatch');
   if (JSON.stringify([...next.values()].sort(compare)) !== JSON.stringify(afterEntries)) throw new Error('recovery manifest transition mismatch');
   return journal;
 }
-export async function recoverPartial({ root, targets }, { beforeWrite } = {}) {
+export async function recoverPartial({ root, targets, record, rendered }, { beforeWrite } = {}) {
   if (!path.isAbsolute(root) || !Array.isArray(targets) || !targets.length) throw new Error('invalid recovery inputs');
   const changedPaths = [];
   let releaseLock;
@@ -350,7 +398,23 @@ export async function recoverPartial({ root, targets }, { beforeWrite } = {}) {
     await safeAbsolute(root, journalPath);
     const raw = await readFile(path.join(root, journalPath), 'utf8');
     const journal = parseJournal(raw);
-    if (journal.actions.some(action => action.kind === 'adopt')) throw new Error('adopt recovery requires explicit reviewed input; manual reconciliation is required');
+    if (journal.version === 1 && journal.targets.includes('codex')) throw new Error('legacy Codex adopt/review journal has ambiguous origin; manual reconciliation required');
+    const hasAdoption = journal.mode === 'adopt-reviewed';
+    if (hasAdoption && !record) throw new Error('adopt recovery requires explicit reviewed input; manual reconciliation is required');
+    if (record) {
+      if (!hasAdoption) throw new Error('reviewed recovery requires an adopt journal');
+      if (sha(JSON.stringify(record)) !== journal.reviewedRecordSha256) throw new Error('reviewed recovery record digest mismatch');
+      const { reviewed } = await reviewedIntent(root, record, rendered);
+      if (journal.actions.length !== reviewed.size) throw new Error('reviewed recovery journal path count mismatch');
+      for (const action of journal.actions) {
+        const intent = reviewed.get(action.path);
+        if (!intent || action.kind !== (intent.state === 'existing' ? 'adopt' : 'create')
+            || action.afterFile !== intent.generated.file
+            || JSON.stringify(action.after) !== JSON.stringify(intent.generated.entry)
+            || (intent.state === 'existing' ? sha(action.beforeFile) !== intent.file.oldSha256 : action.beforeFile !== null))
+          throw new Error(`reviewed recovery journal/record mismatch: ${action.path}`);
+      }
+    }
     if (JSON.stringify(targets) !== JSON.stringify(journal.targets)) throw new Error('recovery target selection mismatch');
     await safeAbsolute(root, manifestPath);
     const manifestMeta = await metadata(path.join(root, manifestPath));
@@ -371,12 +435,17 @@ export async function recoverPartial({ root, targets }, { beforeWrite } = {}) {
       if (current === action.afterFile) continue;
       if (current !== action.beforeFile) throw new Error(`recovery output drift: ${action.path}`);
       if (beforeWrite) await beforeWrite(action.path, action);
+      if (record && sha(await readFile(await safeAbsolute(root, '.codex/config.toml'))) !== record.configSha256) throw new Error('config baseline hash changed during recovery');
+      const latestMeta = await metadata(absolute);
+      const latestOutput = latestMeta ? await readFile(absolute, 'utf8') : null;
+      if (latestOutput !== action.beforeFile) throw new Error(`recovery output changed before write: ${action.path}`);
       if (action.kind === 'prune') await unlink(absolute);
       else { await mkdir(path.dirname(absolute), { recursive: true }); await atomicWrite(absolute, action.afterFile); }
       changedPaths.push(action.path);
     }
     if (currentManifest !== journal.manifestAfter) {
       if (beforeWrite) await beforeWrite(manifestPath);
+      if (record && sha(await readFile(await safeAbsolute(root, '.codex/config.toml'))) !== record.configSha256) throw new Error('config baseline hash changed during recovery');
       const latestMeta = await metadata(path.join(root, manifestPath));
       const latest = latestMeta ? await readFile(path.join(root, manifestPath), 'utf8') : null;
       if (latest !== currentManifest) throw new Error('recovery manifest changed before final write');

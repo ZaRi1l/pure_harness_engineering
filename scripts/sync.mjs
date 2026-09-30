@@ -38,9 +38,9 @@ function parseArgs(args) {
   const names = options.targets === 'all' ? adapters.map(adapter => adapter.targetId) : options.targets.split(',');
   if (!names.length || new Set(names).size !== names.length || names.some(name => !byId.has(name))) throw new Error('invalid --targets');
   options.targets = names;
-  if (options.adoptReviewed && (options.check || options.dryRun || options.recover || options.json
+  if (options.adoptReviewed && (options.check || options.dryRun || options.json
       || names.length !== 1 || names[0] !== 'codex' || options.profile !== 'all'))
-    throw new Error('--adopt-reviewed requires --targets codex --profile all and cannot combine with other modes');
+    throw new Error('--adopt-reviewed requires --targets codex --profile all and cannot combine with other modes except --recover');
   options.root = path.resolve(options.root);
   return options;
 }
@@ -63,7 +63,18 @@ async function sync(options) {
   assertPortableMetadata(compatibility, 'harness/compatibility.json');
   if (options.recover) {
     await assertNativeReady(root, targets, profile, compatibility);
-    const result = await recoverPartial({ root, targets });
+    let review = {};
+    if (options.adoptReviewed) {
+      const record = JSON.parse(await readFile(path.resolve(root, options.adoptReviewed), 'utf8'));
+      const roles = await loadRoles(root, profile);
+      const rendered = roles.map(role => {
+        const result = codex.renderRole(role, { compatibility, profile });
+        assertPortableText(result.body, result.path);
+        return { ...result, target: 'codex', roleId: role.id, sourcePath: role.sourcePath, sourceSha256: role.sourceSha256 };
+      });
+      review = { record, rendered };
+    }
+    const result = await recoverPartial({ root, targets, ...review });
     return { ok: !result.partialFailure, ...result };
   }
   const roles = await loadRoles(root, profile);

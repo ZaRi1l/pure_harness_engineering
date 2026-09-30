@@ -37,6 +37,18 @@ async function fixture(t) {
   return { root, rendered, record: { schemaVersion: 1, configSha256: sha(protectedFiles['.codex/config.toml']), files }, protectedFiles };
 }
 
+async function neutralFixture(t) {
+  const data = await fixture(t);
+  const missing = data.record.files.find(file => file.roleId === 'goal-manager');
+  await rm(path.join(data.root, missing.path));
+  const config = data.protectedFiles['.codex/config.toml'].replace(/\[agents\.goal-manager\][\s\S]*?(?=\n\[agents\.|$)/, '');
+  await writeFile(path.join(data.root, '.codex/config.toml'), config);
+  data.record = { schemaVersion: 2, configSha256: sha(config), files: data.record.files.map(file => file.roleId === 'goal-manager'
+    ? { ...file, baselineState: 'absent', registrationState: 'absent', oldSha256: null }
+    : { ...file, baselineState: 'existing', registrationState: 'registered' }) };
+  return data;
+}
+
 async function cliFixture(t, nativeReady = true) {
   const synthetic = await fixture(t);
   const { root } = synthetic;
@@ -84,6 +96,15 @@ test('CLI refuses reviewed adoption without native readiness before replacing ha
   assert.match(result.stderr, /native smoke.*unverified/i);
   assert.deepEqual(await readFile(path.join(root, record.files[0].path)), before);
   await assert.rejects(readFile(path.join(root, 'harness/generated-manifest.json')), { code: 'ENOENT' });
+});
+
+test('CLI keeps native readiness gate for reviewed recovery', async t => {
+  const { root, record, run } = await cliFixture(t, false);
+  const before = await readFile(path.join(root, record.files[0].path));
+  const result = await run('--recover');
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /native smoke.*unverified/i);
+  assert.deepEqual(await readFile(path.join(root, record.files[0].path)), before);
 });
 
 test('CLI rejects missing reviewer decision without writes', async t => {
@@ -194,6 +215,116 @@ test('reviewed adoption owns only named exact paths and preserves hand-owned byt
   assert.deepEqual([...config.matchAll(/^\[agents\.([\w-]+)\]$/gm)].map(match => match[1]), ids);
   const manifest = JSON.parse(await readFile(path.join(root, 'harness/generated-manifest.json'), 'utf8'));
   assert.deepEqual(manifest.entries.map(entry => entry.path).sort(), selected.map(item => item.path).sort());
+});
+
+test('v2 review creates only the absent role and reports its manual registration gate', async t => {
+  const { root, rendered, record, protectedFiles } = await neutralFixture(t);
+  const result = await adoptReviewed({ root, rendered, record });
+  assert.equal(result.adoptedPaths.length, 15);
+  assert.deepEqual(result.missingRegistrations, ['goal-manager']);
+  assert.equal(await readFile(path.join(root, '.codex/config.toml'), 'utf8'), protectedFiles['.codex/config.toml'].replace(/\[agents\.goal-manager\][\s\S]*?(?=\n\[agents\.|$)/, ''));
+  assert.match(await readFile(path.join(root, '.codex/agents/goal-manager.toml'), 'utf8'), /^# @pure-harness-generated /);
+});
+
+test('v2 review rejects an unexpected file at the reviewed absent path without writes', async t => {
+  const { root, rendered, record } = await neutralFixture(t);
+  await writeFile(path.join(root, '.codex/agents/goal-manager.toml'), 'user owned\n');
+  await assert.rejects(adoptReviewed({ root, rendered, record }), /absent|collision/i);
+  assert.match(await readFile(path.join(root, record.files[0].path), 'utf8'), /existing unmarked/);
+});
+
+test('v2 review rejects an all-absent baseline before creating an unrecoverable journal', async t => {
+  const { root, rendered, record } = await fixture(t);
+  for (const file of record.files) await rm(path.join(root, file.path));
+  await writeFile(path.join(root, '.codex/config.toml'), '');
+  const allAbsent = { schemaVersion: 2, configSha256: sha(''), files: record.files.map(file => ({
+    ...file, baselineState: 'absent', registrationState: 'absent', oldSha256: null,
+  })) };
+  await assert.rejects(adoptReviewed({ root, rendered, record: allAbsent }), /all.absent|existing baseline/i);
+  await assert.rejects(readFile(path.join(root, 'harness/.sync-journal.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(root, 'harness/generated-manifest.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(root, rendered[0].path)), { code: 'ENOENT' });
+});
+
+test('reviewed recovery completes a partial mixed adopt/create journal and ordinary recovery stays closed', async t => {
+  const { root, rendered, record } = await neutralFixture(t);
+  await assert.rejects(adoptReviewed({ root, rendered, record,
+    beforeWrite: relative => { if (relative === 'harness/generated-manifest.json') throw new Error('interrupted'); },
+  }), /interrupted/);
+  const ordinary = await recoverPartial({ root, targets: ['codex'] });
+  assert.equal(ordinary.partialFailure, true);
+  const reviewed = await recoverPartial({ root, targets: ['codex'], record, rendered });
+  assert.equal(reviewed.partialFailure, false, reviewed.error);
+  assert.deepEqual(reviewed.changedPaths, ['harness/generated-manifest.json']);
+  assert.equal(JSON.parse(await readFile(path.join(root, 'harness/generated-manifest.json'))).entries.length, 15);
+});
+
+test('reviewed recovery rejects a mismatched record and a tampered journal without writes', async t => {
+  const { root, rendered, record } = await neutralFixture(t);
+  await assert.rejects(adoptReviewed({ root, rendered, record,
+    beforeWrite: relative => { if (relative === 'harness/generated-manifest.json') throw new Error('interrupted'); },
+  }), /interrupted/);
+  const journalPath = path.join(root, 'harness/.sync-journal.json');
+  const original = await readFile(journalPath, 'utf8');
+  const badRecord = { ...record, files: record.files.map(file => file.roleId === 'worker' ? { ...file, intendedNewDigest: '0'.repeat(64) } : file) };
+  const mismatch = await recoverPartial({ root, targets: ['codex'], record: badRecord, rendered });
+  assert.equal(mismatch.partialFailure, true);
+  assert.deepEqual(mismatch.changedPaths, []);
+  const journal = JSON.parse(original);
+  journal.actions[0].beforeFile = 'unreviewed replacement';
+  await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+  const tampered = await recoverPartial({ root, targets: ['codex'], record, rendered });
+  assert.equal(tampered.partialFailure, true);
+  assert.deepEqual(tampered.changedPaths, []);
+  await assert.rejects(readFile(path.join(root, 'harness/generated-manifest.json')), { code: 'ENOENT' });
+});
+
+test('ordinary recovery rejects action-kind laundering of an adoption journal', async t => {
+  const { root, rendered, record } = await neutralFixture(t);
+  await assert.rejects(adoptReviewed({ root, rendered, record,
+    beforeWrite: relative => { if (relative === 'harness/generated-manifest.json') throw new Error('interrupted'); },
+  }), /interrupted/);
+  const journalPath = path.join(root, 'harness/.sync-journal.json');
+  const journal = JSON.parse(await readFile(journalPath, 'utf8'));
+  for (const action of journal.actions) if (action.kind === 'adopt') {
+    action.kind = 'create';
+    action.beforeFile = null;
+  }
+  await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+  const result = await recoverPartial({ root, targets: ['codex'] });
+  assert.equal(result.partialFailure, true);
+  assert.deepEqual(result.changedPaths, []);
+  assert.match(result.error, /review|legacy|journal/i);
+  await assert.rejects(readFile(path.join(root, 'harness/generated-manifest.json')), { code: 'ENOENT' });
+  assert.equal((await readFile(journalPath, 'utf8')).length > 0, true);
+});
+
+test('reviewed recovery requires the exact approved record, not a hash-equivalent substitute', async t => {
+  const { root, rendered, record } = await neutralFixture(t);
+  await assert.rejects(adoptReviewed({ root, rendered, record,
+    beforeWrite: relative => { if (relative === 'harness/generated-manifest.json') throw new Error('interrupted'); },
+  }), /interrupted/);
+  const substitute = { ...record, status: 'different reviewed document' };
+  const result = await recoverPartial({ root, targets: ['codex'], record: substitute, rendered });
+  assert.equal(result.partialFailure, true);
+  assert.deepEqual(result.changedPaths, []);
+  assert.match(result.error, /record|digest/i);
+  await assert.rejects(readFile(path.join(root, 'harness/generated-manifest.json')), { code: 'ENOENT' });
+});
+
+test('reviewed recovery resumes after one output without rewriting that completed output', async t => {
+  const { root, rendered, record } = await neutralFixture(t);
+  let outputWrites = 0;
+  await assert.rejects(adoptReviewed({ root, rendered, record, beforeWrite: relative => {
+    if (relative.startsWith('.codex/agents/') && ++outputWrites === 2) throw new Error('interrupted');
+  } }), /interrupted/);
+  const first = '.codex/agents/context-curator.toml';
+  const completed = await readFile(path.join(root, first));
+  const result = await recoverPartial({ root, targets: ['codex'], record, rendered });
+  assert.equal(result.partialFailure, false, result.error);
+  assert.equal(result.changedPaths.includes(first), false);
+  assert.deepEqual(await readFile(path.join(root, first)), completed);
+  assert.equal(JSON.parse(await readFile(path.join(root, 'harness/generated-manifest.json'))).entries.length, 15);
 });
 
 test('interrupted reviewed adoption cannot recover without renewed review evidence', async t => {
