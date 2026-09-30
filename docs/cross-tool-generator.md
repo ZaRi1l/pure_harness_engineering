@@ -8,6 +8,8 @@ This checkout contains 15 canonical role sources, including `goal-manager`, but 
 
 `harness/compatibility.json` records this checkout's inventory and locally observed Codex CLI `0.153.4` and Claude Code `2.1.280`; OpenCode and Antigravity were not found locally. All four native smoke states remain `unverified`. Codex's pinned documentation establishes `.agents/skills/` discovery, but native role loading, effective permissions, and actual invocation are not smoke-proven. Other targets' skill discovery is not accepted as native-ready by the current generator. A copied skill file alone is not discovery evidence.
 
+The [four-target native smoke worksheet](native-smoke-worksheet.md) lists the future disposable-fixture checks and evidence fields. It is a procedure, not an executed smoke record.
+
 Render selection is explicit: `--targets codex`, `claude`, `opencode`, `antigravity`, a comma-separated subset, or `all`, plus `--profile core` (five roles/four skills) or `--profile all` (15 roles/eight skills). The target model must be supported and available to the user's account. `inherit` leaves model selection to the target where supported; it does not prove entitlement. Prompt wording alone does not enforce read-only behavior.
 
 Use read-only inspection in this checkout:
