@@ -228,9 +228,12 @@
       if (state.mode !== 'live') return model;
       const activeIds = Array.isArray(snapshot?.status?.active_agents)
         ? new Set(snapshot.status.active_agents.filter(item => item?.id).map(item => item.id)) : null;
-      const nodes = model.nodes.filter(node => active(node) && (!activeIds || activeIds.has(node.id)));
-      const ids = new Set(nodes.map(node => node.id));
-      return { nodes, edges: model.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to)), tasks: model.tasks };
+      const running = model.nodes.filter(node => node.id !== 'main' && active(node) && (!activeIds || activeIds.has(node.id)));
+      const main = model.nodes.find(node => node.id === 'main');
+      const nodes = [{ ...main, id: 'main', role: main?.role || 'main', status: 'unknown', claims: main?.claims || [], matchesFilter: true, emphasized: true }, ...running];
+      const runningIds = new Set(running.map(node => node.id));
+      const ids = new Set(['main', ...runningIds]);
+      return { nodes, edges: model.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to) && (runningIds.has(edge.from) || runningIds.has(edge.to))), tasks: model.tasks };
     }
     function scaleAround(factor, x = bounds.width / 2, y = bounds.height / 2) {
       const next = clampScale(state.transform.scale * factor);
@@ -323,7 +326,7 @@
         graph.append(group);
       }
       note.textContent = model.nodes.length === 0 && model.edges.length === 0 ? t('network.noData')
-        : state.mode === 'live' && !visibleModelNow.nodes.length ? t('network.noActive')
+        : state.mode === 'live' && !visibleModelNow.nodes.some(node => node.id !== 'main') ? t('network.noActive')
           : state.filter === 'task' && state.taskId && !visibleModelNow.nodes.some(node => node.matchesFilter) && !visibleModelNow.edges.some(edge => edge.matchesFilter)
             ? t('network.noTaskData')
             : t('network.historyNote');

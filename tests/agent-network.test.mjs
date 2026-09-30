@@ -403,7 +403,7 @@ test('reported-running mode hides historical nodes and signals from DOM and keyb
   mixed.status.signals.push({ time: '2026-09-25T00:03:00Z', from: 'worker-b', to: 'worker-c', kind: 'handoff', summary: 'Current pair' });
   const controller = api.create(host);
   controller.update(mixed, catalog);
-  assert.deepEqual(descendants(host, element => element.getAttribute('data-node-id') !== null).map(element => element.getAttribute('data-node-id')).sort(), ['worker-b', 'worker-c']);
+  assert.deepEqual(descendants(host, element => element.getAttribute('data-node-id') !== null).map(element => element.getAttribute('data-node-id')).sort(), ['main', 'worker-b', 'worker-c']);
   assert.deepEqual(descendants(host, element => element.getAttribute('data-edge-index') !== null).map(element => element.getAttribute('data-edge-index')), ['3']);
   assert.equal(find(host, 'node-id', 'worker-a'), undefined);
   assert.equal(find(host, 'node-id', 'stale-running'), undefined);
@@ -419,6 +419,46 @@ test('reported-running mode hides historical nodes and signals from DOM and keyb
   assert.equal(controller.getState().selection, null);
   assert.equal(find(host, 'node-id', 'worker-a'), undefined);
   assert.equal(find(host, 'edge-index', '0'), undefined);
+  controller.destroy();
+});
+
+test('reported-running mode retains main delegation and result signals only for a reported-active worker', () => {
+  const { host, document } = fixture();
+  const current = {
+    status: {
+      agents: [{ id: 'old-worker', role: 'worker', status: 'completed' }],
+      active_agents: [{ id: 'worker-b', role: 'worker', status: 'running' }],
+      signals: [
+        { id: 'delegate-current', time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker-b', kind: 'delegate', summary: 'Current delegation' },
+        { id: 'result-current', time: '2026-09-25T00:01:00Z', from: 'worker-b', to: 'main', kind: 'result', summary: 'Current result' },
+        { id: 'delegate-old', time: '2026-09-24T00:00:00Z', from: 'main', to: 'old-worker', kind: 'delegate', summary: 'Old delegation' },
+        { id: 'result-old', time: '2026-09-24T00:01:00Z', from: 'old-worker', to: 'main', kind: 'result', summary: 'Old result' }
+      ]
+    }
+  };
+  const controller = api.create(host);
+  controller.update(current, catalog);
+  assert.deepEqual(descendants(host, element => element.getAttribute('data-node-id') !== null).map(element => element.getAttribute('data-node-id')).sort(), ['main', 'worker-b']);
+  assert.deepEqual(descendants(host, element => element.getAttribute('data-edge-index') !== null).map(element => element.getAttribute('data-edge-index')), ['0', '1']);
+  assert.equal(find(host, 'node-id', 'old-worker'), undefined);
+  assert.equal(find(host, 'edge-index', '2'), undefined);
+  find(host, 'edge-index', '0').keydown('Enter');
+  assert.match(text(find(host, 'network-detail', '')), /Current delegation/);
+  assert.equal(document.activeElement, find(host, 'edge-index', '0'));
+  find(host, 'edge-index', '1').focus();
+  find(host, 'edge-index', '1').keydown('Enter');
+  assert.match(text(find(host, 'network-detail', '')), /Current result/);
+  assert.equal(document.activeElement, find(host, 'edge-index', '1'));
+  controller.destroy();
+});
+
+test('reported-running mode keeps a neutral main anchor when an active worker has no signals yet', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  controller.update({ status: { agents: [], active_agents: [{ id: 'worker-b', role: 'worker', status: 'running' }], signals: [] } }, catalog);
+  assert.ok(find(host, 'node-id', 'main'));
+  assert.equal(find(host, 'node-id', 'main').getAttribute('data-status'), 'unknown');
+  assert.ok(find(host, 'node-id', 'worker-b'));
   controller.destroy();
 });
 
