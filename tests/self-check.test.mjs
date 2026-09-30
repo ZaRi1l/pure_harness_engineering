@@ -111,7 +111,7 @@ test('self-check rejects tracked Unix and Windows absolute roots in manifests an
   const adapterDir = path.join(root, 'harness-adapter');
   await mkdir(manifestDir, { recursive: true });
   await mkdir(adapterDir);
-  await writeFile(path.join(manifestDir, 'project.json'), JSON.stringify({ schemaVersion: 1, id: 'alpha', paths: { tasks: '/var/private/tasks' } }));
+  await writeFile(path.join(manifestDir, 'project.json'), JSON.stringify({ schemaVersion: 1, id: 'alpha', paths: { tasks: ['', 'var', 'private', 'tasks'].join('/') } }));
   await writeFile(path.join(adapterDir, 'project.json'), JSON.stringify({ schemaVersion: 1, id: 'alpha', projectRoot: ['C:', 'private', 'repo'].join('\\') }));
   execFileSync('git', ['init', '-q'], { cwd: root });
   execFileSync('git', ['add', 'projects/alpha/project.json', 'harness-adapter/project.json'], { cwd: root });
@@ -126,7 +126,7 @@ test('self-check inspects indexed manifest bytes even when worktree differs', as
   const directory = path.join(root, 'projects', 'alpha');
   await mkdir(directory, { recursive: true });
   const file = path.join(directory, 'project.json');
-  await writeFile(file, JSON.stringify({ paths: { tasks: '/private/staged' } }));
+  await writeFile(file, JSON.stringify({ paths: { tasks: ['', 'private', 'staged'].join('/') } }));
   execFileSync('git', ['init', '-q'], { cwd: root });
   execFileSync('git', ['add', 'projects/alpha/project.json'], { cwd: root });
   await writeFile(file, JSON.stringify({ paths: { tasks: 'projects/alpha/tasks' } }));
