@@ -4,6 +4,14 @@ node_modules/
 projects/*/project.local.json
 harness-adapter/binding.local.json
 
+# Local cross-tool generator outputs (hand-owned Codex files remain tracked)
+.claude/agents/
+.opencode/agents/
+.agents/agents/
+harness/generated-manifest.json
+harness/.sync.lock
+harness/.sync-journal.json
+
 # Generated Pure Harness runtime state
 .ai/core-runtime/
 .ai/runtime/status.json
