@@ -2,6 +2,13 @@
 
 This is a future operator worksheet, not evidence that any target has passed. Run it only after reviewed, manifest-owned role outputs exist and the exact installed tool version and model are known. Schema validation, copied files, and a role's verbal refusal do not prove native loading or effective permissions. Keep `nativeSmoke` as `unverified` until observations are recorded and independently reviewed.
 
+## Deterministic render hygiene audit (2026-10-01)
+
+- Reviewed neutral engine HEAD `9481552f4cdd839a5576dca5bed92728b7d18888`. Loaded the 15 canonical roles with `loadRoles(root, 'all')` and rendered each through the Codex, Claude Code, OpenCode, and Antigravity `renderRole` adapters in memory: 60 candidate role bodies, no target files written. Scanned emitted bodies for SILO/product-specific terms, absolute host paths, and literal Node/npm/runtime-state command dependencies.
+- No SILO/product-specific text, absolute host paths, or literal Node/npm/runtime-state commands were emitted. Worker text mentions a conditional “live claim runtime” and supplies a single-writer/worktree fallback; it does not require Node. Five roles refer to relative canonical `.agents/skills/<id>/SKILL.md` paths.
+- `node scripts/validate.mjs --targets all --profile all --json` returned exit 1 / `ok: false`: expected missing generated manifest; native smoke remains `unverified` for all four targets; skill discovery remains unverified for Claude Code, OpenCode, and Antigravity. Codex skill discovery has documentation evidence for the pinned CLI, but native smoke is still unverified. Validation reported 15 roles and 8 skills.
+- Adapter capability reports remain conservative: read is mapped as `native`; Codex/Claude web is unsupported, OpenCode shell/web needs are unsupported pending native testing, and Antigravity write/shell/web needs are unsupported or unmapped. Advisory or unsupported capability output is not evidence of effective permission enforcement. No native load, invocation, skill discovery, or permission behavior was tested; do not mark any `nativeSmoke` passed from this audit.
+
 ## Disposable fixture for each target
 
 Use a separate, clean Git consumer for each target. Copy only that target's selected generated `worker` and `planner` roles, the canonical `.agents/skills/testing/` skill (or a documented version-gated copy), and the minimum native registration needed to load the roles. Do not bring development scripts, credentials, real data, or existing root instructions into the fixture. The consumer must work without Node or npm on the role's command path; keep the target's own launcher functional.
