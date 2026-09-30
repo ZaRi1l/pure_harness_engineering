@@ -22,7 +22,10 @@ export function assertPortableText(text, sourcePath) {
 export function assertPortableMetadata(value, sourcePath) {
   if (typeof value === 'string') assertPortableText(value, sourcePath);
   else if (Array.isArray(value)) for (const item of value) assertPortableMetadata(item, sourcePath);
-  else if (value && typeof value === 'object') for (const item of Object.values(value)) assertPortableMetadata(item, sourcePath);
+  else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) {
+    assertPortableText(key, sourcePath);
+    assertPortableMetadata(item, sourcePath);
+  }
 }
 
 export function assertSafeRelativePath(value, allowedRoot, seen) {

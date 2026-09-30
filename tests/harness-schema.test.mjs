@@ -3,7 +3,7 @@ import { cp, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/pr
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { parseRole, assertSafeRelativePath } from '../harness/schema.mjs';
+import { assertPortableMetadata, parseRole, assertSafeRelativePath } from '../harness/schema.mjs';
 import { loadRoles, inventoryCodexRoles } from '../harness/inventory.mjs';
 
 const root = path.resolve('.');
@@ -86,6 +86,23 @@ for (const [label, source] of [
 
 test('allows generic project-declared goal adapter wording', () => {
   assert.doesNotThrow(() => parseRole(valid.replace('Plan work', 'Use a project-declared GOAL adapter. Plan work'), 'harness/agents/planner.md'));
+});
+
+for (const [label, metadata] of [
+  ['nested identity key', { inventory: [{ targets: { [product]: 'neutral' } }] }],
+  ['nested host-path key', { inventory: [{ targets: { 'C:/Users/alice/private.txt': 'neutral' } }] }],
+  ['nested credential key', { inventory: [{ targets: { [`sk-proj-${'A'.repeat(30)}`]: 'neutral' } }] }],
+  ['escaped identity key', JSON.parse(String.raw`{"\u0053ILO":"neutral"}`)],
+  ['escaped identity value', JSON.parse(String.raw`{"neutral":"\u0053ILO"}`)],
+  ['nested host-path value', { inventory: [{ path: 'C:/Users/alice/private.txt' }] }],
+  ['nested credential value', { inventory: [{ token: `sk-proj-${'A'.repeat(30)}` }] }],
+]) test(`rejects decoded compatibility ${label}`, () =>
+  assert.throws(() => assertPortableMetadata(metadata, 'harness/compatibility.json'), /portable|identity|credential/i));
+
+test('allows nested project-declared goal adapter metadata', () => {
+  assert.doesNotThrow(() => assertPortableMetadata({ adapters: [{ goal: {
+    projectRelativePath: 'projects/example/goal.json', description: 'project-declared GOAL adapter',
+  } }] }, 'harness/compatibility.json'));
 });
 
 test('core profile rejects contaminated optional canonical role before rendering', async t => {
