@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFile, stat } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { listSkills, skillAvailability } from '../harness/inventory.mjs';
@@ -18,6 +19,20 @@ test('skill inventory has exact core and optional IDs with real canonical files'
     assert.ok((await stat(path.join(root, skill.path))).isFile());
   }
   await assert.rejects(listSkills(root, 'unknown'), /profile/);
+});
+
+test('core skill selection rejects contaminated optional skill metadata and copied reference files', async t => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), 'harness-skills-portability-'));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  await cp(path.join(root, '.agents/skills'), path.join(fixture, '.agents/skills'), { recursive: true });
+  const optional = path.join(fixture, '.agents/skills/context-curation/SKILL.md');
+  await writeFile(optional, (await readFile(optional, 'utf8')).replace('description:', 'description: C:/Users/alice/private.txt '));
+  await assert.rejects(listSkills(fixture, 'core'), /portable|identity|credential/i);
+  await cp(path.join(root, '.agents/skills/context-curation/SKILL.md'), optional);
+  const reference = path.join(fixture, '.agents/skills/task-routing/profiles.md');
+  const product = ['S', 'ILO'].join('');
+  await writeFile(reference, (await readFile(reference, 'utf8')) + `\n${product} private notes\n`);
+  await assert.rejects(listSkills(fixture, 'core'), /portable|identity|credential/i);
 });
 
 test('skill availability does not mistake source presence for native target discovery', async () => {

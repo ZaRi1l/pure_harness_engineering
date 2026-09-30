@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertEnforcement } from '../harness/capabilities.mjs';
 import { listSkills, loadRoles, skillAvailability } from '../harness/inventory.mjs';
-import { assertSafeRelativePath } from '../harness/schema.mjs';
+import { assertPortableText, assertSafeRelativePath } from '../harness/schema.mjs';
 import { RENDERER_VERSION, validateGeneratedSyntax } from '../harness/generated-syntax.mjs';
 import { parseGeneratedFile, validateManifest as validateOwnedManifest } from '../harness/ownership.mjs';
 import * as codex from '../harness/targets/codex.mjs';
@@ -99,7 +99,9 @@ export async function validateRepository({ root, targets, profile = 'all' }) {
   const renderedByKey = new Map();
   let compatibility, roles, skills;
   try {
-    compatibility = JSON.parse(await readFile(path.join(root, 'harness/compatibility.json'), 'utf8'));
+    const compatibilityText = await readFile(path.join(root, 'harness/compatibility.json'), 'utf8');
+    assertPortableText(compatibilityText, 'harness/compatibility.json');
+    compatibility = JSON.parse(compatibilityText);
     roles = await loadRoles(root, profile);
     skills = await listSkills(root, profile);
     inventory.roles = roles.map(role => role.id);
@@ -120,6 +122,7 @@ export async function validateRepository({ root, targets, profile = 'all' }) {
       try {
         // Collect the actual adapter report even when a strict requirement rejects it.
         const rendered = adapter.renderRole({ ...role, requiresEnforcement: [] }, { compatibility, profile });
+        assertPortableText(rendered.body, rendered.path);
         if (rendered.path !== adapter.declaredPaths([role])[0] || typeof rendered.body !== 'string' || !rendered.body) {
           throw new Error('rendered path or body does not match declared output');
         }

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { listSkills, loadRoles, skillAvailability } from '../harness/inventory.mjs';
+import { assertPortableText } from '../harness/schema.mjs';
 import { adoptReviewed, applyPlan, planSync, recoverPartial } from '../harness/ownership.mjs';
 import * as codex from '../harness/targets/codex.mjs';
 import * as claude from '../harness/targets/claude.mjs';
@@ -56,7 +57,9 @@ async function assertNativeReady(root, targets, profile, compatibility) {
 
 async function sync(options) {
   const { root, targets, profile } = options;
-  const compatibility = JSON.parse(await readFile(path.join(root, 'harness/compatibility.json'), 'utf8'));
+  const compatibilityText = await readFile(path.join(root, 'harness/compatibility.json'), 'utf8');
+  assertPortableText(compatibilityText, 'harness/compatibility.json');
+  const compatibility = JSON.parse(compatibilityText);
   if (options.recover) {
     await assertNativeReady(root, targets, profile, compatibility);
     const result = await recoverPartial({ root, targets });
@@ -66,6 +69,7 @@ async function sync(options) {
   const rendered = [];
   for (const target of targets) for (const role of roles) {
     const result = byId.get(target).renderRole(role, { compatibility, profile });
+    assertPortableText(result.body, result.path);
     rendered.push({ ...result, target, roleId: role.id, sourcePath: role.sourcePath, sourceSha256: role.sourceSha256 });
   }
   if (options.adoptReviewed) {

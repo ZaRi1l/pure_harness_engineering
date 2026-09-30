@@ -76,6 +76,22 @@ async function validationReport(root, target = 'codex') {
   return JSON.parse(result.stdout);
 }
 
+test('validation and dry-run reject contaminated compatibility metadata without writing outputs', async t => {
+  const root = await fixture(t);
+  const file = path.join(root, 'harness/compatibility.json');
+  const record = JSON.parse(await readFile(file, 'utf8'));
+  record.inventory.roleFiles = 'C:/Users/alice/private.txt';
+  await writeFile(file, JSON.stringify(record));
+  const before = await snapshotTree(root);
+  const validation = await runNode('scripts/validate.mjs', ['--root', root, '--targets', 'codex', '--profile', 'core', '--json']);
+  assert.equal(validation.code, 1);
+  assert.ok(JSON.parse(validation.stdout).issues.some(item => item.sourceField === 'source' && /portable|identity|credential/i.test(item.reason)));
+  const dryRun = await runNode('scripts/sync.mjs', ['--root', root, '--targets', 'codex', '--profile', 'core', '--dry-run']);
+  assert.equal(dryRun.code, 1);
+  assert.match(dryRun.stderr, /portable|identity|credential/i);
+  assert.deepEqual(await snapshotTree(root), before);
+});
+
 test('validation requires explicit unique known targets and never infers selection', async t => {
   const root = await fixture(t);
   for (const args of [[], ['--targets', 'codex,codex'], ['--targets', 'unknown']]) {

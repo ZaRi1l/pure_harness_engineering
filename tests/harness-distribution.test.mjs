@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { makeGeneratedFile, parseGeneratedFile, validateManifest } from '../harness/ownership.mjs';
 import { listSkills, loadRoles, skillAvailability } from '../harness/inventory.mjs';
+import { assertPortableText } from '../harness/schema.mjs';
 import { renderRole as renderCodexRole } from '../harness/targets/codex.mjs';
 import { renderRole as renderClaudeRole } from '../harness/targets/claude.mjs';
 import { renderRole as renderOpenCodeRole } from '../harness/targets/opencode.mjs';
@@ -104,4 +105,21 @@ test('copied skills do not imply unverified native discovery', async t => {
   assert.equal(copied.skillDiscovery.antigravity.status, 'unsupported');
   assert.equal(copied.skillDiscovery.codex.status, skillAvailability('codex', compatibility).status);
   assert.equal(compatibility.targets.claude.nativeSmoke, 'unverified');
+});
+
+test('all 15 canonical roles render portable descriptions and bodies for all four targets', async () => {
+  const compatibility = JSON.parse(await readFile(path.join(repository, 'harness/compatibility.json'), 'utf8'));
+  const roles = await loadRoles(repository, 'all');
+  assert.equal(roles.length, 15);
+  assert.equal((await listSkills(repository, 'all')).length, 8);
+  for (const adapter of [
+    { targetId: 'codex', renderRole: renderCodexRole },
+    { targetId: 'claude', renderRole: renderClaudeRole },
+    { targetId: 'opencode', renderRole: renderOpenCodeRole },
+    { targetId: 'antigravity', renderRole: renderAntigravityRole },
+  ]) for (const role of roles) {
+    const output = adapter.renderRole(role, { compatibility, profile: 'all' });
+    assertPortableText(output.body, output.path);
+    assert.ok(output.body.includes(role.description), `${adapter.targetId}:${role.id}`);
+  }
 });

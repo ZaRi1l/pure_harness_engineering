@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -68,6 +68,30 @@ for (const [name, source, pattern] of [
   ['undeclared enforcement need', valid.replace('requiresEnforcement: []', 'requiresEnforcement:\n  - write'), /requiresEnforcement/],
   ['nonportable runtime path leak', valid.replace('Plan work', 'See .ai/runtime/status.json. Plan work'), /portable/],
 ]) test(`rejects ${name}`, () => assert.throws(() => parseRole(source, 'harness/agents/planner.md'), pattern));
+
+test('rejects product identity, host paths, and credential material in role frontmatter and body', () => {
+  const product = ['S', 'ILO'].join('');
+  for (const [label, source] of [
+    ['description', valid.replace('Plans bounded work.', `Plans ${product} work.`)],
+    ['product-prefixed description', valid.replace('Plans bounded work.', `Plans ${product}_server work.`)],
+    ['model metadata', valid.replace('  claude: inherit', `  claude: ${product}`)],
+    ['product objective path', valid.replace('Plan work', `Read ${['prototype', 'preview', 'data', 'goal.json'].join('/')}. Plan work`)],
+    ['host path', valid.replace('Plan work', 'Read C:/Users/alice/private.txt. Plan work')],
+    ['credential', valid.replace('Plan work', `Use sk-${'A'.repeat(30)}. Plan work`)],
+    ['assigned credential', valid.replace('Plan work', `api_key=${'A'.repeat(30)}. Plan work`)],
+  ]) assert.throws(() => parseRole(source, 'harness/agents/planner.md'), /portable|identity|credential/i, label);
+  assert.doesNotThrow(() => parseRole(valid.replace('Plan work', 'Use a project-declared GOAL adapter. Plan work'), 'harness/agents/planner.md'));
+});
+
+test('core profile rejects contaminated optional canonical role before rendering', async t => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), 'harness-optional-portability-'));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  await cp(path.join(root, 'harness/agents'), path.join(fixture, 'harness/agents'), { recursive: true });
+  await cp(path.join(root, '.agents/skills'), path.join(fixture, '.agents/skills'), { recursive: true });
+  const file = path.join(fixture, 'harness/agents/researcher.md');
+  await writeFile(file, (await readFile(file, 'utf8')).replace('description:', 'description: C:/Users/alice/private.txt '));
+  await assert.rejects(loadRoles(fixture, 'core'), /portable|identity|credential/i);
+});
 
 test('safe relative paths reject traversal, absolute paths, and case collisions', () => {
   const seen = new Set();

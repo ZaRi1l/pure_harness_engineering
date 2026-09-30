@@ -1,6 +1,6 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { assertSafeRelativePath, parseRole } from './schema.mjs';
+import { assertPortableText, assertSafeRelativePath, parseRole } from './schema.mjs';
 
 export const CORE_ROLE_IDS = ['planner', 'worker', 'verifier', 'reviewer', 'goal-manager'];
 export const CORE_SKILL_IDS = ['task-routing', 'task-spec', 'testing', 'failure-recovery'];
@@ -14,6 +14,17 @@ export async function listSkills(root, profile) {
     if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(id)) throw new Error(`invalid skill id: ${id}`);
     const file = path.join(directory, id, 'SKILL.md');
     if (!(await stat(file)).isFile()) throw new Error(`missing skill file: ${id}`);
+    async function inspect(directory) {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const absolute = path.join(directory, entry.name);
+        if (entry.isDirectory()) await inspect(absolute);
+        else if (entry.isFile()) {
+          const relative = path.relative(root, absolute).split(path.sep).join('/');
+          assertPortableText(await readFile(absolute, 'utf8'), relative);
+        } else throw new Error(`portable skill contains unsupported file type: ${absolute}`);
+      }
+    }
+    await inspect(path.join(directory, id));
   }
   for (const id of CORE_SKILL_IDS) if (!ids.includes(id)) throw new Error(`missing core skill: ${id}`);
   const selected = profile === 'core' ? CORE_SKILL_IDS : [

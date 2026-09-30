@@ -5,6 +5,19 @@ import { parseYamlSubset } from './yaml-subset.mjs';
 const fields = ['schemaVersion', 'id', 'description', 'tier', 'intent', 'modelPolicy', 'codexReasoningEffort', 'needs', 'requiresEnforcement'];
 const targets = ['codex', 'claude', 'opencode', 'antigravity'];
 const capabilities = new Set(['read', 'write', 'shell', 'delegate', 'web']);
+const nonportable = [
+  /\bsil[o](?:\b|[_-])/i,
+  /prototype[\\/]preview/i,
+  /runtime-state\.mjs|docker[\\/]\.env|\.ai[\\/]runtime|localhost/i,
+  /\b[A-Za-z]:[\\/]|\/(?:Users|home|root)\//i,
+  /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bsk-[A-Za-z0-9]{20,}\b/i,
+  /\b(?:api[_-]?key|password|client[_-]?secret|access[_-]?token)\s*[:=]\s*(?:["'][^"'\r\n]{8,}["']|[A-Za-z0-9_./+=-]{16,})/i,
+];
+
+export function assertPortableText(text, sourcePath) {
+  if (typeof text !== 'string' || text.includes('\0') || nonportable.some(pattern => pattern.test(text)))
+    throw new Error(`portable source contains project identity, host path, or credential material: ${sourcePath}`);
+}
 
 export function assertSafeRelativePath(value, allowedRoot, seen) {
   if (typeof value !== 'string' || !value || value.includes('\\') || value.includes('\0') || path.posix.isAbsolute(value) || /^[A-Za-z]:/.test(value)) throw new Error(`invalid path: ${value}`);
@@ -19,6 +32,7 @@ export function assertSafeRelativePath(value, allowedRoot, seen) {
 
 export function parseRole(text, sourcePath) {
   assertSafeRelativePath(sourcePath, 'harness/agents');
+  assertPortableText(text, sourcePath);
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(text);
   if (!match) throw new Error('role requires YAML frontmatter and body');
   const raw = parseYamlSubset(match[1]);
@@ -40,7 +54,6 @@ export function parseRole(text, sourcePath) {
   if (new Set(raw.requiresEnforcement).size !== raw.requiresEnforcement.length) throw new Error('duplicate requiresEnforcement');
   const body = match[2].trim();
   if (!body) throw new Error('body required');
-  if (/runtime-state\.mjs|docker\/\.env|\.ai\/runtime|localhost/i.test(body)) throw new Error('portable role body leaks host-specific path or policy');
   return { schemaVersion: 1, id: raw.id, description: raw.description, tier: raw.tier, intent: raw.intent,
     modelPolicy: raw.modelPolicy, codexReasoningEffort: raw.codexReasoningEffort, needs: raw.needs, requiresEnforcement: raw.requiresEnforcement,
     body, sourcePath, sourceSha256: createHash('sha256').update(text).digest('hex') };
