@@ -6,7 +6,7 @@ This is a future operator worksheet, not evidence that any target has passed. Ru
 
 Use a separate, clean Git consumer for each target. Copy only that target's selected generated `worker` and `planner` roles, the canonical `.agents/skills/testing/` skill (or a documented version-gated copy), and the minimum native registration needed to load the roles. Do not bring development scripts, credentials, real data, or existing root instructions into the fixture. The consumer must work without Node or npm on the role's command path; keep the target's own launcher functional.
 
-Commit a harmless `probe.txt` with known initial bytes. Record those bytes and a SHA-256 digest, the copied role and skill digests, exact target version, selected model, permission/session settings, and the native command or UI action used to invoke each role. Use only this fixture for write attempts; reset it between independent attempts. Do not infer discovery from files being present.
+Commit a harmless `probe.txt` with known initial bytes. Record those bytes and a SHA-256 digest, the copied role and skill digests, exact target version, selected model, permission/session settings, and the native command or UI action used to invoke each role. Use only this fixture for write attempts; keep the worker's `writer-ok` bytes through both planner attempts, and reset only before a new complete probe sequence. Do not infer discovery from files being present.
 
 ## Observation sequence
 
