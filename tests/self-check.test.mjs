@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -77,4 +78,20 @@ test('self-check distinguishes observed, not-yet-observed, and suspected lifecyc
   assert.equal(hookDispatchDiagnostic(retainedHookAgent).state, 'observed');
   const fallback = { status: { agents: [{ id: 'worker-1', start_source: 'orchestration' }] }, events: [] };
   assert.equal(hookDispatchDiagnostic(fallback).state, 'suspected_unavailable');
+});
+
+test('self-check rejects tracked Unix and Windows absolute roots in manifests and adapters', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-absolute-path-check-'));
+  const manifestDir = path.join(root, 'projects', 'alpha');
+  const adapterDir = path.join(root, 'harness-adapter');
+  await mkdir(manifestDir, { recursive: true });
+  await mkdir(adapterDir);
+  await writeFile(path.join(manifestDir, 'project.json'), JSON.stringify({ schemaVersion: 1, id: 'alpha', paths: { tasks: '/var/private/tasks' } }));
+  await writeFile(path.join(adapterDir, 'project.json'), JSON.stringify({ schemaVersion: 1, id: 'alpha', projectRoot: 'C:\\private\\repo' }));
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['add', 'projects/alpha/project.json', 'harness-adapter/project.json'], { cwd: root });
+  const report = await checkRepository(root, { exerciseRuntime: false, exerciseHttp: false });
+  assert.ok(report.failures.some(item => item.includes('tracked manifest') && item.includes('absolute')));
+  assert.equal(report.failures.filter(item => item.includes('tracked manifest') && item.includes('absolute')).length, 2);
+  assert.doesNotMatch(JSON.stringify(report), /private/);
 });

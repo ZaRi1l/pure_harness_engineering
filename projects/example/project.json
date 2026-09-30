@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "example",
+  "displayName": "Example",
+  "paths": {
+    "tasks": "projects/example/tasks",
+    "memory": "projects/example/memory",
+    "runtime": "projects/example/runtime"
+  },
+  "adapters": {}
+}

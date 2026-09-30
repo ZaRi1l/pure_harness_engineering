@@ -1,6 +1,8 @@
 node_modules/
 .superpowers/
 .worktrees/
+projects/*/project.local.json
+harness-adapter/binding.local.json
 
 # Generated Pure Harness runtime state
 .ai/runtime/status.json

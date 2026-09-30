@@ -24,6 +24,22 @@ function basicTomlShape(text) {
   return text.split(/\r?\n/).every(line => { const value = line.trim(); return !value.startsWith('[') || /^\[[^\[\]]+\]$/.test(value); });
 }
 
+function trackedManifestChecks(root, report) {
+  const listing = spawnSync('git', ['ls-files', '-z', '--cached'], { cwd: root, encoding: 'utf8', windowsHide: true });
+  if (listing.status !== 0) return;
+  const files = listing.stdout.split('\0').filter(file => /(^|\/)project\.json$/.test(file) && (file.startsWith('projects/') || file === 'harness-adapter/project.json'));
+  const isAbsolute = value => typeof value === 'string' && (path.posix.isAbsolute(value) || path.win32.isAbsolute(value));
+  const containsAbsolute = value => isAbsolute(value) || (value && typeof value === 'object' && Object.values(value).some(containsAbsolute));
+  for (const file of files) {
+    try {
+      const manifest = JSON.parse(readFileSync(path.join(root, file), 'utf8'));
+      report.require(!containsAbsolute(manifest), `Tracked manifest ${file} contains no absolute path`, `tracked manifest ${file} contains absolute path`);
+    } catch {
+      report.failures.push(`tracked manifest ${file} is unreadable or invalid JSON`);
+    }
+  }
+}
+
 function validateCodex(root, text, executableOverride, spawnCodex = spawnSync) {
   if (!basicTomlShape(text)) return [false, 'Codex config has invalid TOML table syntax'];
   const executable = executableOverride || (process.platform === 'win32' ? 'codex.exe' : 'codex');
@@ -38,6 +54,7 @@ function validateCodex(root, text, executableOverride, spawnCodex = spawnSync) {
 
 export async function checkRepository(root, { exerciseRuntime = true, exerciseHttp = true, codexExecutable, spawnCodex } = {}) {
   root = path.resolve(root); const report = reportObject(), configPath = path.join(root, '.codex', 'config.toml'), hooksPath = path.join(root, '.codex', 'hooks.json');
+  trackedManifestChecks(root, report);
   report.require(Number(process.versions.node.split('.')[0]) >= 20, 'Node.js 20+ is available', 'Node.js 20+ is required');
   report.require(existsSync(configPath), 'Codex config exists', 'missing .codex/config.toml'); report.require(existsSync(hooksPath), 'Hook config exists', 'missing .codex/hooks.json');
   if (existsSync(hooksPath)) {
