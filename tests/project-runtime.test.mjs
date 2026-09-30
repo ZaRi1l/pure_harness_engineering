@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, mkdir, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -116,6 +116,40 @@ test('core context cannot write project runtime', async () => {
 test('core context rejects runtime outside engine source', async () => {
   const f = await fixture();
   assert.throws(() => RuntimeStore.coreContext({ engineRoot: path.resolve('.'), runtimeRoot: path.join(f.installation, 'projects', 'alpha', 'runtime') }), /runtime|engine/i);
+});
+
+test('runtime rejects a post-validation junction swap before reads, locks, or writes', async t => {
+  const f = await fixture(), context = await f.context('alpha'), store = new RuntimeStore(context);
+  await store.initialize();
+  const state = await store.readSnapshot();
+  const saved = path.join(f.root, 'saved-runtime'), foreign = path.join(f.root, 'foreign-runtime');
+  await rename(store.runtime, saved);
+  await mkdir(foreign);
+  const names = ['status.json', 'tasks.json', 'events.jsonl', 'claims.json'];
+  for (const name of names) await copyFile(path.join(saved, name), path.join(foreign, name));
+  await writeFile(path.join(foreign, 'sentinel.txt'), 'FOREIGN_UNCHANGED');
+  try { await symlink(foreign, store.runtime, process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('directory links unavailable'); return; } throw error; }
+  const before = await Promise.all([...names, 'sentinel.txt'].map(name => readFile(path.join(foreign, name), 'utf8')));
+  const operations = [
+    () => store.readStatus(), () => store.readTasks(), () => store.readEvents(), () => store.readClaims(),
+    () => store.readSnapshot(), () => store.loadUnlocked(), () => store.withLock(async () => true),
+    () => store.initialize(), () => store.persist(state.status, state.tasks, state.events, state.claims),
+    () => store.setGoal('redirected'), () => store.claim('redirected', ['src']),
+    () => store.recoverStaleLock(), () => store.removeOwnedLock('none')
+  ];
+  for (const operation of operations) await assert.rejects(operation(), /runtime path.*symlink|runtime path.*escape/i);
+  const after = await Promise.all([...names, 'sentinel.txt'].map(name => readFile(path.join(foreign, name), 'utf8')));
+  assert.deepEqual(after, before);
+});
+
+test('runtime refuses to recreate a validated management root removed after validation', async () => {
+  const f = await fixture(), store = new RuntimeStore(await f.context('alpha'));
+  const moved = path.join(f.root, 'moved-installation');
+  await rename(f.installation, moved);
+  await assert.rejects(store.readStatus(), /runtime path.*unavailable/i);
+  assert.equal(existsSync(f.installation), false);
+  assert.equal(existsSync(path.join(moved, 'projects', 'alpha', 'runtime')), false);
 });
 
 test('installation claim stays within selected management space', async () => {

@@ -95,6 +95,21 @@ export class RuntimeStore {
   emptyDocument(name) { return { schema_version: 1, ...(this.context ? { project_id: this.context.projectId } : {}), [name]: [] }; }
   ownsClaim(claim, agentId) { return claim.agent_id === String(agentId) && (!this.context || checkoutKey(claim.checkout_root) === checkoutKey(this.context.checkoutRoot)); }
   sharesCheckout(claim) { return !this.context || checkoutKey(claim.checkout_root) === checkoutKey(this.context.checkoutRoot); }
+  async assertRuntimePath() {
+    if (!this.context) return;
+    const owner = this.context.harnessRoot, relative = path.relative(owner, this.runtime);
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('runtime path escapes context root');
+    let current = owner;
+    for (const [index, segment] of ['', ...relative.split(path.sep)].entries()) {
+      current = segment ? path.join(current, segment) : current;
+      let metadata;
+      try { metadata = await lstat(current); }
+      catch (error) { if (error.code === 'ENOENT') { if (index === 0) throw new Error('runtime path root unavailable'); return; } throw error; }
+      if (metadata.isSymbolicLink()) throw new Error('runtime path traverses symlink');
+      if (!metadata.isDirectory()) throw new Error('runtime path is not a directory');
+      if (checkoutKey(await realpath(current)) !== checkoutKey(current)) throw new Error('runtime path escapes context root');
+    }
+  }
   async assertClaimPath(entry) {
     if (!this.context) return;
     const owner = entry.kind === 'installation' ? this.context.harnessRoot : this.context.checkoutRoot;
@@ -115,8 +130,9 @@ export class RuntimeStore {
   ownsLifecycleEvent(event, agentId) { return event.data?.agent_id === agentId && (!this.context || checkoutKey(event.data?.checkout_root) === checkoutKey(this.context.checkoutRoot)); }
   emptyStatus() { return { schema_version: 1, ...(this.context ? { project_id: this.context.projectId } : {}), current_goal: null, phase: 'idle', active_agents: [], agents: [], signals: [], task_counts: { total: 0, completed: 0 }, progress: null, completed_tasks: [], next_tasks: [], verification: { status: 'not_run', checks: [], last_run: null }, blockers: [], warnings: [], recent_events: [], artifact_preview_links: [], last_update: now() }; }
   assertSafeLockPath() { const resolved = path.resolve(this.lockPath); if (path.dirname(resolved) !== path.resolve(this.runtime)) throw new Error('unsafe lock path'); return resolved; }
-  async removeOwnedLock(token) { try { const owner = JSON.parse(await readFile(path.join(this.lockPath, 'owner.json'), 'utf8')); if (owner.token !== token) return; } catch { return; } await rm(this.assertSafeLockPath(), { recursive: true, force: true }); }
+  async removeOwnedLock(token) { await this.assertRuntimePath(); try { const owner = JSON.parse(await readFile(path.join(this.lockPath, 'owner.json'), 'utf8')); if (owner.token !== token) return; } catch { return; } await rm(this.assertSafeLockPath(), { recursive: true, force: true }); }
   async recoverStaleLock() {
+    await this.assertRuntimePath();
     let owner;
     try { owner = JSON.parse(await readFile(path.join(this.lockPath, 'owner.json'), 'utf8')); }
     catch { try { if (Date.now() - (await stat(this.lockPath)).mtimeMs < 1000) return false; } catch { return true; } }
@@ -127,8 +143,9 @@ export class RuntimeStore {
     await rm(quarantine, { recursive: true, force: true }); return true;
   }
   async withLock(operation) {
-    await mkdir(this.runtime, { recursive: true }); const deadline = Date.now() + this.lockTimeoutMs; const token = crypto.randomUUID();
+    await this.assertRuntimePath(); await mkdir(this.runtime, { recursive: true }); await this.assertRuntimePath(); const deadline = Date.now() + this.lockTimeoutMs; const token = crypto.randomUUID();
     while (true) {
+      await this.assertRuntimePath();
       try { await mkdir(this.lockPath); await writeFile(path.join(this.lockPath, 'owner.json'), JSON.stringify({ pid: process.pid, token, created_at: now() })); break; }
       catch (error) { if (error.code !== 'EEXIST') throw error; if (await this.recoverStaleLock()) continue; if (Date.now() >= deadline) throw new Error('runtime state lock timed out'); await wait(20); }
     }
@@ -148,15 +165,17 @@ export class RuntimeStore {
       if (force || !existsSync(this.claimsPath)) await atomicWrite(this.claimsPath, JSON.stringify(this.emptyDocument('claims'), null, 2) + '\n');
     });
   }
-  async readStatus() { if (!existsSync(this.statusPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.statusPath, 'utf8')), 'status'); }
-  async readTasks() { if (!existsSync(this.tasksPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.tasksPath, 'utf8')), 'tasks'); }
-  async readEvents() { if (!existsSync(this.eventsPath)) await this.initialize(); return this.parseEvents(await readFile(this.eventsPath, 'utf8')); }
-  async readClaims() { if (!existsSync(this.claimsPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.claimsPath, 'utf8')), 'claims'); }
+  async readStatus() { await this.assertRuntimePath(); if (!existsSync(this.statusPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.statusPath, 'utf8')), 'status'); }
+  async readTasks() { await this.assertRuntimePath(); if (!existsSync(this.tasksPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.tasksPath, 'utf8')), 'tasks'); }
+  async readEvents() { await this.assertRuntimePath(); if (!existsSync(this.eventsPath)) await this.initialize(); return this.parseEvents(await readFile(this.eventsPath, 'utf8')); }
+  async readClaims() { await this.assertRuntimePath(); if (!existsSync(this.claimsPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.claimsPath, 'utf8')), 'claims'); }
   async readSnapshot() {
+    await this.assertRuntimePath();
     if (!existsSync(this.statusPath) || !existsSync(this.tasksPath) || !existsSync(this.eventsPath) || !existsSync(this.claimsPath)) await this.initialize();
     return this.withLock(async () => this.loadUnlocked());
   }
   async loadUnlocked() {
+    await this.assertRuntimePath();
     const status = existsSync(this.statusPath) ? this.assertDocument(JSON.parse(await readFile(this.statusPath, 'utf8')), 'status') : this.emptyStatus(); status.agents ??= [...(status.active_agents || [])]; status.signals ??= [];
     const tasks = existsSync(this.tasksPath) ? this.assertDocument(JSON.parse(await readFile(this.tasksPath, 'utf8')), 'tasks') : this.emptyDocument('tasks');
     const events = existsSync(this.eventsPath) ? this.parseEvents(await readFile(this.eventsPath, 'utf8')) : [];
@@ -165,6 +184,7 @@ export class RuntimeStore {
   }
   event(type, message, data = {}) { const clean = Object.fromEntries(Object.entries(data).filter(([, value]) => value !== null && value !== '' && value !== undefined)); return { time: now(), ...(this.context ? { project_id: this.context.projectId } : {}), type, message: String(message).slice(0, 500), ...(Object.keys(clean).length ? { data: clean } : {}) }; }
   async persist(status, tasks, events, claims) {
+    await this.assertRuntimePath();
     status.last_update = now(); status.recent_events = events.slice(-10); const completed = tasks.tasks.filter(task => task.status === 'completed');
     status.task_counts = { total: tasks.tasks.length, completed: completed.length }; status.progress = tasks.tasks.length ? { completed: completed.length, total: tasks.tasks.length } : null; status.completed_tasks = completed; status.next_tasks = tasks.tasks.filter(task => ['pending', 'blocked'].includes(task.status));
     await atomicWrite(this.claimsPath, JSON.stringify(claims || { schema_version: 1, claims: [] }, null, 2) + '\n');
