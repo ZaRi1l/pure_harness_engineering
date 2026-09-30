@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertEnforcement } from '../harness/capabilities.mjs';
 import { listSkills, loadRoles, skillAvailability } from '../harness/inventory.mjs';
-import { assertPortableText, assertSafeRelativePath } from '../harness/schema.mjs';
+import { assertPortableMetadata, assertPortableText, assertSafeRelativePath } from '../harness/schema.mjs';
 import { RENDERER_VERSION, validateGeneratedSyntax } from '../harness/generated-syntax.mjs';
 import { parseGeneratedFile, validateManifest as validateOwnedManifest } from '../harness/ownership.mjs';
 import * as codex from '../harness/targets/codex.mjs';
@@ -102,6 +102,7 @@ export async function validateRepository({ root, targets, profile = 'all' }) {
     const compatibilityText = await readFile(path.join(root, 'harness/compatibility.json'), 'utf8');
     assertPortableText(compatibilityText, 'harness/compatibility.json');
     compatibility = JSON.parse(compatibilityText);
+    assertPortableMetadata(compatibility, 'harness/compatibility.json');
     roles = await loadRoles(root, profile);
     skills = await listSkills(root, profile);
     inventory.roles = roles.map(role => role.id);

@@ -69,17 +69,22 @@ for (const [name, source, pattern] of [
   ['nonportable runtime path leak', valid.replace('Plan work', 'See .ai/runtime/status.json. Plan work'), /portable/],
 ]) test(`rejects ${name}`, () => assert.throws(() => parseRole(source, 'harness/agents/planner.md'), pattern));
 
-test('rejects product identity, host paths, and credential material in role frontmatter and body', () => {
-  const product = ['S', 'ILO'].join('');
-  for (const [label, source] of [
+const product = ['S', 'ILO'].join('');
+for (const [label, source] of [
     ['description', valid.replace('Plans bounded work.', `Plans ${product} work.`)],
     ['product-prefixed description', valid.replace('Plans bounded work.', `Plans ${product}_server work.`)],
+    ['compound product description', valid.replace('Plans bounded work.', `Plans ${product}Server work.`)],
     ['model metadata', valid.replace('  claude: inherit', `  claude: ${product}`)],
     ['product objective path', valid.replace('Plan work', `Read ${['prototype', 'preview', 'data', 'goal.json'].join('/')}. Plan work`)],
     ['host path', valid.replace('Plan work', 'Read C:/Users/alice/private.txt. Plan work')],
+    ['UNC host path', valid.replace('Plan work', String.raw`Read \\office-server\private\config. Plan work`)],
     ['credential', valid.replace('Plan work', `Use sk-${'A'.repeat(30)}. Plan work`)],
+    ['project credential', valid.replace('Plan work', `Use sk-proj-${'A'.repeat(30)}. Plan work`)],
     ['assigned credential', valid.replace('Plan work', `api_key=${'A'.repeat(30)}. Plan work`)],
-  ]) assert.throws(() => parseRole(source, 'harness/agents/planner.md'), /portable|identity|credential/i, label);
+]) test(`rejects nonportable ${label}`, () =>
+  assert.throws(() => parseRole(source, 'harness/agents/planner.md'), /portable|identity|credential/i));
+
+test('allows generic project-declared goal adapter wording', () => {
   assert.doesNotThrow(() => parseRole(valid.replace('Plan work', 'Use a project-declared GOAL adapter. Plan work'), 'harness/agents/planner.md'));
 });
 

@@ -6,17 +6,23 @@ const fields = ['schemaVersion', 'id', 'description', 'tier', 'intent', 'modelPo
 const targets = ['codex', 'claude', 'opencode', 'antigravity'];
 const capabilities = new Set(['read', 'write', 'shell', 'delegate', 'web']);
 const nonportable = [
-  /\bsil[o](?:\b|[_-])/i,
+  /\bsil[o](?:server\b|\b|[_-])/i,
   /prototype[\\/]preview/i,
   /runtime-state\.mjs|docker[\\/]\.env|\.ai[\\/]runtime|localhost/i,
-  /\b[A-Za-z]:[\\/]|\/(?:Users|home|root)\//i,
-  /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bsk-[A-Za-z0-9]{20,}\b/i,
+  /\b[A-Za-z]:[\\/]|\/(?:Users|home|root)\/|\\\\[A-Za-z0-9._-]+\\[A-Za-z0-9._-]+/i,
+  /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bsk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{20,}\b/i,
   /\b(?:api[_-]?key|password|client[_-]?secret|access[_-]?token)\s*[:=]\s*(?:["'][^"'\r\n]{8,}["']|[A-Za-z0-9_./+=-]{16,})/i,
 ];
 
 export function assertPortableText(text, sourcePath) {
   if (typeof text !== 'string' || text.includes('\0') || nonportable.some(pattern => pattern.test(text)))
     throw new Error(`portable source contains project identity, host path, or credential material: ${sourcePath}`);
+}
+
+export function assertPortableMetadata(value, sourcePath) {
+  if (typeof value === 'string') assertPortableText(value, sourcePath);
+  else if (Array.isArray(value)) for (const item of value) assertPortableMetadata(item, sourcePath);
+  else if (value && typeof value === 'object') for (const item of Object.values(value)) assertPortableMetadata(item, sourcePath);
 }
 
 export function assertSafeRelativePath(value, allowedRoot, seen) {

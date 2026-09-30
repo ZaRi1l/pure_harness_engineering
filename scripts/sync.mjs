@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { listSkills, loadRoles, skillAvailability } from '../harness/inventory.mjs';
-import { assertPortableText } from '../harness/schema.mjs';
+import { assertPortableMetadata, assertPortableText } from '../harness/schema.mjs';
 import { adoptReviewed, applyPlan, planSync, recoverPartial } from '../harness/ownership.mjs';
 import * as codex from '../harness/targets/codex.mjs';
 import * as claude from '../harness/targets/claude.mjs';
@@ -60,6 +60,7 @@ async function sync(options) {
   const compatibilityText = await readFile(path.join(root, 'harness/compatibility.json'), 'utf8');
   assertPortableText(compatibilityText, 'harness/compatibility.json');
   const compatibility = JSON.parse(compatibilityText);
+  assertPortableMetadata(compatibility, 'harness/compatibility.json');
   if (options.recover) {
     await assertNativeReady(root, targets, profile, compatibility);
     const result = await recoverPartial({ root, targets });
