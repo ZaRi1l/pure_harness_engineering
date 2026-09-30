@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, copyFile, readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, copyFile, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -232,6 +232,28 @@ test('catalog route denies a linked role directory outside the role directory', 
   assert.equal(response.status, 200);
   assert.equal(catalog.agents.find(agent => agent.id === 'escaped').source, '');
   assert.doesNotMatch(JSON.stringify(catalog), /PRIVATE_SYMLINK_BYTES/);
+});
+
+test('catalog route refuses a replaced skills-root junction while preserving normal skills', async t => {
+  const f = await projectPreviewFixture();
+  const skillRoot = path.join(f.installation, '.agents', 'skills');
+  await mkdir(path.join(skillRoot, 'safe'), { recursive: true });
+  await writeFile(path.join(skillRoot, 'safe', 'SKILL.md'), '---\nname: safe\ndescription: Public skill\n---\nSAFE_SKILL_SOURCE');
+  const base = await listening(t, await f.context('alpha'));
+  const ordinary = await (await fetch(`${base}/runtime/catalog`)).json();
+  assert.match(ordinary.skills.find(skill => skill.id === 'safe').source, /SAFE_SKILL_SOURCE/);
+
+  const foreign = path.join(f.root, 'foreign-skills');
+  await mkdir(path.join(foreign, 'escaped'), { recursive: true });
+  await writeFile(path.join(foreign, 'escaped', 'SKILL.md'), '---\nname: escaped\ndescription: Private skill\n---\nPRIVATE_SKILL_SOURCE');
+  await rename(skillRoot, path.join(f.root, 'saved-skills'));
+  try { await symlink(foreign, skillRoot, process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('directory links unavailable'); return; } throw error; }
+  const response = await fetch(`${base}/runtime/catalog`);
+  const catalog = await response.json();
+  assert.equal(response.status, 200);
+  assert.deepEqual(catalog.skills, []);
+  assert.doesNotMatch(JSON.stringify(catalog), /PRIVATE_SKILL_SOURCE/);
 });
 
 test('guide commands remain backed by package scripts', async () => {

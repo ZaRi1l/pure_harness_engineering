@@ -28,6 +28,22 @@ function roleSource(root, configFile) {
   } catch { return ''; }
 }
 
+function skillSource(skillRoot, id) {
+  try {
+    const directory = path.join(skillRoot, id), file = path.join(directory, 'SKILL.md');
+    const resolved = realpathSync(file);
+    if (path.relative(directory, realpathSync(directory)) !== '' || path.relative(file, resolved) !== '' || !statSync(resolved).isFile()) return '';
+    return readFileSync(resolved, 'utf8');
+  } catch { return ''; }
+}
+
+function safeSkillRoot(root) {
+  try {
+    const candidate = path.join(realpathSync(root), '.agents', 'skills');
+    return path.relative(candidate, realpathSync(candidate)) === '' && statSync(candidate).isDirectory() ? candidate : null;
+  } catch { return null; }
+}
+
 export function discoverCatalog(context) {
   const { catalogRoot: root } = roots(context);
   const configPath = path.join(root, '.codex', 'config.toml');
@@ -37,9 +53,9 @@ export function discoverCatalog(context) {
     const text = configFile ? roleSource(root, configFile) : '';
     return { id, description: field(match[2], 'description'), path: configFile || '', name: field(text, 'name') || id, model: field(text, 'model'), reasoning: field(text, 'model_reasoning_effort'), source: text };
   });
-  const skillRoot = path.join(root, '.agents', 'skills');
-  const skills = existsSync(skillRoot) ? readdirSync(skillRoot, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => {
-    const file = path.join(skillRoot, entry.name, 'SKILL.md'), text = existsSync(file) ? readFileSync(file, 'utf8') : '', meta = frontmatter(text);
+  const skillRoot = safeSkillRoot(root);
+  const skills = skillRoot ? readdirSync(skillRoot, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => {
+    const text = skillSource(skillRoot, entry.name), meta = frontmatter(text);
     return { id: entry.name, name: yaml(meta, 'name'), description: yaml(meta, 'description'), path: '.agents/skills/' + entry.name + '/SKILL.md', source: text, valid: Boolean(meta && yaml(meta, 'name') && yaml(meta, 'description')) };
   }).sort((a, b) => a.id.localeCompare(b.id)) : [];
   return { agents, skills };
