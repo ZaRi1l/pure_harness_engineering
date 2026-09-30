@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { isValidatedProjectContext } from './project-context.mjs';
 import { isCoreContext } from './runtime-state.mjs';
@@ -15,14 +15,26 @@ const field = (text, name) => text.match(new RegExp('(?:^|\\n)' + name + '\\s*=\
 const frontmatter = text => text.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] || '';
 const yaml = (text, name) => text.match(new RegExp('(?:^|\\n)' + name + ':\\s*([^\\n]+)'))?.[1]?.trim().replace(/^['"]|['"]$/g, '') || '';
 
+function roleSource(root, configFile) {
+  const relative = configFile.replace(/^\.\//, '');
+  if (!relative.startsWith('agents/') || relative.includes('\\') || relative.split('/').some(segment => !segment || segment === '.' || segment === '..')) return '';
+  try {
+    const owner = realpathSync(root), roleRoot = path.join(owner, '.codex', 'agents');
+    if (path.relative(roleRoot, realpathSync(roleRoot)) !== '') return '';
+    const file = realpathSync(path.join(owner, '.codex', relative));
+    const withinRoleRoot = path.relative(roleRoot, file);
+    if (!withinRoleRoot || withinRoleRoot === '..' || withinRoleRoot.startsWith(`..${path.sep}`) || path.isAbsolute(withinRoleRoot) || !statSync(file).isFile()) return '';
+    return readFileSync(file, 'utf8');
+  } catch { return ''; }
+}
+
 export function discoverCatalog(context) {
   const { catalogRoot: root } = roots(context);
   const configPath = path.join(root, '.codex', 'config.toml');
   const config = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '';
   const agents = [...config.matchAll(/^\[agents\.([^\]]+)\]([\s\S]*?)(?=^\[|(?![\s\S]))/gm)].map(match => {
     const id = match[1], configFile = field(match[2], 'config_file');
-    const file = configFile ? path.join(root, '.codex', configFile.replace(/^\.\//, '')) : '';
-    const text = file && existsSync(file) ? readFileSync(file, 'utf8') : '';
+    const text = configFile ? roleSource(root, configFile) : '';
     return { id, description: field(match[2], 'description'), path: configFile || '', name: field(text, 'name') || id, model: field(text, 'model'), reasoning: field(text, 'model_reasoning_effort'), source: text };
   });
   const skillRoot = path.join(root, '.agents', 'skills');

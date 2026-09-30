@@ -199,6 +199,41 @@ test('catalog exposes read-only source and role policy metadata', () => {
   assert.match(testing.source, /name: testing/);
 });
 
+test('catalog route denies role config traversal while preserving a normal role', async t => {
+  const f = await projectPreviewFixture();
+  const agentDir = path.join(f.installation, '.codex', 'agents');
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(path.join(f.installation, 'private.txt'), 'PRIVATE_TRAVERSAL_BYTES');
+  await writeFile(path.join(agentDir, 'safe.toml'), 'name = "Safe role"\nmodel = "safe-model"\n');
+  await writeFile(path.join(f.installation, '.codex', 'config.toml'), '[agents.safe]\nconfig_file = "./agents/safe.toml"\n[agents.escaped]\nconfig_file = "../private.txt"\n');
+  const base = await listening(t, await f.context('alpha'));
+  const response = await fetch(`${base}/runtime/catalog`);
+  const catalog = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(catalog.agents.find(agent => agent.id === 'safe').source, 'name = "Safe role"\nmodel = "safe-model"\n');
+  assert.equal(catalog.agents.find(agent => agent.id === 'escaped').source, '');
+  assert.doesNotMatch(JSON.stringify(catalog), /PRIVATE_TRAVERSAL_BYTES/);
+});
+
+test('catalog route denies a linked role directory outside the role directory', async t => {
+  const f = await projectPreviewFixture();
+  const agentDir = path.join(f.installation, '.codex', 'agents');
+  await mkdir(agentDir, { recursive: true });
+  const privateDir = path.join(f.installation, 'private-roles');
+  await mkdir(privateDir);
+  const privateFile = path.join(privateDir, 'secret.toml');
+  await writeFile(privateFile, 'PRIVATE_SYMLINK_BYTES');
+  try { await symlink(privateDir, path.join(agentDir, 'linked'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('directory links unavailable'); return; } throw error; }
+  await writeFile(path.join(f.installation, '.codex', 'config.toml'), '[agents.escaped]\nconfig_file = "./agents/linked/secret.toml"\n');
+  const base = await listening(t, await f.context('alpha'));
+  const response = await fetch(`${base}/runtime/catalog`);
+  const catalog = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(catalog.agents.find(agent => agent.id === 'escaped').source, '');
+  assert.doesNotMatch(JSON.stringify(catalog), /PRIVATE_SYMLINK_BYTES/);
+});
+
 test('guide commands remain backed by package scripts', async () => {
   const scripts = JSON.parse(await readFile(path.resolve('package.json'), 'utf8')).scripts;
   const messages = await readFile(path.resolve('preview/preferences.js'), 'utf8');
