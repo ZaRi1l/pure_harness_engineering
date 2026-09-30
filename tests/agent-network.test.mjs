@@ -83,6 +83,7 @@ const snapshot = {
   claims: { claims: [{ agent_id: 'worker-b', scopes: ['src/api'] }] }, events: []
 };
 const catalog = { agents: [{ id: 'worker', model: 'gpt-6-sol', reasoning: 'medium' }] };
+const historyController = (host, options = {}) => api.create(host, { ...options, initialState: { mode: 'history', ...options.initialState } });
 
 test('buildModel uses only lifecycle records and stored signal endpoints and edges', () => {
   const model = api.buildModel(snapshot, catalog, { mode: 'history', filter: 'all' });
@@ -137,7 +138,7 @@ test('retained thirty-agent layout keeps every node apart', () => {
 
 test('controller preserves selection, mode, filter, task, and transform across polling update', () => {
   const { host } = fixture();
-  const controller = api.create(host, { staticMode: false });
+  const controller = historyController(host, { staticMode: false });
   controller.update(snapshot, catalog);
   find(host, 'node-id', 'worker-b').click();
   assert.match(text(find(host, 'network-detail', '')), /worker-b/);
@@ -157,7 +158,7 @@ test('controller preserves selection, mode, filter, task, and transform across p
 
 test('legacy selected signal survives unrelated head pruning but clears when duplicates are pruned', () => {
   const { host } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   const duplicate = { time: '2026-09-25T01:00:00Z', from: 'worker-a', to: 'worker-b', kind: 'handoff', summary: 'Same event' };
   const signals = [snapshot.status.signals[0], duplicate, duplicate, snapshot.status.signals[2]];
   controller.update({ ...snapshot, status: { ...snapshot.status, signals } }, catalog);
@@ -175,7 +176,7 @@ test('legacy selected signal survives unrelated head pruning but clears when dup
 
 test('unique legacy selection survives head pruning and a new tail signal together', () => {
   const { host } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   const [a, b, c] = snapshot.status.signals;
   const d = { ...a, time: '2026-09-25T00:03:00Z', summary: 'Newest event' };
   controller.update({ ...snapshot, status: { ...snapshot.status, signals: [a, b, c] } }, catalog);
@@ -189,7 +190,7 @@ test('unique legacy selection survives head pruning and a new tail signal togeth
 
 test('stored signal ID survives the 51st append and head prune, then clears when pruned', () => {
   const { host } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   const signals = Array.from({ length: 50 }, (_, index) => ({
     id: `signal-${index}`, time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker-a', kind: 'handoff', summary: `Signal ${index}`
   }));
@@ -208,7 +209,7 @@ test('stored signal ID survives the 51st append and head prune, then clears when
 
 test('identical ID-bearing append cannot retarget a selected signal', () => {
   const { host } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   const signal = { id: 'original', time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker-a', kind: 'handoff', summary: 'Same' };
   controller.update({ ...snapshot, status: { ...snapshot.status, signals: [signal] } }, catalog);
   find(host, 'edge-index', '0').click();
@@ -222,7 +223,7 @@ test('identical ID-bearing append cannot retarget a selected signal', () => {
 
 test('legacy selection clears when an identical signal is appended', () => {
   const { host } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   const signal = { time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker-a', kind: 'handoff', summary: 'Same' };
   controller.update({ ...snapshot, status: { ...snapshot.status, signals: [signal] } }, catalog);
   find(host, 'edge-index', '0').click();
@@ -233,7 +234,7 @@ test('legacy selection clears when an identical signal is appended', () => {
 
 test('legacy selection clears when identical prune and append hide a replacement', () => {
   const { host } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   const duplicate = { time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker-a', kind: 'handoff', summary: 'Same' };
   const other = { ...duplicate, summary: 'Other' };
   controller.update({ ...snapshot, status: { ...snapshot.status, signals: [duplicate, duplicate, other] } }, catalog);
@@ -245,7 +246,7 @@ test('legacy selection clears when identical prune and append hide a replacement
 
 test('legacy selection clears when one identical replacement keeps the match count unchanged', () => {
   const { host } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   const selected = { time: '2026-09-25T00:00:00Z', from: 'main', to: 'worker-a', kind: 'handoff', summary: 'Same' };
   const other = { ...selected, summary: 'Other' };
   controller.update({ ...snapshot, status: { ...snapshot.status, signals: [selected, other] } }, catalog);
@@ -257,7 +258,7 @@ test('legacy selection clears when one identical replacement keeps the match cou
 
 test('keyboard selection, controls, wheel, pan, fit, reset, and stale selection work', () => {
   const { host, document } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   controller.update(snapshot, catalog);
   const node = find(host, 'node-id', 'worker-b');
   assert.equal(node.getAttribute('role'), 'button');
@@ -304,7 +305,7 @@ test('background pan ends after pointer release outside the graph', () => {
 
 test('redraw restores a focused node or signal after replacing graph children', () => {
   const { host, document } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   controller.update(snapshot, catalog);
   const node = find(host, 'node-id', 'worker-a');
   node.focus();
@@ -352,7 +353,7 @@ test('background pan uses the uniform SVG scale when the rendered box is letterb
 
 test('detail dates omit missing values, show unknown for invalid values, and preserve valid strings', () => {
   const { host } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   const dated = structuredClone(snapshot);
   dated.status.agents[0].started_at = 'not a date';
   dated.status.agents[0].stopped_at = '';
@@ -380,7 +381,7 @@ test('detail dates omit missing values, show unknown for invalid values, and pre
 
 test('reported-running nodes use an amber cue and accessible uncertainty label while signal time remains visible', () => {
   const { host, document } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   const observed = structuredClone(snapshot);
   observed.status.last_update = '2026-09-25T00:03:00Z';
   controller.update(observed, catalog);
@@ -391,6 +392,54 @@ test('reported-running nodes use an amber cue and accessible uncertainty label w
   assert.match(text(host), /No live liveness check; last snapshot update: 2026-09-25T00:03:00Z/);
   find(host, 'edge-index', '0').click();
   assert.match(text(find(host, 'network-detail', '')), /Sent: 2026-09-25T00:00:00Z/);
+  controller.destroy();
+});
+
+test('reported-running mode hides historical nodes and signals from DOM and keyboard, while history restores them', () => {
+  const { host, document } = fixture();
+  const mixed = structuredClone(snapshot);
+  mixed.status.agents.push({ id: 'stale-running', role: 'worker', status: 'running' });
+  mixed.status.active_agents.push({ id: 'worker-c', role: 'worker', status: 'running' });
+  mixed.status.signals.push({ time: '2026-09-25T00:03:00Z', from: 'worker-b', to: 'worker-c', kind: 'handoff', summary: 'Current pair' });
+  const controller = api.create(host);
+  controller.update(mixed, catalog);
+  assert.deepEqual(descendants(host, element => element.getAttribute('data-node-id') !== null).map(element => element.getAttribute('data-node-id')).sort(), ['worker-b', 'worker-c']);
+  assert.deepEqual(descendants(host, element => element.getAttribute('data-edge-index') !== null).map(element => element.getAttribute('data-edge-index')), ['3']);
+  assert.equal(find(host, 'node-id', 'worker-a'), undefined);
+  assert.equal(find(host, 'node-id', 'stale-running'), undefined);
+  assert.equal(find(host, 'edge-index', '0'), undefined);
+  const mode = find(host, 'network-mode', '');
+  mode.value = 'history'; mode.dispatch('change');
+  assert.ok(find(host, 'node-id', 'worker-a'));
+  assert.ok(find(host, 'edge-index', '0'));
+  const historical = find(host, 'node-id', 'worker-a');
+  historical.keydown('Enter');
+  assert.equal(document.activeElement, find(host, 'node-id', 'worker-a'));
+  mode.value = 'live'; mode.dispatch('change');
+  assert.equal(controller.getState().selection, null);
+  assert.equal(find(host, 'node-id', 'worker-a'), undefined);
+  assert.equal(find(host, 'edge-index', '0'), undefined);
+  controller.destroy();
+});
+
+test('reported-running mode explains how to view history when no agents are listed', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  controller.update({ status: { agents: [{ id: 'completed', status: 'completed' }], active_agents: [], signals: [] } }, catalog);
+  assert.match(text(host), /No agents reported running.*Switch to Full history/);
+  assert.equal(find(host, 'node-id', 'completed'), undefined);
+  controller.destroy();
+});
+
+test('network provenance includes orchestration starts without attributing them only to hooks', () => {
+  const { host } = fixture();
+  const observed = structuredClone(snapshot);
+  observed.status.active_agents[0].start_source = 'orchestration';
+  observed.status.last_update = '2026-09-25T00:03:00Z';
+  const controller = api.create(host);
+  controller.update(observed, catalog);
+  assert.match(text(host), /Runtime records report 1 as running.*No live liveness check.*2026-09-25T00:03:00Z/);
+  assert.doesNotMatch(text(host), /hooks report/i);
   controller.destroy();
 });
 
@@ -407,10 +456,10 @@ test('named mode, filter, and task controls apply Active and Failures views', ()
   filter.value = 'active'; filter.dispatch('change');
   assert.equal(controller.getState().filter, 'active');
   assert.equal(find(host, 'node-id', 'worker-b').getAttribute('data-emphasis'), 'true');
-  assert.equal(find(host, 'node-id', 'worker-a').getAttribute('data-emphasis'), 'false');
+  assert.equal(find(host, 'node-id', 'worker-a'), undefined);
   filter.value = 'failures'; filter.dispatch('change');
   assert.equal(controller.getState().filter, 'failures');
-  assert.equal(find(host, 'node-id', 'verifier-1').getAttribute('data-emphasis'), 'false');
+  assert.equal(find(host, 'node-id', 'verifier-1'), undefined);
   mode.value = 'history'; mode.dispatch('change');
   assert.equal(controller.getState().mode, 'history');
   assert.equal(find(host, 'node-id', 'verifier-1').getAttribute('data-emphasis'), 'true');
@@ -457,7 +506,7 @@ test('network controls and details use the supplied translator', () => {
     'network.summary': '요약'
   };
   const translate = (key, values = {}) => String(translations[key] || key).replace(/\{([^}]+)\}/g, (_match, name) => values[name]);
-  const controller = api.create(host, { translate });
+  const controller = historyController(host, { translate });
   controller.update(snapshot, catalog);
 
   assert.equal(find(host, 'network-mode', '').getAttribute('aria-label'), '네트워크 모드');
@@ -473,7 +522,7 @@ test('network controls and details use the supplied translator', () => {
 
 test('changing the translator preserves network selection, filters, and zoom', () => {
   const { host } = fixture();
-  const controller = api.create(host);
+  const controller = historyController(host);
   controller.update(snapshot, catalog);
   find(host, 'node-id', 'worker-a').click();
   const filter = find(host, 'network-filter', '');

@@ -136,12 +136,26 @@ test('reported-running and age-bucket copy never implies a live liveness check i
   assert.match(preferences.t('dashboard.startedOutside'), /liveness unconfirmed/i);
   assert.match(preferences.t('dashboard.agentCount', { reported: 4, recent: 2, outside: 2 }), /Reported running: 4.*past hour: 2.*unknown start: 2.*No live liveness check/i);
   assert.match(preferences.t('network.reportedRunning'), /liveness unconfirmed/i);
-  assert.match(preferences.t('network.observed', { agents: 4, time: '2026-09-25T12:00:00Z' }), /No live liveness check.*2026-09-25T12:00:00Z/i);
+  assert.match(preferences.t('network.observed', { agents: 4, time: '2026-09-25T12:00:00Z' }), /Runtime records report 4 as running.*No live liveness check.*2026-09-25T12:00:00Z/i);
   preferences.setLocale('ko');
   assert.match(preferences.t('dashboard.reportedRunning'), /실행 중으로 기록됨/);
   assert.match(preferences.t('dashboard.startedRecent'), /생존 여부 미확인/);
   assert.match(preferences.t('dashboard.startedOutside'), /생존 여부 미확인/);
   assert.match(preferences.t('dashboard.agentCount', { reported: 4, recent: 2, outside: 2 }), /4명.*2명.*2명.*실시간 생존 확인 기능은 없습니다/);
   assert.match(preferences.t('network.reportedRunning'), /생존 여부 미확인/);
-  assert.match(preferences.t('network.observed', { agents: 4, time: '2026-09-25T12:00:00Z' }), /생존 여부 미확인.*2026-09-25T12:00:00Z/);
+  assert.match(preferences.t('network.observed', { agents: 4, time: '2026-09-25T12:00:00Z' }), /런타임 기록.*4명.*생존 여부 미확인.*2026-09-25T12:00:00Z/);
+});
+
+test('dashboard heading and network guide describe reported records, not confirmed runners', () => {
+  const { api, document, storage } = fixture();
+  const preferences = api.create(document, { storage });
+  assert.equal(preferences.t('section.activeAgents'), 'Reported Running Agents');
+  assert.match(preferences.t('guide.networkBody'), /Reported Running Agents.*reported-running records.*Reported running only\/Full history/s);
+  assert.doesNotMatch(preferences.t('guide.networkBody'), /current runners|Live\/History/i);
+  assert.equal(preferences.t('dashboard.futureStart'), 'future start');
+  preferences.setLocale('ko');
+  assert.equal(preferences.t('section.activeAgents'), '실행 중 기록 에이전트');
+  assert.match(preferences.t('guide.networkBody'), /실행 중 기록 에이전트.*생존 여부.*실행 중 기록만\/전체 기록/s);
+  assert.doesNotMatch(preferences.t('guide.networkBody'), /현재 실행자|실시간\/기록/);
+  assert.equal(preferences.t('dashboard.futureStart'), '미래 시작 시각');
 });

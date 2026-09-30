@@ -59,7 +59,9 @@ async function dashboard() {
 
 function elapsed(at, observedAt) {
   const parsed = Date.parse(at || '');
-  return Number.isFinite(parsed) ? `${Math.max(0, Math.floor((observedAt - parsed) / 60000))}m` : t('common.unknown');
+  if (!Number.isFinite(parsed)) return t('common.unknown');
+  if (parsed > observedAt) return t('dashboard.futureStart');
+  return `${Math.floor((observedAt - parsed) / 60000)}m`;
 }
 
 function startedWithinPastHour(agent, observedAt) {

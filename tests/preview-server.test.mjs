@@ -69,7 +69,7 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   const taskSpecsResponse = await fetch(`http://127.0.0.1:${port}/runtime/task-specs`), taskSpecs = await taskSpecsResponse.json();
   const traversal = await fetch(`http://127.0.0.1:${port}/preview/%2e%2e/secret.txt`);
   assert.match(preferencesSource, /Signal Timeline/);
-  assert.match(preferencesSource, /Active Agents/);
+  assert.match(preferencesSource, /Reported Running Agents/);
   assert.match(dashboardSource, /id="agent-network"/);
   assert.match(html, /<script src="\/preview\/preferences\.js"><\/script>\s*<script src="\/preview\/agent-network\.js"><\/script>\s*<script type="module" src="\/preview\/dashboard\.js"><\/script>/);
   assert.match(html, /Preview Lab/);
@@ -196,6 +196,7 @@ test('dashboard buckets reported agents by start age including exact hour, missi
     location: { hash: '#dashboard' }, addEventListener() {}, setInterval() {},
     fetch: async url => ({ json: async () => url === '/runtime/catalog' ? { agents: [], skills: [] } : snapshot }),
     PreviewPreferences: { create: () => ({ locale: 'en', t: (key, values = {}) => ({
+      'dashboard.futureStart': 'future start',
       'dashboard.reportedRunning': 'reported running', 'dashboard.startedRecent': 'started/resumed within past hour; liveness unconfirmed',
       'dashboard.startedOutside': 'outside past hour or unknown start; liveness unconfirmed',
       'dashboard.agentCount': `Reported running: ${values.reported}; recent: ${values.recent}; outside: ${values.outside}`
@@ -208,7 +209,8 @@ test('dashboard buckets reported agents by start age including exact hour, missi
   assert.match(items[0], /recent.*30m.*reported running.*within past hour/);
   assert.match(items[1], /boundary.*60m.*reported running.*within past hour/);
   assert.match(items[2], /missing.*unknown.*outside past hour/);
-  assert.match(items[3], /future.*outside past hour/);
+  assert.match(items[3], /future.*future start.*outside past hour/);
+  assert.doesNotMatch(items[3], /0m/);
   assert.match(nodes.get('#agents').children[1].textContent, /Reported running: 4; recent: 2; outside: 2/);
   assert.match(nodes.get('#signals').children[0].children[0].textContent, /^2026-09-25T11:59:00Z — main → recent/);
 });

@@ -146,8 +146,8 @@
       'network.fit': 'Fit', 'network.reset': 'Reset', 'network.graphLabel': 'Agent Signal Network',
       'network.empty': 'Select an agent or signal. {agents} agents, {signals} signals.',
       'network.noData': 'No agents or signals in this snapshot.',
-      'network.noActive': 'No agents reported running in this snapshot. Retained history is still shown.',
-      'network.observed': 'Harness hooks report {agents} running agents. No live liveness check; last snapshot update: {time}. This is not the full native agent list.',
+      'network.noActive': 'No agents reported running in this snapshot. Switch to Full history for retained records.',
+      'network.observed': 'Runtime records report {agents} as running. No live liveness check; last snapshot update: {time}. This is not the full native agent list.',
       'network.reportedRunning': 'reported running; liveness unconfirmed',
       'network.noTaskData': 'No linked network data for the selected task.',
       'network.historyNote': 'History includes only agents and signals retained in this runtime.',
@@ -224,6 +224,14 @@
     let snapshot = {}, catalog = {}, model = { nodes: [], edges: [], tasks: [] }, positions = [], drag = null, destroyed = false, focusAfterDraw = false;
     const bounds = { width: 800, height: 440 };
     const clampScale = value => Math.max(0.35, Math.min(3, value));
+    function visibleModel() {
+      if (state.mode !== 'live') return model;
+      const activeIds = Array.isArray(snapshot?.status?.active_agents)
+        ? new Set(snapshot.status.active_agents.filter(item => item?.id).map(item => item.id)) : null;
+      const nodes = model.nodes.filter(node => active(node) && (!activeIds || activeIds.has(node.id)));
+      const ids = new Set(nodes.map(node => node.id));
+      return { nodes, edges: model.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to)), tasks: model.tasks };
+    }
     function scaleAround(factor, x = bounds.width / 2, y = bounds.height / 2) {
       const next = clampScale(state.transform.scale * factor);
       const ratio = next / state.transform.scale;
@@ -234,14 +242,16 @@
     }
     function selectedRecord() {
       if (!state.selection) return null;
-      return state.selection.type === 'node' ? model.nodes.find(node => node.id === state.selection.id)
-        : model.edges.find(edge => edge.key === state.selection.key);
+      const visible = visibleModel();
+      return state.selection.type === 'node' ? visible.nodes.find(node => node.id === state.selection.id)
+        : visible.edges.find(edge => edge.key === state.selection.key);
     }
     function drawDetail() {
       detail.replaceChildren();
+      const visible = visibleModel();
       const record = selectedRecord();
       if (!record) {
-        detail.append(element(document, 'p', '', t('network.empty', { agents: model.nodes.length, signals: model.edges.length })));
+        detail.append(element(document, 'p', '', t('network.empty', { agents: visible.nodes.length, signals: visible.edges.length })));
         return;
       }
       if (state.selection.type === 'node') {
@@ -249,8 +259,8 @@
           [t('network.agent'), record.id], [t('network.role'), record.role], [t('network.status'), shownStatus(record.status)], [t('network.model'), record.catalog?.model],
           [t('network.reasoning'), record.catalog?.reasoning], [t('network.currentLastTask'), record.current_task], [t('network.started'), displayTime(record.started_at)],
           [t('network.finished'), displayTime(record.stopped_at)], [t('network.claims'), record.claims.join(', ')],
-          [t('network.inbound'), model.edges.filter(edge => edge.to === record.id).length],
-          [t('network.outbound'), model.edges.filter(edge => edge.from === record.id).length]
+          [t('network.inbound'), visible.edges.filter(edge => edge.to === record.id).length],
+          [t('network.outbound'), visible.edges.filter(edge => edge.from === record.id).length]
         ]) if (value !== undefined && value !== null && value !== '') detail.append(detailRow(document, label, value));
         if (record.started_at && record.stopped_at) {
           const elapsed = Date.parse(record.stopped_at) - Date.parse(record.started_at);
@@ -277,6 +287,7 @@
     }
     function draw() {
       if (destroyed) return;
+      const visibleModelNow = visibleModel();
       const focused = graph.contains?.(document.activeElement) ? document.activeElement : null;
       const focusedNodeId = focused?.getAttribute('data-node-id');
       const focusedEdgeKey = focused?.getAttribute('data-edge-key');
@@ -291,7 +302,7 @@
       marker.append(svgElement(document, 'path', { d: 'M 0 0 L 8 4 L 0 8 z', fill: '#8caab8' }));
       defs.append(marker); graph.append(defs);
       const counts = new Map();
-      for (const edge of model.edges) {
+      for (const edge of visibleModelNow.edges) {
         const path = pathFor(edge, counts);
         const visible = svgElement(document, 'path', { d: path, class: 'asn-edge', 'marker-end': 'url(#asn-arrow)', 'data-emphasis': edge.emphasized, 'data-failure': failed(edge.kind) || failed(edge.status), 'data-kind': string(edge.kind) });
         const hit = data(svgElement(document, 'path', { d: path, class: 'asn-hit', 'aria-label': t('network.edgeLabel', { from: string(edge.from), to: string(edge.to), kind: string(edge.kind) }), 'data-edge-key': edge.key }), 'edge-index', edge.index);
@@ -302,7 +313,7 @@
         graph.append(visible, hit);
       }
       for (const position of positions) {
-        const node = model.nodes.find(item => item.id === position.id);
+        const node = visibleModelNow.nodes.find(item => item.id === position.id);
         const group = data(svgElement(document, 'g', { class: state.selection?.type === 'node' && state.selection.id === node.id ? 'asn-node asn-selected' : 'asn-node', 'data-status': node.status === 'active' ? 'reported-running' : node.status, 'data-emphasis': node.emphasized, 'aria-label': `${node.id}, ${shownStatus(node.status)}` }), 'node-id', node.id);
         group.append(svgElement(document, 'circle', { cx: position.x, cy: position.y, r: 18 }));
         const label = svgElement(document, 'text', { x: position.x, y: position.y + 34 }); label.textContent = node.id; group.append(label);
@@ -312,8 +323,8 @@
         graph.append(group);
       }
       note.textContent = model.nodes.length === 0 && model.edges.length === 0 ? t('network.noData')
-        : state.mode === 'live' && !model.nodes.some(active) ? t('network.noActive')
-          : state.filter === 'task' && state.taskId && !model.nodes.some(node => node.matchesFilter) && !model.edges.some(edge => edge.matchesFilter)
+        : state.mode === 'live' && !visibleModelNow.nodes.length ? t('network.noActive')
+          : state.filter === 'task' && state.taskId && !visibleModelNow.nodes.some(node => node.matchesFilter) && !visibleModelNow.edges.some(edge => edge.matchesFilter)
             ? t('network.noTaskData')
             : t('network.historyNote');
       provenance.textContent = t('network.observed', {
@@ -335,7 +346,7 @@
       for (const item of tasks) { const option = element(document, 'option', '', item.title || item.id); option.value = item.id; task.append(option); }
       task.value = state.taskId;
       model = buildModel(snapshot, catalog, state);
-      positions = layout(model, bounds.width, bounds.height);
+      positions = layout(visibleModel(), bounds.width, bounds.height);
       if (previousEdge && !previousEdge.id) {
         const signature = previousEdge.legacySignature;
         const oldCount = previousEdges.filter(edge => edge.legacySignature === signature).length;
@@ -356,7 +367,12 @@
       if (state.selection && !selectedRecord()) state.selection = null;
       draw();
     }
-    const rebuild = () => { model = buildModel(snapshot, catalog, state); draw(); };
+    const rebuild = () => {
+      model = buildModel(snapshot, catalog, state);
+      positions = layout(visibleModel(), bounds.width, bounds.height);
+      if (state.selection && !selectedRecord()) state.selection = null;
+      draw();
+    };
     function setTranslate(nextTranslate) {
       translate = nextTranslate;
       mode?.setAttribute('aria-label', t('network.modeLabel'));
@@ -383,7 +399,7 @@
       state.transform = { scale, x: bounds.width / 2 - ((left + right) / 2) * scale, y: bounds.height / 2 - ((top + bottom) / 2) * scale };
       draw();
     });
-    actionButtons.get('reset').addEventListener('click', () => { positions = layout(model, bounds.width, bounds.height); state.transform = { x: 0, y: 0, scale: 1 }; draw(); });
+    actionButtons.get('reset').addEventListener('click', () => { positions = layout(visibleModel(), bounds.width, bounds.height); state.transform = { x: 0, y: 0, scale: 1 }; draw(); });
     const wheel = event => { event.preventDefault(); const rect = svg.getBoundingClientRect(); scaleAround(event.deltaY < 0 ? 1.1 : 1 / 1.1, (event.clientX - rect.left) * bounds.width / rect.width, (event.clientY - rect.top) * bounds.height / rect.height); };
     const pointerDown = event => {
       if (event.target !== svg) return;
