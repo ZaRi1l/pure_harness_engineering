@@ -10,6 +10,7 @@ import { RuntimeStore, findRoot } from './runtime-state.mjs';
 import { discoverCatalog } from './catalog.mjs';
 import { hookDispatchDiagnostic, inspectRuntime } from './watchdog.mjs';
 import { renderStaticPreview } from './generate-preview.mjs';
+import { inspectProjectBinding } from './project-diagnostic.mjs';
 
 const HOOK_EVENTS = ['SessionStart', 'SessionEnd', 'SubagentStart', 'SubagentStop', 'Stop'];
 const MODEL = /^gpt-6-(sol|luna)$/;
@@ -54,8 +55,12 @@ function validateCodex(root, text, executableOverride, spawnCodex = spawnSync) {
   return [false, `Codex config rejected: ${(result.stderr || result.stdout || 'unknown error').slice(0, 500)}`];
 }
 
-export async function checkRepository(root, { exerciseRuntime = true, exerciseHttp = true, codexExecutable, spawnCodex } = {}) {
+export async function checkRepository(root, { exerciseRuntime = true, exerciseHttp = true, codexExecutable, spawnCodex, projectBinding } = {}) {
   root = path.resolve(root); const report = reportObject(), configPath = path.join(root, '.codex', 'config.toml'), hooksPath = path.join(root, '.codex', 'hooks.json');
+  if (projectBinding !== undefined) {
+    const diagnostic = await inspectProjectBinding(projectBinding);
+    report.require(diagnostic.ok, `Project ${diagnostic.projectId} binding is valid`, `project binding ${diagnostic.code}: ${diagnostic.message}`);
+  }
   trackedManifestChecks(root, report);
   report.require(Number(process.versions.node.split('.')[0]) >= 20, 'Node.js 20+ is available', 'Node.js 20+ is required');
   report.require(existsSync(configPath), 'Codex config exists', 'missing .codex/config.toml'); report.require(existsSync(hooksPath), 'Hook config exists', 'missing .codex/hooks.json');
