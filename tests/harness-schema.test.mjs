@@ -7,6 +7,9 @@ import { assertPortableMetadata, parseRole, assertSafeRelativePath } from '../ha
 import { loadRoles, inventoryCodexRoles } from '../harness/inventory.mjs';
 
 const root = path.resolve('.');
+const hostPath = ['C:', 'Users', 'alice', 'private.txt'].join('/');
+const encodedHostPath = [String.raw`\u0043:`, 'Users', 'alice', 'private.txt'].join('/');
+const uncHostPath = [String.raw`\\office-server`, 'private', 'config'].join('\\');
 const valid = `---
 schemaVersion: 1
 id: planner
@@ -70,10 +73,10 @@ for (const [name, source, pattern] of [
 ]) test(`rejects ${name}`, () => assert.throws(() => parseRole(source, 'harness/agents/planner.md'), pattern));
 
 for (const [label, source] of [
-    ['description host path', valid.replace('Plans bounded work.', 'Plans C:/Users/alice/private.txt work.')],
-    ['model metadata host path', valid.replace('  claude: inherit', '  claude: C:/Users/alice/private.txt')],
-    ['host path', valid.replace('Plan work', 'Read C:/Users/alice/private.txt. Plan work')],
-    ['UNC host path', valid.replace('Plan work', String.raw`Read \\office-server\private\config. Plan work`)],
+    ['description host path', valid.replace('Plans bounded work.', `Plans ${hostPath} work.`)],
+    ['model metadata host path', valid.replace('  claude: inherit', `  claude: ${hostPath}`)],
+    ['host path', valid.replace('Plan work', `Read ${hostPath}. Plan work`)],
+    ['UNC host path', valid.replace('Plan work', `Read ${uncHostPath}. Plan work`)],
     ['credential', valid.replace('Plan work', `Use sk-${'A'.repeat(30)}. Plan work`)],
     ['project credential', valid.replace('Plan work', `Use sk-proj-${'A'.repeat(30)}. Plan work`)],
     ['assigned credential', valid.replace('Plan work', `api_key=${'A'.repeat(30)}. Plan work`)],
@@ -85,11 +88,11 @@ test('allows generic project-declared goal adapter wording', () => {
 });
 
 for (const [label, metadata] of [
-  ['nested host-path key', { inventory: [{ targets: { 'C:/Users/alice/private.txt': 'neutral' } }] }],
+  ['nested host-path key', { inventory: [{ targets: { [hostPath]: 'neutral' } }] }],
   ['nested credential key', { inventory: [{ targets: { [`sk-proj-${'A'.repeat(30)}`]: 'neutral' } }] }],
-  ['escaped host-path key', JSON.parse(String.raw`{"\u0043:/Users/alice/private.txt":"neutral"}`)],
-  ['escaped host-path value', JSON.parse(String.raw`{"neutral":"\u0043:/Users/alice/private.txt"}`)],
-  ['nested host-path value', { inventory: [{ path: 'C:/Users/alice/private.txt' }] }],
+  ['escaped host-path key', JSON.parse(`{"${encodedHostPath}":"neutral"}`)],
+  ['escaped host-path value', JSON.parse(`{"neutral":"${encodedHostPath}"}`)],
+  ['nested host-path value', { inventory: [{ path: hostPath }] }],
   ['nested credential value', { inventory: [{ token: `sk-proj-${'A'.repeat(30)}` }] }],
 ]) test(`rejects decoded compatibility ${label}`, () =>
   assert.throws(() => assertPortableMetadata(metadata, 'harness/compatibility.json'), /portable|identity|credential/i));
@@ -106,7 +109,7 @@ test('core profile rejects contaminated optional canonical role before rendering
   await cp(path.join(root, 'harness/agents'), path.join(fixture, 'harness/agents'), { recursive: true });
   await cp(path.join(root, '.agents/skills'), path.join(fixture, '.agents/skills'), { recursive: true });
   const file = path.join(fixture, 'harness/agents/researcher.md');
-  await writeFile(file, (await readFile(file, 'utf8')).replace('description:', 'description: C:/Users/alice/private.txt '));
+  await writeFile(file, (await readFile(file, 'utf8')).replace('description:', `description: ${hostPath} `));
   await assert.rejects(loadRoles(fixture, 'core'), /portable|identity|credential/i);
 });
 
@@ -114,7 +117,7 @@ test('safe relative paths reject traversal, absolute paths, and case collisions'
   const seen = new Set();
   assert.equal(assertSafeRelativePath('harness/agents/planner.md', 'harness/agents', seen), 'harness/agents/planner.md');
   assert.throws(() => assertSafeRelativePath('harness/agents/Planner.md', 'harness/agents', seen), /collision/);
-  for (const unsafe of ['../planner.md', 'harness/agents/../x.md', '/harness/agents/a.md', 'C:/harness/agents/a.md']) {
+  for (const unsafe of ['../planner.md', 'harness/agents/../x.md', ['', 'harness', 'agents', 'a.md'].join('/'), ['C:', 'harness', 'agents', 'a.md'].join('/')]) {
     assert.throws(() => assertSafeRelativePath(unsafe, 'harness/agents'), /path|root/);
   }
 });

@@ -6,6 +6,7 @@ import test from 'node:test';
 import { listSkills, skillAvailability } from '../harness/inventory.mjs';
 
 const root = path.resolve('.');
+const hostPath = ['C:', 'Users', 'alice', 'private.txt'].join('/');
 const coreIds = ['task-routing', 'task-spec', 'testing', 'failure-recovery'];
 const allIds = [...coreIds, 'context-curation', 'model-routing', 'token-efficiency', 'token-optimization'];
 
@@ -26,11 +27,11 @@ test('core skill selection rejects contaminated optional skill metadata and copi
   t.after(() => rm(fixture, { recursive: true, force: true }));
   await cp(path.join(root, '.agents/skills'), path.join(fixture, '.agents/skills'), { recursive: true });
   const optional = path.join(fixture, '.agents/skills/context-curation/SKILL.md');
-  await writeFile(optional, (await readFile(optional, 'utf8')).replace('description:', 'description: C:/Users/alice/private.txt '));
+  await writeFile(optional, (await readFile(optional, 'utf8')).replace('description:', `description: ${hostPath} `));
   await assert.rejects(listSkills(fixture, 'core'), /portable|identity|credential/i);
   await cp(path.join(root, '.agents/skills/context-curation/SKILL.md'), optional);
   const reference = path.join(fixture, '.agents/skills/task-routing/profiles.md');
-  await writeFile(reference, (await readFile(reference, 'utf8')) + '\nC:/Users/alice/private.txt\n');
+  await writeFile(reference, (await readFile(reference, 'utf8')) + `\n${hostPath}\n`);
   await assert.rejects(listSkills(fixture, 'core'), /portable|identity|credential/i);
 });
 

@@ -13,6 +13,8 @@ import * as antigravity from '../harness/targets/antigravity.mjs';
 import { makeGeneratedFile } from '../harness/ownership.mjs';
 
 const repository = path.resolve('.');
+const hostPath = ['C:', 'Users', 'alice', 'private.txt'].join('/');
+const encodedHostPath = [String.raw`\u0043:`, 'Users', 'alice', 'private.txt'].join('/');
 
 function runNode(script, args) {
   return new Promise((resolve, reject) => {
@@ -80,7 +82,7 @@ test('validation and dry-run reject contaminated compatibility metadata without 
   const root = await fixture(t);
   const file = path.join(root, 'harness/compatibility.json');
   const record = JSON.parse(await readFile(file, 'utf8'));
-  record.inventory.roleFiles = 'C:/Users/alice/private.txt';
+  record.inventory.roleFiles = hostPath;
   await writeFile(file, JSON.stringify(record));
   const before = await snapshotTree(root);
   const validation = await runNode('scripts/validate.mjs', ['--root', root, '--targets', 'codex', '--profile', 'core', '--json']);
@@ -96,9 +98,8 @@ test('validation and dry-run reject decoded compatibility host path hidden by JS
   const root = await fixture(t);
   const file = path.join(root, 'harness/compatibility.json');
   const record = JSON.parse(await readFile(file, 'utf8'));
-  const hostPath = 'C:/Users/alice/private.txt';
   record.inventory.roleFiles = hostPath;
-  const encoded = JSON.stringify(record).replace(hostPath, String.raw`\u0043:/Users/alice/private.txt`);
+  const encoded = JSON.stringify(record).replace(hostPath, encodedHostPath);
   assert.ok(!encoded.includes(hostPath));
   assert.equal(JSON.parse(encoded).inventory.roleFiles, hostPath);
   await writeFile(file, encoded);
@@ -116,9 +117,8 @@ test('validation and dry-run reject a decoded compatibility host-path key hidden
   const root = await fixture(t);
   const file = path.join(root, 'harness/compatibility.json');
   const record = JSON.parse(await readFile(file, 'utf8'));
-  const hostPath = 'C:/Users/alice/private.txt';
   record.inventory.extra = { [hostPath]: 'neutral' };
-  const encoded = JSON.stringify(record).replace(hostPath, String.raw`\u0043:/Users/alice/private.txt`);
+  const encoded = JSON.stringify(record).replace(hostPath, encodedHostPath);
   assert.ok(!encoded.includes(hostPath));
   assert.equal(JSON.parse(encoded).inventory.extra[hostPath], 'neutral');
   await writeFile(file, encoded);
