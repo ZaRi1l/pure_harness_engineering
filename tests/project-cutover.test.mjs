@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, rmdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -104,6 +104,26 @@ test('cutover detects a nested runtime entry added after initial inventory', asy
   const { options } = await disposableFixture(t);
   await mkdir(path.join(options.legacyRuntimeRoot, 'nested'));
   await writeFile(path.join(options.legacyRuntimeRoot, 'nested', 'new.json'), '{}\n');
+  const report = await checkCutover(options);
+  assert.equal(report.ok, false);
+  assert.match(report.failures.join(' '), /inventory.*changed|inventory.*unreadable/i);
+});
+
+test('cutover detects an empty directory added after initial inventory', async t => {
+  const { options } = await disposableFixture(t);
+  await mkdir(path.join(options.legacyRuntimeRoot, 'empty'));
+  const report = await checkCutover(options);
+  assert.equal(report.ok, false);
+  assert.match(report.failures.join(' '), /inventory.*changed|inventory.*unreadable/i);
+});
+
+test('cutover detects an empty directory removed after initial inventory', async t => {
+  const { options } = await disposableFixture(t);
+  const empty = path.join(options.legacyRuntimeRoot, 'empty');
+  await mkdir(empty);
+  options.legacyInventory = await inventoryRuntime(options.legacyRuntimeRoot);
+  assert.ok(options.legacyInventory.some(entry => entry.path === 'empty'));
+  await rmdir(empty);
   const report = await checkCutover(options);
   assert.equal(report.ok, false);
   assert.match(report.failures.join(' '), /inventory.*changed|inventory.*unreadable/i);

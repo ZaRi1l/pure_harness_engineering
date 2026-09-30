@@ -19,8 +19,10 @@ export async function inventoryRuntime(root) {
       const info = await lstat(file);
       if (info.isSymbolicLink()) throw new Error('legacy runtime contains a link');
       const item = relative ? `${relative}/${name}` : name;
-      if (info.isDirectory()) await visit(file, item);
-      else if (info.isFile()) {
+      if (info.isDirectory()) {
+        entries.push({ path: item, type: 'directory' });
+        await visit(file, item);
+      } else if (info.isFile()) {
         const bytes = await readFile(file);
         entries.push({ path: item, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
       } else throw new Error('legacy runtime contains an unsupported entry');
