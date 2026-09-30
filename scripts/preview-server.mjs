@@ -3,7 +3,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { RuntimeStore, contextFromArgs } from './runtime-state.mjs';
 import { isValidatedProjectContext } from './project-context.mjs';
 import { discoverCatalog, discoverTaskSpecs } from './catalog.mjs';
@@ -11,6 +11,7 @@ import { getGoalAdapter, UNSUPPORTED } from './goal-adapters.mjs';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
 const STATIC_EXTENSIONS = new Set(['.html', '.js', '.css', '.svg']);
+const MODULE_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const within = (root, file) => file === root || file.startsWith(`${root}${path.sep}`);
 
 async function registeredRoutes(context, routes) {
@@ -45,7 +46,7 @@ export async function createPreviewServer(context, host = '127.0.0.1', options =
   const root = legacy ? context.root : context?.harnessRoot;
   if (!root) throw new Error('validated project context required');
   if (host !== '127.0.0.1') throw new Error('preview must bind to localhost');
-  const assetRoot = options.assetRoot === undefined ? root : options.assetRoot;
+  const assetRoot = options.assetRoot === undefined ? (isValidatedProjectContext(context) ? MODULE_ROOT : root) : options.assetRoot;
   if (typeof assetRoot !== 'string' || !path.isAbsolute(assetRoot)) throw new Error('assetRoot must be an absolute path');
   const previewRoot = path.resolve(assetRoot, 'preview'), previewReal = await realpath(previewRoot);
   const routes = await registeredRoutes(context, options.projectRoutes || []);

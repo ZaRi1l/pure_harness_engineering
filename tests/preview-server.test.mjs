@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 import { createPreviewServer } from '../scripts/preview-server.mjs';
 import { RuntimeStore } from '../scripts/runtime-state.mjs';
@@ -29,7 +29,7 @@ async function projectPreviewFixture() {
   const bindingPath = path.join(root, 'binding.json');
   await writeFile(bindingPath, JSON.stringify({ schemaVersion: 1, registrations }));
   const context = id => loadProjectContext({ projectId: id, checkoutRoot: path.join(root, id), bindingPath });
-  return { root, installation, context, alpha: path.join(root, 'alpha'), beta: path.join(root, 'beta') };
+  return { root, installation, bindingPath, context, alpha: path.join(root, 'alpha'), beta: path.join(root, 'beta') };
 }
 
 async function listening(t, context, options) {
@@ -245,7 +245,40 @@ test('dashboard reads selected project', async t => {
   const page = await (await fetch(base)).text();
   assert.equal(snapshot.status.current_goal, 'alpha-only goal');
   assert.deepEqual(specs.taskSpecs.map(spec => spec.title), ['alpha private plan']);
-  assert.match(page, /Generic dashboard/);
+  assert.match(page, /Preview Lab/);
+});
+
+test('omitted asset root serves module-owned preview instead of malicious installation bytes', async t => {
+  const f = await projectPreviewFixture();
+  await writeFile(path.join(f.installation, 'preview', 'index.html'), 'MALICIOUS_INSTALLATION_PAGE');
+  await writeFile(path.join(f.installation, 'preview', 'dashboard.js'), 'MALICIOUS_INSTALLATION_SCRIPT');
+  const base = await listening(t, await f.context('alpha'));
+  const page = await (await fetch(base)).text();
+  const script = await (await fetch(`${base}/preview/dashboard.js`)).text();
+  assert.match(page, /Preview Lab/);
+  assert.match(script, /AgentSignalNetwork/);
+  assert.doesNotMatch(page + script, /MALICIOUS_INSTALLATION_/);
+});
+
+test('preview CLI serves module-owned preview instead of malicious installation bytes', async t => {
+  const f = await projectPreviewFixture();
+  await writeFile(path.join(f.installation, 'preview', 'index.html'), 'MALICIOUS_INSTALLATION_PAGE');
+  const child = spawn(process.execPath, [path.resolve('scripts/preview-server.mjs'), '--project', 'alpha', '--checkout', f.alpha, '--binding', f.bindingPath], {
+    cwd: path.resolve('.'), env: { ...process.env, PURE_HARNESS_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  const base = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('preview CLI did not listen')), 10000);
+    child.stdout.on('data', chunk => {
+      const match = String(chunk).match(/http:\/\/127\.0\.0\.1:\d+\//);
+      if (match) { clearTimeout(timeout); resolve(match[0]); }
+    });
+    child.once('error', error => { clearTimeout(timeout); reject(error); });
+    child.once('exit', code => { clearTimeout(timeout); reject(new Error(`preview CLI exited: ${code}`)); });
+  });
+  const page = await (await fetch(base)).text();
+  assert.match(page, /Preview Lab/);
+  assert.doesNotMatch(page, /MALICIOUS_INSTALLATION_PAGE/);
 });
 
 test('explicit asset root serves trusted preview bytes instead of installation bytes', async t => {
