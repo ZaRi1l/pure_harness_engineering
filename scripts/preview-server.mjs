@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { RuntimeStore, contextFromArgs } from './runtime-state.mjs';
 import { isValidatedProjectContext } from './project-context.mjs';
 import { discoverCatalog, discoverTaskSpecs } from './catalog.mjs';
+import { getGoalAdapter, UNSUPPORTED } from './goal-adapters.mjs';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
 const STATIC_EXTENSIONS = new Set(['.html', '.js', '.css', '.svg']);
@@ -46,11 +47,13 @@ export async function createPreviewServer(context, host = '127.0.0.1', options =
   if (host !== '127.0.0.1') throw new Error('preview must bind to localhost');
   const previewRoot = path.resolve(root, 'preview'), previewReal = await realpath(previewRoot);
   const routes = await registeredRoutes(context, options.projectRoutes || []);
+  const goalAdapter = getGoalAdapter(context, options.goalAdapters);
   const store = legacy ? RuntimeStore.legacyFixture(root, { runtimeDir: options.runtimeDir }) : new RuntimeStore(context);
   await store.initialize();
   return http.createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url, `http://${host}`).pathname);
+      if (goalAdapter !== UNSUPPORTED && await goalAdapter.handleHttp(request, response, { pathname, host })) return;
       if (request.method !== 'GET') { response.writeHead(405, { 'Cache-Control': 'no-store' }); response.end('Method not allowed'); return; }
       const runtime = { '/runtime/snapshot': () => store.readSnapshot(), '/runtime/status': () => store.readStatus(), '/runtime/tasks': () => store.readTasks(), '/runtime/events': async () => ({ events: await store.readEvents() }), '/runtime/catalog': () => discoverCatalog(context), '/runtime/task-specs': () => ({ taskSpecs: discoverTaskSpecs(context) }) };
       if (runtime[pathname]) { response.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' }); response.end(JSON.stringify(await runtime[pathname]())); return; }
