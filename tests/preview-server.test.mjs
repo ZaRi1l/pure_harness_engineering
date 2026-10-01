@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, copyFile, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { execFileSync, spawn } from 'node:child_process';
@@ -504,4 +505,121 @@ test('unregistered GOAL runtime route returns 404', async t => {
     const response = await fetch(base + route);
     assert.equal(response.status, 404, route);
   }
+});
+
+test('validated task HTTP writes stay in the selected project and expose only safe records', async t => {
+  const f = await projectPreviewFixture();
+  const alpha = await f.context('alpha'), beta = await f.context('beta');
+  const base = await listening(t, alpha);
+  const initial = await (await fetch(`${base}/runtime/tasks`)).json();
+  assert.equal(typeof initial.write_token, 'string');
+  assert.ok(initial.write_token.length >= 32);
+  assert.equal((await (await fetch(`${base}/runtime/snapshot`)).text()).includes(initial.write_token), false);
+  const headers = { origin: base, 'content-type': 'application/json', 'x-task-write-token': initial.write_token };
+  const createdResponse = await fetch(`${base}/runtime/tasks`, { method: 'POST', headers, body: JSON.stringify({ title: '  New task  ', status: 'pending', branch: '  feature/a  ' }) });
+  assert.equal(createdResponse.status, 201);
+  const created = await createdResponse.json();
+  assert.match(created.id, /^[A-Za-z0-9_-]+$/);
+  assert.equal(created.title, 'New task');
+  assert.equal(created.branch, 'feature/a');
+  assert.equal(created.status, 'pending');
+  assert.ok(Date.parse(created.created_at));
+  assert.equal(created.created_at, created.updated_at);
+  assert.ok(created.revision);
+  assert.equal(created.owner, undefined);
+  const updatedResponse = await fetch(`${base}/runtime/tasks/${created.id}`, { method: 'PUT', headers, body: JSON.stringify({ title: 'Changed', status: 'in_progress', branch: null, revision: created.revision }) });
+  assert.equal(updatedResponse.status, 200);
+  const updated = await updatedResponse.json();
+  assert.equal(updated.title, 'Changed');
+  assert.equal(updated.branch, null);
+  assert.notEqual(updated.revision, created.revision);
+  assert.equal(updated.created_at, created.created_at);
+  assert.equal((await new RuntimeStore(beta).readTasks()).tasks.length, 0);
+  const visible = await (await fetch(`${base}/runtime/tasks`)).json();
+  assert.equal(visible.tasks[0].id, created.id);
+  assert.equal(visible.tasks[0].revision, updated.revision);
+  assert.equal(visible.project_id, 'alpha');
+});
+
+test('task HTTP rejects invalid writes without touching task document bytes', async t => {
+  const f = await projectPreviewFixture();
+  const context = await f.context('alpha');
+  const base = await listening(t, context);
+  const token = (await (await fetch(`${base}/runtime/tasks`)).json()).write_token;
+  const headers = { origin: base, 'content-type': 'application/json', 'x-task-write-token': token };
+  const pathToTasks = path.join(context.paths.runtime, 'tasks.json');
+  const original = await readFile(pathToTasks);
+  const valid = { title: 'Task', status: 'pending', branch: null };
+  for (const body of [
+    '{', '[]', JSON.stringify({ ...valid, id: 'client' }), JSON.stringify({ ...valid, owner: 'client' }),
+    JSON.stringify({ ...valid, created_at: 'now' }), JSON.stringify({ ...valid, revision: 'client' }),
+    JSON.stringify({ ...valid, status: 'unknown' }), JSON.stringify({ ...valid, branch: '' }),
+    JSON.stringify({ ...valid, branch: 'a\n' }), JSON.stringify({ ...valid, title: '' }),
+    JSON.stringify({ title: 'Partial', status: 'pending' })
+  ]) {
+    const response = await fetch(`${base}/runtime/tasks`, { method: 'POST', headers, body });
+    assert.equal(response.status, 400, body);
+    assert.deepEqual(await readFile(pathToTasks), original, body);
+  }
+  const oversized = await fetch(`${base}/runtime/tasks`, { method: 'POST', headers, body: ' '.repeat(16 * 1024 + 1) });
+  assert.equal(oversized.status, 413);
+  assert.deepEqual(await readFile(pathToTasks), original);
+  for (const url of ['/runtime/tasks/not%20valid', '/runtime/tasks/%2Fetc', '/runtime/tasks/%ZZ']) {
+    const response = await fetch(base + url, { method: 'PUT', headers, body: JSON.stringify({ ...valid, revision: 'old' }) });
+    assert.equal(response.status, 400, url);
+  }
+  assert.equal((await fetch(`${base}/runtime/tasks/missing`, { method: 'PUT', headers, body: JSON.stringify({ ...valid, revision: 'old' }) })).status, 404);
+  assert.deepEqual(await readFile(pathToTasks), original);
+});
+
+test('task HTTP enforces origin, host, token, type, and method gates', async t => {
+  const f = await projectPreviewFixture();
+  const context = await f.context('alpha');
+  const base = await listening(t, context);
+  const token = (await (await fetch(`${base}/runtime/tasks`)).json()).write_token;
+  const body = JSON.stringify({ title: 'Task', status: 'pending', branch: null });
+  const good = { origin: base, 'content-type': 'application/json', 'x-task-write-token': token };
+  const cases = [
+    [{ ...good, origin: 'http://127.0.0.1:1' }, 403],
+    [{ ...good, 'x-task-write-token': 'wrong' }, 403], [{ ...good, 'x-task-write-token': undefined }, 403],
+    [{ ...good, 'content-type': 'text/plain' }, 400], [{ ...good, 'content-encoding': 'gzip' }, 400]
+  ];
+  for (const [index, [headers, expected]] of cases.entries()) assert.equal((await fetch(`${base}/runtime/tasks`, { method: 'POST', headers, body })).status, expected, `gate case ${index}`);
+  const wrongHostStatus = await new Promise((resolve, reject) => {
+    const url = new URL(`${base}/runtime/tasks`);
+    const request = http.request(url, { method: 'POST', headers: { ...good, host: 'localhost:9999' } }, response => { response.resume(); resolve(response.statusCode); });
+    request.on('error', reject);
+    request.end(body);
+  });
+  assert.equal(wrongHostStatus, 403);
+  assert.equal((await fetch(`${base}/runtime/tasks`, { method: 'PUT', headers: good, body })).status, 405);
+  assert.equal((await fetch(`${base}/runtime/tasks/missing`, { method: 'POST', headers: good, body })).status, 405);
+  assert.equal((await fetch(`${base}/preview/dashboard.js`, { method: 'POST', headers: good, body })).status, 405);
+  const legacyRoot = await mkdtemp(path.join(tmpdir(), 'pure-preview-readonly-'));
+  await mkdir(path.join(legacyRoot, 'preview'));
+  await writeFile(path.join(legacyRoot, 'preview', 'index.html'), 'Legacy');
+  const legacy = await listening(t, legacyCatalogFixture(legacyRoot));
+  assert.equal((await fetch(`${legacy}/runtime/tasks`, { method: 'POST', headers: { ...good, origin: legacy }, body })).status, 405);
+  assert.equal((await (await fetch(`${legacy}/runtime/tasks`)).json()).write_token, undefined);
+});
+
+test('task HTTP reports conflicts with safe current task and rotates token on restart', async t => {
+  const f = await projectPreviewFixture();
+  const context = await f.context('alpha');
+  const first = await listening(t, context);
+  const token = (await (await fetch(`${first}/runtime/tasks`)).json()).write_token;
+  const headers = { origin: first, 'content-type': 'application/json', 'x-task-write-token': token };
+  const created = await (await fetch(`${first}/runtime/tasks`, { method: 'POST', headers, body: JSON.stringify({ title: 'First', status: 'pending', branch: null }) })).json();
+  const replacement = { title: 'Second', status: 'completed', branch: 'work', revision: created.revision };
+  const accepted = await (await fetch(`${first}/runtime/tasks/${created.id}`, { method: 'PUT', headers, body: JSON.stringify(replacement) })).json();
+  const taskPath = path.join(context.paths.runtime, 'tasks.json');
+  const before = await readFile(taskPath);
+  const stale = await fetch(`${first}/runtime/tasks/${created.id}`, { method: 'PUT', headers, body: JSON.stringify(replacement) });
+  assert.equal(stale.status, 409);
+  assert.deepEqual((await stale.json()).current, accepted);
+  assert.deepEqual(await readFile(taskPath), before);
+  const second = await listening(t, context);
+  const nextToken = (await (await fetch(`${second}/runtime/tasks`)).json()).write_token;
+  assert.notEqual(nextToken, token);
+  assert.equal((await fetch(`${second}/runtime/tasks`, { method: 'POST', headers: { ...headers, origin: second }, body: JSON.stringify({ title: 'Denied', status: 'pending', branch: null }) })).status, 403);
 });
