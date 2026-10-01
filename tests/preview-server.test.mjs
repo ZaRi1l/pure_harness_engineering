@@ -5,7 +5,7 @@ import path from 'node:path';
 import http from 'node:http';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
 import { createPreviewServer } from '../scripts/preview-server.mjs';
 import { RuntimeStore } from '../scripts/runtime-state.mjs';
@@ -65,6 +65,7 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   const dashboardSource = await dashboardResponse.text();
   const networkSource = await networkResponse.text();
   const status = await (await fetch(`http://127.0.0.1:${port}/runtime/status`)).json();
+  const legacyTelemetry = await fetch(`http://127.0.0.1:${port}/runtime/telemetry`);
   const snapshot = await (await fetch(`http://127.0.0.1:${port}/runtime/snapshot`)).json();
   const catalogResponse = await fetch(`http://127.0.0.1:${port}/runtime/catalog`), catalog = await catalogResponse.json();
   const taskSpecsResponse = await fetch(`http://127.0.0.1:${port}/runtime/task-specs`), taskSpecs = await taskSpecsResponse.json();
@@ -106,6 +107,9 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   assert.ok(Array.isArray(taskSpecs.taskSpecs));
   assert.equal(taskSpecs.taskSpecs[0].path, '.ai/tasks/example.md');
   assert.equal(status.phase, 'idle');
+  assert.equal(legacyTelemetry.status, 200);
+  assert.equal(legacyTelemetry.headers.get('cache-control'), 'no-store');
+  assert.equal((await legacyTelemetry.json()).status, 'missing');
   assert.equal(snapshot.status.task_counts.total, snapshot.tasks.tasks.length);
   assert.ok([403, 404].includes(traversal.status));
 });
@@ -363,6 +367,74 @@ test('dashboard reads selected project', async t => {
   assert.equal(snapshot.status.current_goal, 'alpha-only goal');
   assert.deepEqual(specs.taskSpecs.map(spec => spec.title), ['alpha private plan']);
   assert.match(page, /Preview Lab/);
+});
+
+test('telemetry import requires explicit context and regular absolute files', async () => {
+  const f = await projectPreviewFixture();
+  const file = path.join(f.root, 'private-rollout.jsonl');
+  await writeFile(file, '');
+  const run = args => spawnSync(process.execPath, ['scripts/import-telemetry.mjs', ...args], { cwd: path.resolve('.'), encoding: 'utf8' });
+  const context = ['--project', 'alpha', '--checkout', f.alpha, '--binding', f.bindingPath];
+  assert.notEqual(run([...context]).status, 0);
+  assert.notEqual(run(['--file', file]).status, 0);
+  assert.notEqual(run([...context, '--file', path.relative(process.cwd(), file)]).status, 0);
+  assert.notEqual(run([...context, '--file', f.root]).status, 0);
+  assert.equal(run([...context, '--file', file]).status, 0);
+});
+
+test('telemetry import is atomic, idempotent, missing on empty, and project isolated', async t => {
+  const f = await projectPreviewFixture();
+  const alpha = await f.context('alpha'), beta = await f.context('beta');
+  const file = path.join(f.root, 'PRIVATE_SOURCE_PATH.jsonl');
+  const bad = path.join(f.root, 'bad.jsonl');
+  const empty = path.join(f.root, 'empty.jsonl');
+  const sentinel = 'PRIVATE_TOOL_BODY_SENTINEL';
+  const line = (type, payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type, payload });
+  await writeFile(file, [line('session_meta', { id: 'thread-1' }), line('response_item', { type: 'function_call_output', call_id: 'c1', output: sentinel }), line('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 4, output_tokens: 2, cached_input_tokens: 1, reasoning_output_tokens: 1 } } })].join('\n'));
+  await writeFile(bad, `${line('session_meta', { id: 'thread-1' })}\n{${sentinel}`);
+  await writeFile(empty, '');
+  const run = (id, source) => spawnSync(process.execPath, ['scripts/import-telemetry.mjs', '--project', id, '--checkout', f[id], '--binding', f.bindingPath, '--file', source], { cwd: path.resolve('.'), encoding: 'utf8' });
+  assert.equal(run('alpha', file).status, 0);
+  const store = new RuntimeStore(alpha);
+  const telemetryPath = path.join(alpha.paths.runtime, 'telemetry.json');
+  const first = await readFile(telemetryPath);
+  assert.equal((await store.readTelemetry()).totals.processed, 6);
+  assert.equal(run('alpha', file).status, 0);
+  assert.deepEqual(await readFile(telemetryPath), first);
+  const failed = run('alpha', bad);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /line 2/i);
+  assert.doesNotMatch(failed.stderr, /PRIVATE|bad\.jsonl|\{PRIVATE/);
+  assert.deepEqual(await readFile(telemetryPath), first);
+  assert.equal((await new RuntimeStore(beta).readTelemetry()).status, 'missing');
+  const base = await listening(t, alpha);
+  const response = await fetch(`${base}/runtime/telemetry`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal((await response.json()).totals.processed, 6);
+  assert.equal((await fetch(`${base}/runtime/telemetry`, { method: 'POST', body: sentinel })).status, 405);
+  assert.equal((await fetch(`${base}/runtime/telemetry`, { method: 'PUT', body: sentinel })).status, 405);
+  assert.doesNotMatch((await readFile(telemetryPath, 'utf8')) + JSON.stringify(await store.readEvents()), /PRIVATE_SOURCE_PATH|PRIVATE_TOOL_BODY_SENTINEL/);
+  assert.equal(run('alpha', empty).status, 0);
+  assert.equal((await store.readTelemetry()).status, 'missing');
+  assert.equal((await new RuntimeStore(beta).readTelemetry()).status, 'missing');
+});
+
+test('telemetry import rejects another project stamp without replacing its bytes', async () => {
+  const f = await projectPreviewFixture();
+  const alpha = await f.context('alpha'), beta = await f.context('beta');
+  const file = path.join(f.root, 'source.jsonl');
+  await writeFile(file, `${JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id: 'thread-1' } })}\n`);
+  const wrongStamp = Buffer.from(JSON.stringify({ schema_version: 1, project_id: 'alpha', status: 'missing' }));
+  await mkdir(beta.paths.runtime, { recursive: true });
+  const telemetryPath = path.join(beta.paths.runtime, 'telemetry.json');
+  await writeFile(telemetryPath, wrongStamp);
+  const run = spawnSync(process.execPath, ['scripts/import-telemetry.mjs', '--project', 'beta', '--checkout', f.beta, '--binding', f.bindingPath, '--file', file], { cwd: path.resolve('.'), encoding: 'utf8' });
+  assert.notEqual(run.status, 0);
+  assert.equal(run.stderr.trim(), 'invalid_telemetry');
+  assert.deepEqual(await readFile(telemetryPath), wrongStamp);
+  assert.equal((await new RuntimeStore(alpha).readTelemetry()).status, 'missing');
+  await assert.rejects(createPreviewServer(alpha, '0.0.0.0'), /localhost/);
 });
 
 test('omitted asset root serves module-owned preview instead of malicious installation bytes', async t => {
