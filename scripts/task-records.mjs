@@ -2,10 +2,10 @@ import { createHash } from 'node:crypto';
 
 export const TASK_STATUSES = new Set(['pending', 'in_progress', 'blocked', 'completed', 'cancelled']);
 const FIELD_NAMES = ['title', 'status', 'branch'];
-const invisibleWhitespace = /[\u200b-\u200d\u2060\ufeff]/gu;
+const edgeWhitespace = /^[\s\u200b-\u200d\u2060]+|[\s\u200b-\u200d\u2060]+$/gu;
 const controlCharacters = /[\u0000-\u001f\u007f-\u009f]/u;
 
-const trimLabel = value => value.replace(invisibleWhitespace, '').trim();
+const trimLabel = value => value.replace(edgeWhitespace, '');
 
 export function validateTaskFields(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||

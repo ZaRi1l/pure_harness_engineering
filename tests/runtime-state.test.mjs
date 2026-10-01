@@ -57,11 +57,75 @@ test('stale update returns current safe record and persists nothing', async () =
   const fields = { title: 'Second', status: 'in_progress', branch: null };
   const updated = await store.updateTask(created.id, created.revision, fields);
   const before = await readFile(store.tasksPath, 'utf8');
+  const beforeStatus = await readFile(store.statusPath, 'utf8');
+  const beforeEvents = await readFile(store.eventsPath, 'utf8');
   const conflict = await store.updateTask(created.id, created.revision, { ...fields, title: 'Stale' });
   assert.deepEqual(conflict, { kind: 'conflict', task: updated.task });
   assert.equal(await readFile(store.tasksPath, 'utf8'), before);
+  assert.equal(await readFile(store.statusPath, 'utf8'), beforeStatus);
+  assert.equal(await readFile(store.eventsPath, 'utf8'), beforeEvents);
   assert.deepEqual(await store.updateTask('not-found', created.revision, fields), { kind: 'missing' });
   assert.equal(await readFile(store.tasksPath, 'utf8'), before);
+  assert.equal(await readFile(store.statusPath, 'utf8'), beforeStatus);
+  assert.equal(await readFile(store.eventsPath, 'utf8'), beforeEvents);
+});
+
+test('concurrent edits of one task accept exactly one original revision', async () => {
+  const store = await editableStore();
+  const original = await store.createTask({ title: 'Original', status: 'pending', branch: null });
+  const [left, right] = await Promise.all([
+    store.updateTask(original.id, original.revision, { title: 'Left', status: 'in_progress', branch: 'left' }),
+    store.updateTask(original.id, original.revision, { title: 'Right', status: 'completed', branch: 'right' }),
+  ]);
+  assert.deepEqual([left.kind, right.kind].sort(), ['conflict', 'updated']);
+  const winner = [left, right].find(result => result.kind === 'updated').task;
+  const loser = [left, right].find(result => result.kind === 'conflict').task;
+  assert.ok(['Left', 'Right'].includes(winner.title));
+  assert.equal(winner.status, winner.title === 'Left' ? 'in_progress' : 'completed');
+  assert.equal(winner.branch, winner.title === 'Left' ? 'left' : 'right');
+  assert.notEqual(winner.revision, original.revision);
+  assert.deepEqual(loser, winner);
+  assert.deepEqual((await store.readTasks()).tasks[0], winner);
+  assert.equal((await store.readEvents()).filter(event => event.type === 'task').length, 2);
+});
+
+test('concurrent edits of different tasks preserve both results and revisions', async () => {
+  const store = await editableStore();
+  const first = await store.createTask({ title: 'First', status: 'pending', branch: null });
+  const second = await store.createTask({ title: 'Second', status: 'pending', branch: null });
+  const [left, right] = await Promise.all([
+    store.updateTask(first.id, first.revision, { title: 'First changed', status: 'completed', branch: 'a' }),
+    store.updateTask(second.id, second.revision, { title: 'Second changed', status: 'blocked', branch: 'b' }),
+  ]);
+  assert.equal(left.kind, 'updated');
+  assert.equal(right.kind, 'updated');
+  assert.equal(left.task.title, 'First changed');
+  assert.equal(left.task.status, 'completed');
+  assert.equal(left.task.branch, 'a');
+  assert.equal(right.task.title, 'Second changed');
+  assert.equal(right.task.status, 'blocked');
+  assert.equal(right.task.branch, 'b');
+  const tasks = (await store.readTasks()).tasks;
+  assert.deepEqual(tasks.find(task => task.id === first.id), left.task);
+  assert.deepEqual(tasks.find(task => task.id === second.id), right.task);
+  assert.notEqual(left.task.revision, first.revision);
+  assert.notEqual(right.task.revision, second.revision);
+  assert.deepEqual((await store.readStatus()).task_counts, { total: 2, completed: 1 });
+});
+
+test('unchanged updateTask rotates revision even within one millisecond', async () => {
+  const store = await editableStore();
+  const fields = { title: 'Same', status: 'pending', branch: null };
+  const original = await store.createTask(fields);
+  const NativeDate = globalThis.Date;
+  globalThis.Date = class extends NativeDate { constructor(...args) { super(...(args.length ? args : [original.updated_at])); } };
+  try {
+    const result = await store.updateTask(original.id, original.revision, fields);
+    assert.equal(result.kind, 'updated');
+    assert.equal(result.task.updated_at, original.updated_at);
+    assert.notEqual(result.task.revision, original.revision);
+    assert.deepEqual((await store.readTasks()).tasks[0], result.task);
+  } finally { globalThis.Date = NativeDate; }
 });
 
 test('duplicate_existing_ids_rejected without persistence', async () => {

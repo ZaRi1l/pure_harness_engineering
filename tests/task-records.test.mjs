@@ -39,6 +39,11 @@ test('unicode_whitespace_not_a_label', () => {
   }
 });
 
+test('meaningful interior zero-width joiner is preserved in a task title', () => {
+  assert.deepEqual(validateTaskFields({ title: '  👩‍💻 Review  ', status: 'pending', branch: null }),
+    { title: '👩‍💻 Review', status: 'pending', branch: null });
+});
+
 test('legacy revision is stable for canonical editable fields and timestamps', () => {
   const legacy = { id: 't1', title: 'Task', status: 'pending', owner: 'worker', created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-02T00:00:00.000Z' };
   assert.equal(taskRevision(legacy), taskRevision({ ...legacy, owner: 'different' }));
