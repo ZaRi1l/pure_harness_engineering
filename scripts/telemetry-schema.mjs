@@ -108,7 +108,7 @@ export function normalizeTelemetry(input, projectId) {
   if (ratio !== null && (denominator === null || denominator === 0 || numerator === null || Math.abs(ratio - numerator / denominator) > 1e-12)) throw new Error('invalid unattributed fraction');
   if (value.status === 'missing' || value.status === 'unsupported') {
     const tokenFields = ['input', 'output', 'processed', 'cached_input', 'reasoning_output', 'responses', 'tool_calls'];
-    if (tokenFields.some(key => output.totals[key] != null || output.unattributed[key] != null) || ratio !== null || output.compactions !== null || output.tasks.length || output.roles.length || output.agents.length || output.largest_tool_outputs.length || output.spawns.length) throw new Error('unobserved telemetry cannot contain measured values');
+    if (tokenFields.some(key => output.totals[key] != null || output.unattributed[key] != null) || ratio !== null || output.compactions !== null || output.tasks.length || output.roles.length || output.agents.length || output.largest_tool_outputs.length) throw new Error('unobserved telemetry cannot contain measured values');
   }
   return output;
 }

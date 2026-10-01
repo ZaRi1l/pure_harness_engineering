@@ -59,6 +59,15 @@ test('missing and unsupported status cannot serialize measured token zeros or ra
   }
 });
 
+test('missing token usage may still carry observed spawn metadata without token zeros', () => {
+  const unknown = { input: null, output: null, processed: null, cached_input: null, reasoning_output: null };
+  const input = { ...base(), status: 'missing', totals: unknown, unattributed: { ...unknown, fraction: null }, compactions: null,
+    spawns: [{ parent_agent_id: 'parent-1', child_agent_id: null, task_id: null, role: null, fork_turns: null, attempts: 1, confirmed: 0 }] };
+  const result = normalizeTelemetry(input, 'alpha');
+  assert.equal(result.spawns[0].parent_agent_id, 'parent-1');
+  assert.equal(result.totals.processed, null);
+});
+
 test('fraction requires known positive total and known unattributed numerator', () => {
   assert.throws(() => normalizeTelemetry({ ...base(), totals: { input: null, output: null, processed: null, cached_input: null, reasoning_output: null } }, 'alpha'));
   assert.throws(() => normalizeTelemetry({ ...base(), unattributed: { ...totals, fraction: 0 } }, 'alpha'));

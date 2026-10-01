@@ -31,7 +31,7 @@ function counters(value) {
 }
 
 function thread(id) {
-  return { id, sessionId: null, parentThreadId: null, rootTurns: new Set(), taskIds: new Set(), responses: new Map(), cumulative: null, cumulativeHighWater: [null, null, null, null], cumulativeSeen: false, invalid: null, calls: new Map(), outputs: new Map(), toolGroups: new Map(), compactions: 0, spawnAttempts: 0 };
+  return { id, sessionId: null, parentThreadId: null, rootTurns: new Set(), taskIds: new Set(), unrootedTurn: false, responses: new Map(), cumulative: null, cumulativeHighWater: [null, null, null, null], cumulativeSeen: false, invalid: null, calls: new Map(), outputs: new Map(), toolGroups: new Map(), compactions: 0, spawnAttempts: 0 };
 }
 const mark = (state, kind) => { if (state.invalid !== 'unsupported') state.invalid = kind; };
 function addResponse(state, payload) {
@@ -106,7 +106,7 @@ export function attributeThreads(threads, links) {
     visiting.add(id);
     const parent = byThread.get(link.parent_agent_id);
     const parentLink = candidates.get(link.parent_agent_id);
-    const accepted = !parent && !parentLink ? link : parent && parentLink?.length === 1 && resolve(link.parent_agent_id)?.task_id === link.task_id && parent.root_turn_id === link.root_turn_id ? link : null;
+    const accepted = !parent && !parentLink ? link : parent && parentLink?.length === 1 && resolve(link.parent_agent_id) ? link : null;
     visiting.delete(id);
     if (accepted) valid.set(id, accepted);
     return accepted;
@@ -125,9 +125,8 @@ export function attributeThreads(threads, links) {
   }
   const all = addTotals(attributed, unattributed);
   const rows = (map, field) => [...map].map(([key, totals]) => ({ [field]: key, totals }));
-  const attempts = threads.reduce((sum, item) => sum + (item.spawn_attempts || 0), 0);
   const spawns = [];
-  if (attempts) spawns.push({ parent_agent_id: null, child_agent_id: null, task_id: null, role: null, fork_turns: null, attempts, confirmed: 0 });
+  for (const item of threads) if (item.spawn_attempts) spawns.push({ parent_agent_id: item.thread_id, child_agent_id: null, task_id: null, role: null, fork_turns: null, attempts: item.spawn_attempts, confirmed: 0 });
   for (const [id, choices] of candidates) if (choices.length === 1) {
     const link = choices[0];
     spawns.push({ parent_agent_id: link.parent_agent_id ?? null, child_agent_id: id, task_id: link.task_id ?? null, role: link.role ?? null, fork_turns: link.fork_turns ?? null, attempts: 0, confirmed: 1 });
@@ -163,7 +162,7 @@ function summarize(states, projectId, startAt, endAt, links) {
       for (const [name, bytes] of state.toolGroups) tools.set(name, [...(tools.get(name) || []), ...bytes]);
     } else if (status === 'unsupported') coverage.unsupported_threads++;
     else if (status === 'partial') coverage.partial_threads++;
-    threadAggregates.push({ thread_id: state.id, parent_thread_id: state.parentThreadId, root_turn_id: state.rootTurns.size === 1 ? [...state.rootTurns][0] : null, task_ids: [...state.taskIds], status, totals: threadTotals, spawn_attempts: state.spawnAttempts });
+    threadAggregates.push({ thread_id: state.id, parent_thread_id: state.parentThreadId, root_turn_id: !state.unrootedTurn && state.rootTurns.size === 1 ? [...state.rootTurns][0] : null, task_ids: [...state.taskIds], status, totals: threadTotals, spawn_attempts: state.spawnAttempts });
   }
   const attribution = attributeThreads(threadAggregates, links);
   const complete = coverage.observed_threads === states.size && states.size > 0 && summed[0] !== null && summed[1] !== null && safeAdd(summed[0], summed[1]) !== null;
@@ -174,7 +173,7 @@ function summarize(states, projectId, startAt, endAt, links) {
   const validEnd = endAt === null ? null : new Date(endAt).toISOString();
   return normalizeTelemetry({ schema_version: 1, project_id: projectId, observed_at: new Date().toISOString(), source: 'codex_rollout', status,
     start_at: validStart, end_at: validEnd, elapsed_ms: validStart && validEnd ? Date.parse(validEnd) - Date.parse(validStart) : null,
-    totals, tasks: status === 'observed' || status === 'partial' ? attribution.tasks : [], roles: status === 'observed' || status === 'partial' ? attribution.roles : [], agents: status === 'observed' || status === 'partial' ? attribution.agents : [], unattributed: status === 'observed' || status === 'partial' ? attribution.unattributed : { ...UNKNOWN, fraction: null }, largest_tool_outputs: largest, spawns: status === 'observed' || status === 'partial' ? attribution.spawns : [],
+    totals, tasks: status === 'observed' || status === 'partial' ? attribution.tasks : [], roles: status === 'observed' || status === 'partial' ? attribution.roles : [], agents: status === 'observed' || status === 'partial' ? attribution.agents : [], unattributed: status === 'observed' || status === 'partial' ? attribution.unattributed : { ...UNKNOWN, fraction: null }, largest_tool_outputs: largest, spawns: attribution.spawns,
     compactions: status === 'observed' || status === 'partial' ? coverage.compactions : null, coverage }, projectId);
 }
 
@@ -213,9 +212,17 @@ export async function aggregateCodexRollouts(paths, { projectId, links } = {}) {
         if (!current) structural(lineNumber);
         if (payload.thread_id != null && payload.thread_id !== current.id) structural(lineNumber);
         if (payload.session_id != null && payload.session_id !== (current.sessionId || current.id)) structural(lineNumber);
-        if (payload.root_turn_id != null && safeId(payload.root_turn_id)) current.rootTurns.add(payload.root_turn_id);
-        if (record.type === 'turn_context' && payload.root_turn_id != null && !safeId(payload.root_turn_id)) structural(lineNumber);
-        if (payload.task_id != null && safeId(payload.task_id)) current.taskIds.add(payload.task_id);
+        const nativeTurn = record.type === 'turn_context' || (record.type === 'event_msg' && payload.type === 'task_started');
+        const nativeUsage = record.type === 'token_usage_record' || (record.type === 'event_msg' && payload.type === 'token_count');
+        if (nativeTurn && payload.root_turn_id == null) current.unrootedTurn = true;
+        if ((nativeTurn || nativeUsage) && payload.root_turn_id != null) {
+          if (!safeId(payload.root_turn_id)) structural(lineNumber);
+          current.rootTurns.add(payload.root_turn_id);
+        }
+        if ((nativeTurn || nativeUsage) && payload.task_id != null) {
+          if (!safeId(payload.task_id)) structural(lineNumber);
+          current.taskIds.add(payload.task_id);
+        }
         if (record.type === 'token_usage_record') addResponse(current, payload);
         else if (record.type === 'event_msg') {
           if (payload.type === 'token_count') addCumulative(current, payload.info?.total_token_usage);
