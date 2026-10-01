@@ -1,5 +1,6 @@
 import './runtime-state.test.mjs';
 import './telemetry-schema.test.mjs';
+import './codex-rollout-telemetry.test.mjs';
 import './task-records.test.mjs';
 import './preview-server.test.mjs';
 import './self-check.test.mjs';
