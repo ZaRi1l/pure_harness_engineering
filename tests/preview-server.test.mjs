@@ -181,6 +181,28 @@ test('guide commands remain backed by package scripts', async () => {
   assert.match(messages, /GPT-5\.6/);
 });
 
+test('copy instructions identify the new project before deleting copied state', async () => {
+  const messages = await readFile(path.resolve('preview/preferences.js'), 'utf8');
+  const readme = await readFile(path.resolve('README.md'), 'utf8');
+  for (const guide of [messages.replaceAll('\\\\', '\\'), readme]) {
+    assert.match(guide, /Get-Location/);
+    assert.match(guide, /Get-Item -LiteralPath \.ai\\runtime -ErrorAction SilentlyContinue/);
+    assert.match(guide, /Remove-Item -LiteralPath \.ai\\runtime -Recurse -Force/);
+    assert.match(guide, /Get-ChildItem -LiteralPath \.ai\\tasks -Filter (?:'|&quot;)\*\.md(?:'|&quot;) -File/);
+    assert.match(guide, /Select-Object -ExpandProperty FullName/);
+    assert.doesNotMatch(guide, /ForEach-Object \{ Remove-Item/);
+    assert.doesNotMatch(guide, /\|\\nRemove-Item/);
+    assert.doesNotMatch(guide, /Remove-Item -Recurse -Force \.ai\\runtime/);
+  }
+  assert.match(readme, /http:\/\/127\.0\.0\.1:8765\/#guide/);
+  assert.match(readme, /PURE_HARNESS_PORT/);
+  assert.match(messages, /PURE_HARNESS_PORT/);
+  assert.match(readme, /하나씩 전체 경로를 직접 지정/);
+  assert.match(messages, /identify each copied Pure Harness development spec yourself/);
+  assert.match(messages, /하나씩 전체 경로를 직접 지정/);
+  assert.match(readme, /preview\/index\.html.*file:\/\//);
+});
+
 test('rejects preview links that resolve outside preview root', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-preview-'));
   const outside = await mkdtemp(path.join(tmpdir(), 'pure-preview-outside-'));
