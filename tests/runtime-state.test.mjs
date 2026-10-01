@@ -13,6 +13,90 @@ async function temporaryRoot() {
   return mkdtemp(path.join(tmpdir(), 'pure-harness-'));
 }
 
+async function editableStore() {
+  const root = await temporaryRoot();
+  const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
+  await store.initialize();
+  return store;
+}
+
+test('createTask generates unique identity, timestamps, revision, and private event metadata', async () => {
+  const store = await editableStore();
+  const fields = { title: 'Private draft', status: 'pending', branch: 'secret/branch' };
+  const first = await store.createTask(fields), second = await store.createTask(fields);
+  assert.notEqual(first.id, second.id);
+  assert.match(first.id, /^[0-9a-f-]{36}$/i);
+  assert.match(first.created_at, /^\d{4}-\d\d-\d\dT/);
+  assert.equal(first.updated_at, first.created_at);
+  assert.ok(first.revision);
+  assert.notEqual(first.revision, second.revision);
+  assert.deepEqual((await store.readStatus()).task_counts, { total: 2, completed: 0 });
+  const events = (await store.readEvents()).filter(event => event.type === 'task');
+  assert.equal(events.length, 2);
+  assert.equal(JSON.stringify(events).includes('Private draft'), false);
+  assert.equal(JSON.stringify(events).includes('secret/branch'), false);
+});
+
+test('updateTask changes only its target and preserves owner and other revision', async () => {
+  const store = await editableStore();
+  await store.upsertTask('owned', 'Before', 'pending', 'worker');
+  const other = await store.createTask({ title: 'Other', status: 'pending', branch: null });
+  const before = (await store.readTasks()).tasks.find(task => task.id === 'owned');
+  const result = await store.updateTask('owned', before.revision, { title: 'After', status: 'completed', branch: 'fix/task' });
+  assert.equal(result.kind, 'updated');
+  assert.equal(result.task.owner, 'worker');
+  assert.equal(result.task.branch, 'fix/task');
+  assert.notEqual(result.task.revision, before.revision);
+  assert.deepEqual((await store.readTasks()).tasks.find(task => task.id === other.id), other);
+  assert.deepEqual((await store.readStatus()).task_counts, { total: 2, completed: 1 });
+});
+
+test('stale update returns current safe record and persists nothing', async () => {
+  const store = await editableStore();
+  const created = await store.createTask({ title: 'First', status: 'pending', branch: null });
+  const fields = { title: 'Second', status: 'in_progress', branch: null };
+  const updated = await store.updateTask(created.id, created.revision, fields);
+  const before = await readFile(store.tasksPath, 'utf8');
+  const conflict = await store.updateTask(created.id, created.revision, { ...fields, title: 'Stale' });
+  assert.deepEqual(conflict, { kind: 'conflict', task: updated.task });
+  assert.equal(await readFile(store.tasksPath, 'utf8'), before);
+  assert.deepEqual(await store.updateTask('not-found', created.revision, fields), { kind: 'missing' });
+  assert.equal(await readFile(store.tasksPath, 'utf8'), before);
+});
+
+test('duplicate_existing_ids_rejected without persistence', async () => {
+  const store = await editableStore();
+  const task = await store.createTask({ title: 'First', status: 'pending', branch: null });
+  const document = await store.readTasks();
+  document.tasks.push({ ...document.tasks[0] });
+  await writeFile(store.tasksPath, JSON.stringify(document));
+  const before = await readFile(store.tasksPath, 'utf8');
+  await assert.rejects(() => store.createTask({ title: 'New', status: 'pending', branch: null }), /duplicate task id/);
+  await assert.rejects(() => store.updateTask(task.id, task.revision, { title: 'New', status: 'pending', branch: null }), /duplicate task id/);
+  assert.equal(await readFile(store.tasksPath, 'utf8'), before);
+});
+
+test('same-millisecond unchanged upserts rotate revision each time', async () => {
+  const store = await editableStore();
+  const NativeDate = globalThis.Date;
+  globalThis.Date = class extends NativeDate { constructor(...args) { super(...(args.length ? args : ['2026-01-01T00:00:00.000Z'])); } };
+  try {
+    await store.upsertTask('t1', 'Same', 'pending');
+    const first = (await store.readTasks()).tasks[0];
+    await store.upsertTask('t1', 'Same', 'pending');
+    const second = (await store.readTasks()).tasks[0];
+    assert.equal(first.updated_at, second.updated_at);
+    assert.notEqual(first.revision, second.revision);
+  } finally { globalThis.Date = NativeDate; }
+});
+
+test('legacy fixture cannot use editable task writes', async () => {
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
+  await store.initialize();
+  await assert.rejects(() => store.createTask({ title: 'Task', status: 'pending', branch: null }), /validated project or core context required/);
+  await assert.rejects(() => store.updateTask('t1', 'rev', { title: 'Task', status: 'pending', branch: null }), /validated project or core context required/);
+});
+
 test('initializes empty deterministic runtime state', async () => {
   const root = await temporaryRoot();
   const store = RuntimeStore.legacyFixture(root);

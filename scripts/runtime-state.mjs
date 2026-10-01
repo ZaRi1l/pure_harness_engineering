@@ -5,8 +5,9 @@ import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } f
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isValidatedProjectContext, loadProjectContext } from './project-context.mjs';
+import { TASK_STATUSES, safeTask, taskRevision, validateTaskFields } from './task-records.mjs';
 
-export const TASK_STATUSES = new Set(['pending', 'in_progress', 'blocked', 'completed', 'cancelled']);
+export { TASK_STATUSES } from './task-records.mjs';
 export const VERIFICATION_STATUSES = new Set(['not_run', 'running', 'passed', 'failed', 'blocked']);
 const SIGNAL_METADATA_FIELDS = ['task_id', 'status', 'artifact_href', 'verification_name'];
 const LIFECYCLE_SOURCES = new Set(['hook', 'orchestration']);
@@ -25,6 +26,20 @@ function appendSignal(status, signal) {
 function lifecycleSource(value) { return LIFECYCLE_SOURCES.has(value) ? value : undefined; }
 function preferredLifecycleSource(current, next) { return current === 'hook' || next !== 'hook' ? current || next : 'hook'; }
 const now = () => new Date().toISOString();
+const assertUniqueTaskIds = tasks => {
+  const ids = new Set();
+  for (const task of tasks.tasks) {
+    if (typeof task.id !== 'string' || !task.id) throw new Error('invalid task id');
+    if (ids.has(task.id)) throw new Error(`duplicate task id: ${task.id}`);
+    ids.add(task.id);
+  }
+};
+const uniqueTaskToken = (tasks, field) => {
+  const used = new Set(tasks.tasks.map(task => task[field]));
+  let token;
+  do { token = randomUUID(); } while (used.has(token));
+  return token;
+};
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const normalizeScope = scope => {
   const value = String(scope || '').split('\\').join('/').split('/').filter(Boolean).join('/');
@@ -193,7 +208,37 @@ export class RuntimeStore {
   async mutate(update) { await this.withLock(async () => { const state = await this.loadUnlocked(); await update(state); await this.persist(state.status, state.tasks, state.events, state.claims); }); }
   async setGoal(goal, phase = 'planning') { await this.mutate(({ status, events }) => { status.current_goal = String(goal).slice(0, 500); status.phase = phase; events.push(this.event('goal', 'Goal updated', { phase })); }); }
   async setPhase(phase) { await this.mutate(({ status, events }) => { status.phase = phase; events.push(this.event('phase', `Phase: ${phase}`)); }); }
-  async upsertTask(id, title, taskStatus, owner = null) { if (!TASK_STATUSES.has(taskStatus)) throw new Error(`invalid task status: ${taskStatus}`); await this.mutate(({ tasks, events }) => { let record = tasks.tasks.find(task => task.id === id); if (!record) { record = { id, created_at: now() }; tasks.tasks.push(record); } Object.assign(record, { title: String(title).slice(0, 300), status: taskStatus, owner, updated_at: now() }); events.push(this.event('task', `${id}: ${taskStatus}`, { owner })); }); }
+  async upsertTask(id, title, taskStatus, owner = null) { if (!TASK_STATUSES.has(taskStatus)) throw new Error(`invalid task status: ${taskStatus}`); await this.mutate(({ tasks, events }) => { assertUniqueTaskIds(tasks); let record = tasks.tasks.find(task => task.id === id); if (!record) { record = { id, created_at: now() }; tasks.tasks.push(record); } Object.assign(record, { title: String(title).slice(0, 300), status: taskStatus, owner, updated_at: now(), revision: uniqueTaskToken(tasks, 'revision') }); events.push(this.event('task', `${id}: ${taskStatus}`, { owner })); }); }
+  async createTask(fields) {
+    if (!this.context) throw new Error('validated project or core context required');
+    const editable = validateTaskFields(fields);
+    return this.withLock(async () => {
+      const state = await this.loadUnlocked();
+      assertUniqueTaskIds(state.tasks);
+      const timestamp = now();
+      const record = { id: uniqueTaskToken(state.tasks, 'id'), ...editable, created_at: timestamp, updated_at: timestamp, revision: uniqueTaskToken(state.tasks, 'revision') };
+      state.tasks.tasks.push(record);
+      state.events.push(this.event('task', `${record.id}: ${record.status}`, { task_id: record.id, status: record.status }));
+      await this.persist(state.status, state.tasks, state.events, state.claims);
+      return safeTask(record);
+    });
+  }
+  async updateTask(id, revision, fields) {
+    if (!this.context) throw new Error('validated project or core context required');
+    if (typeof id !== 'string' || !id || typeof revision !== 'string' || !revision) throw new Error('invalid task identity');
+    const editable = validateTaskFields(fields);
+    return this.withLock(async () => {
+      const state = await this.loadUnlocked();
+      assertUniqueTaskIds(state.tasks);
+      const record = state.tasks.tasks.find(task => task.id === id);
+      if (!record) return { kind: 'missing' };
+      if (taskRevision(record) !== revision) return { kind: 'conflict', task: safeTask(record) };
+      Object.assign(record, editable, { updated_at: now(), revision: uniqueTaskToken(state.tasks, 'revision') });
+      state.events.push(this.event('task', `${record.id}: ${record.status}`, { task_id: record.id, status: record.status }));
+      await this.persist(state.status, state.tasks, state.events, state.claims);
+      return { kind: 'updated', task: safeTask(record) };
+    });
+  }
   async agentStarted(id, role, task = '', metadata = {}) { await this.mutate(({ status, events }) => {
     const source = lifecycleSource(metadata.source), active = status.active_agents.find(agent => this.ownsAgent(agent, id));
     let existing = status.agents.find(agent => this.ownsAgent(agent, id));
