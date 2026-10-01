@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { aggregateCodexRollouts, toolOutputStats } from '../scripts/codex-rollout-telemetry.mjs';
+import { aggregateCodexRollouts, attributeThreads, toolOutputStats } from '../scripts/codex-rollout-telemetry.mjs';
 
 const at = offset => new Date(Date.UTC(2026, 9, 1, 0, 0, offset)).toISOString();
 const record = (type, payload, offset = 0) => ({ timestamp: at(offset), type, payload });
@@ -25,6 +25,64 @@ async function fixture(files, run) {
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 const aggregate = files => fixture(files, paths => aggregateCodexRollouts(paths, { projectId: 'alpha', links: [] }));
+const link = (child, parent, task = 'task-1', root = 'root-1', role = 'worker') => ({ child_agent_id: child, parent_agent_id: parent, task_id: task, root_turn_id: root, role, fork_turns: 'all' });
+const observed = (id, parent = null, root = 'root-1', input = 4, output = 2) => ({ thread_id: id, parent_thread_id: parent, root_turn_id: root, status: 'observed', totals: { input, output, processed: input + output, cached_input: 0, reasoning_output: 0, responses: 1, tool_calls: 0 } });
+
+test('exact child, parent, root and task links yield task, role and agent rows', () => {
+  const result = attributeThreads([observed('child-1', 'parent-1')], [link('child-1', 'parent-1')]);
+  assert.equal(result.tasks[0].task_id, 'task-1');
+  assert.equal(result.tasks[0].totals.processed, 6);
+  assert.equal(result.roles[0].role, 'worker');
+  assert.equal(result.agents[0].agent_id, 'child-1');
+  assert.equal(result.unattributed.processed, 0);
+});
+
+test('contradictory_parent_is_unattributed despite matching child ID', () => {
+  const result = attributeThreads([observed('child-1', 'other-parent')], [link('child-1', 'parent-1')]);
+  assert.deepEqual(result.tasks, []);
+  assert.equal(result.unattributed.processed, 6);
+});
+
+test('nested children require every exact edge and ambiguous links never join', () => {
+  const threads = [observed('child-1', 'parent-1'), observed('grandchild-1', 'child-1', 'root-1', 3, 1)];
+  const valid = attributeThreads(threads, [link('child-1', 'parent-1'), link('grandchild-1', 'child-1')]);
+  assert.equal(valid.tasks[0].totals.processed, 10);
+  const orphan = attributeThreads(threads, [link('grandchild-1', 'child-1')]);
+  assert.equal(orphan.unattributed.processed, 10);
+  const ambiguous = attributeThreads([threads[0]], [link('child-1', 'parent-1'), link('child-1', 'parent-1', 'task-2')]);
+  assert.equal(ambiguous.unattributed.processed, 6);
+});
+
+test('missing root turn or task-only link leaves measured usage unattributed', () => {
+  for (const links of [[link('child-1', 'parent-1')], [{ ...link('child-1', 'parent-1'), child_agent_id: null }]]) {
+    const result = attributeThreads([observed('child-1', 'parent-1', null)], links);
+    assert.equal(result.unattributed.processed, 6);
+    assert.deepEqual(result.tasks, []);
+  }
+});
+
+test('observed turn task contradiction and multiple roots do not assign a whole-thread cumulative total', async () => {
+  const links = [{ ...link('child-1', 'parent-1'), project_id: 'alpha', acknowledgement: 'success', short_task_name: 'task-1', model: null, reasoning_effort: null, spawned_at: at(0), completed_at: null }];
+  const result = await fixture([[meta('child-1'), record('turn_context', { root_turn_id: 'root-1', task_id: 'task-2' }), cumulative(4, 2)]], paths => aggregateCodexRollouts(paths, { projectId: 'alpha', links }));
+  assert.equal(result.unattributed.processed, 6);
+  assert.deepEqual(result.tasks, []);
+  const mixed = await fixture([[meta('child-1'), record('turn_context', { root_turn_id: 'root-1' }), record('turn_context', { root_turn_id: 'root-2' }), cumulative(4, 2)]], paths => aggregateCodexRollouts(paths, { projectId: 'alpha', links }));
+  assert.equal(mixed.unattributed.processed, 6);
+  assert.deepEqual(mixed.tasks, []);
+});
+
+test('observed spawn attempt remains separate from confirmed child', async () => {
+  const result = await fixture([[meta('child-1'), record('turn_context', { root_turn_id: 'root-1' }), cumulative(4, 2), tool('function_call', 'spawn-1', { name: 'collaboration.spawn_agent', arguments: 'SECRET_PROMPT' }), tool('function_call', 'spawn-2', { name: 'collaboration.spawn_agent', arguments: 'SECRET_PROMPT' })]], paths => aggregateCodexRollouts(paths, { projectId: 'alpha', links: [{ ...link('child-1', 'parent-1'), project_id: 'alpha', acknowledgement: 'success', short_task_name: 'task-1', model: null, reasoning_effort: null, spawned_at: at(0), completed_at: null }] }));
+  assert.equal(result.spawns.reduce((sum, row) => sum + (row.attempts || 0), 0), 2);
+  assert.equal(result.spawns.reduce((sum, row) => sum + (row.confirmed || 0), 0), 1);
+  assert.equal(JSON.stringify(result).includes('SECRET_PROMPT'), false);
+});
+
+test('replayed spawn call ID is one observed attempt', async () => {
+  const spawn = tool('function_call', 'spawn-1', { name: 'collaboration.spawn_agent', arguments: 'SECRET_PROMPT' });
+  const result = await aggregate([[meta('child-1'), cumulative(1, 1), spawn, spawn]]);
+  assert.equal(result.spawns.reduce((sum, row) => sum + (row.attempts || 0), 0), 1);
+});
 
 test('per-response usage dedupes identical records but stays partial without complete coverage evidence', async () => {
   const result = await aggregate([[meta('thread-1'), usage('response-1', 10, 4, 3, 2), usage('response-1', 10, 4, 3, 2), usage('response-2', 5, 3, 1, 1)]]);

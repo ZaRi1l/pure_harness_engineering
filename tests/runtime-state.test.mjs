@@ -51,6 +51,18 @@ test('confirmed child links update exact identity without leaking prompt or crea
   await assert.rejects(() => store.completeChildLink('unknown', '2026-10-01T00:00:01.000Z'));
 });
 
+test('same native child follow-up enriches nullable metadata without changing its identity', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-runtime-'));
+  const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
+  const base = { project_id: 'core', acknowledgement: 'success', task_id: null, root_turn_id: null, parent_agent_id: 'parent-1', child_agent_id: 'child-1', role: null, short_task_name: null, fork_turns: null, model: null, reasoning_effort: null, spawned_at: '2026-10-01T00:00:00.000Z', completed_at: null };
+  await store.recordChildLink(base);
+  await store.recordChildLink({ ...base, task_id: 'task-1', root_turn_id: 'root-1', role: 'worker', short_task_name: 'task-1' });
+  const links = await store.readChildLinks();
+  assert.equal(links.length, 1);
+  assert.equal(links[0].root_turn_id, 'root-1');
+  await assert.rejects(() => store.recordChildLink({ ...base, parent_agent_id: 'other-parent' }));
+});
+
 test('createTask generates unique identity, timestamps, revision, and private event metadata', async () => {
   const store = await editableStore();
   const fields = { title: 'Private draft', status: 'pending', branch: 'secret/branch' };

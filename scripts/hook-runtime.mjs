@@ -17,8 +17,21 @@ export async function handleHook(payload, context) {
   await store.addEvent('hook_dispatch', `Codex hook dispatched: ${event}`, { hook_event: event });
   if (event === 'SessionStart') await store.addEvent('session_started', 'Codex session started');
   else if (event === 'SessionEnd') await store.addEvent('session_ended', 'Codex session ended');
-  else if (event === 'SubagentStart') await store.agentStarted(id, role, String(payload.task || ''), { task_id: payload.task_id, turn_token: payload.turn_token, source: 'hook' });
-  else if (event === 'SubagentStop') await store.agentStopped(id, payload.outcome ? String(payload.outcome) : 'stopped', { task_id: payload.task_id, turn_token: payload.turn_token, source: 'hook' });
+  else if (event === 'SubagentStart') {
+    await store.agentStarted(id, role, String(payload.task || ''), { task_id: payload.task_id, turn_token: payload.turn_token, source: 'hook' });
+    if (store.context && agentId && payload.spawned_at && payload.parent_thread_id) await store.recordChildLink({
+      project_id: store.context.projectId, acknowledgement: 'success', child_agent_id: agentId,
+      parent_agent_id: payload.parent_thread_id, root_turn_id: payload.root_turn_id ?? null,
+      task_id: payload.task_id ?? null, role: payload.agent_type ?? null,
+      short_task_name: payload.task_id ?? null, fork_turns: payload.fork_turns ?? null,
+      model: payload.model ?? null, reasoning_effort: payload.reasoning_effort ?? null,
+      spawned_at: payload.spawned_at, completed_at: null,
+    });
+  }
+  else if (event === 'SubagentStop') {
+    await store.agentStopped(id, payload.outcome ? String(payload.outcome) : 'stopped', { task_id: payload.task_id, turn_token: payload.turn_token, source: 'hook' });
+    if (store.context && agentId && payload.completed_at && (await store.readChildLinks()).some(link => link.child_agent_id === agentId)) await store.completeChildLink(agentId, payload.completed_at);
+  }
   else if (event === 'Stop') await store.addEvent('turn_stopped', 'Codex turn stopped');
 }
 async function main() { try { const { context } = await contextFromArgs(process.argv.slice(2)); const raw = await readStdin(); await handleHook(raw ? JSON.parse(raw) : {}, context); } catch { console.log(JSON.stringify({ systemMessage: 'Pure Harness runtime update skipped: project context or binding invalid' })); } }

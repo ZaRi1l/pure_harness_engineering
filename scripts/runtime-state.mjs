@@ -211,8 +211,16 @@ export class RuntimeStore {
     await this.withLock(async () => {
       const links = await this.readChildLinks();
       const existing = links.find(item => item.child_agent_id === link.child_agent_id);
-      if (existing && JSON.stringify(existing) !== JSON.stringify(link)) throw new Error('conflicting child link');
-      if (!existing) links.push(link);
+      if (existing) {
+        if (existing.spawned_at !== link.spawned_at) throw new Error('conflicting child link');
+        const merged = { ...existing };
+        for (const key of ['task_id', 'root_turn_id', 'parent_agent_id', 'role', 'short_task_name', 'fork_turns', 'model', 'reasoning_effort', 'completed_at']) {
+          if (link[key] === null) continue;
+          if (existing[key] !== null && existing[key] !== link[key]) throw new Error('conflicting child link');
+          merged[key] = link[key];
+        }
+        links[links.indexOf(existing)] = normalizeChildLink({ ...merged, acknowledgement: 'success' }, projectId);
+      } else links.push(link);
       await atomicWrite(this.agentLinksPath, `${JSON.stringify({ schema_version: 1, project_id: projectId, links }, null, 2)}\n`);
     });
   }

@@ -31,7 +31,7 @@ function counters(value) {
 }
 
 function thread(id) {
-  return { id, sessionId: null, parentThreadId: null, responses: new Map(), cumulative: null, cumulativeHighWater: [null, null, null, null], cumulativeSeen: false, invalid: null, calls: new Map(), outputs: new Map(), toolGroups: new Map(), compactions: 0 };
+  return { id, sessionId: null, parentThreadId: null, rootTurns: new Set(), taskIds: new Set(), responses: new Map(), cumulative: null, cumulativeHighWater: [null, null, null, null], cumulativeSeen: false, invalid: null, calls: new Map(), outputs: new Map(), toolGroups: new Map(), compactions: 0, spawnAttempts: 0 };
 }
 const mark = (state, kind) => { if (state.invalid !== 'unsupported') state.invalid = kind; };
 function addResponse(state, payload) {
@@ -53,7 +53,9 @@ function addCumulative(state, value) {
 function addTool(state, item) {
   if (!object(item) || !safeId(item.call_id)) return;
   if (item.type === 'custom_tool_call' || item.type === 'function_call') {
+    if (state.calls.has(item.call_id)) return;
     state.calls.set(item.call_id, TOOL_NAMES.has(item.name) ? item.name : 'other');
+    if (item.name === 'collaboration.spawn_agent') state.spawnAttempts++;
   } else if (item.type === 'custom_tool_call_output' || item.type === 'function_call_output') {
     if (typeof item.output === 'string') state.outputs.set(item.call_id, Buffer.byteLength(item.output, 'utf8'));
   }
@@ -83,10 +85,60 @@ function usageBearing(type, payload) {
 function totalsFrom(values, responses, toolCalls) {
   return { input: values[0], output: values[1], processed: values[0] + values[1], cached_input: values[2], reasoning_output: values[3], responses, tool_calls: toolCalls };
 }
-function summarize(states, projectId, startAt, endAt) {
+const addTotals = (left, right) => Object.fromEntries(Object.keys(UNKNOWN).map(key => [key, addKnown(left[key], right[key])]));
+const zeroTotals = () => ({ input: 0, output: 0, processed: 0, cached_input: 0, reasoning_output: 0, responses: 0, tool_calls: 0 });
+export function attributeThreads(threads, links) {
+  const byThread = new Map(threads.map(item => [item.thread_id, item]));
+  const candidates = new Map();
+  for (const link of links) {
+    if (!link?.child_agent_id) continue;
+    candidates.set(link.child_agent_id, [...(candidates.get(link.child_agent_id) || []), link]);
+  }
+  const valid = new Map();
+  const visiting = new Set();
+  function resolve(id) {
+    if (valid.has(id)) return valid.get(id);
+    if (visiting.has(id)) return null;
+    const choices = candidates.get(id), item = byThread.get(id);
+    if (!item || !choices || choices.length !== 1) return null;
+    const link = choices[0];
+    if (!link.task_id || !link.root_turn_id || !link.parent_agent_id || item.root_turn_id !== link.root_turn_id || (item.task_ids?.length && (item.task_ids.length !== 1 || item.task_ids[0] !== link.task_id)) || (item.parent_thread_id && item.parent_thread_id !== link.parent_agent_id)) return null;
+    visiting.add(id);
+    const parent = byThread.get(link.parent_agent_id);
+    const parentLink = candidates.get(link.parent_agent_id);
+    const accepted = !parent && !parentLink ? link : parent && parentLink?.length === 1 && resolve(link.parent_agent_id)?.task_id === link.task_id && parent.root_turn_id === link.root_turn_id ? link : null;
+    visiting.delete(id);
+    if (accepted) valid.set(id, accepted);
+    return accepted;
+  }
+  const tasks = new Map(), roles = new Map(), agents = new Map();
+  let unattributed = zeroTotals(), attributed = zeroTotals(), unknown = false;
+  for (const item of threads) {
+    const link = resolve(item.thread_id);
+    if (item.status !== 'observed' || item.totals.processed === null) { unknown = true; continue; }
+    if (!link) { unattributed = addTotals(unattributed, item.totals); continue; }
+    attributed = addTotals(attributed, item.totals);
+    for (const [map, key] of [[tasks, link.task_id], [roles, link.role], [agents, link.child_agent_id]]) {
+      if (key === null) continue;
+      map.set(key, addTotals(map.get(key) || zeroTotals(), item.totals));
+    }
+  }
+  const all = addTotals(attributed, unattributed);
+  const rows = (map, field) => [...map].map(([key, totals]) => ({ [field]: key, totals }));
+  const attempts = threads.reduce((sum, item) => sum + (item.spawn_attempts || 0), 0);
+  const spawns = [];
+  if (attempts) spawns.push({ parent_agent_id: null, child_agent_id: null, task_id: null, role: null, fork_turns: null, attempts, confirmed: 0 });
+  for (const [id, choices] of candidates) if (choices.length === 1) {
+    const link = choices[0];
+    spawns.push({ parent_agent_id: link.parent_agent_id ?? null, child_agent_id: id, task_id: link.task_id ?? null, role: link.role ?? null, fork_turns: link.fork_turns ?? null, attempts: 0, confirmed: 1 });
+  }
+  return { tasks: rows(tasks, 'task_id'), roles: rows(roles, 'role'), agents: rows(agents, 'agent_id'), unattributed: { ...(unknown ? UNKNOWN : unattributed), fraction: unknown || !all.processed ? null : unattributed.processed / all.processed }, spawns, coverage: { attributed_threads: valid.size, unattributed_threads: threads.length - valid.size } };
+}
+function summarize(states, projectId, startAt, endAt, links) {
   const coverage = { threads: states.size, observed_threads: 0, partial_threads: 0, unsupported_threads: 0, responses: 0, observed_responses: 0, tool_calls: 0, compactions: 0 };
   let summed = [0, 0, 0, 0], responses = 0, toolCalls = 0;
   const tools = new Map();
+  const threadAggregates = [];
   for (const state of states.values()) {
     finishTools(state);
     coverage.responses += state.responses.size;
@@ -95,6 +147,7 @@ function summarize(states, projectId, startAt, endAt) {
     coverage.compactions += state.compactions;
     let status = state.invalid;
     if (!status) status = state.cumulativeSeen ? 'observed' : state.responses.size ? 'partial' : 'missing';
+    let threadTotals = UNKNOWN;
     if (status === 'observed') {
       coverage.observed_threads++;
       let values = state.cumulative;
@@ -104,12 +157,15 @@ function summarize(states, projectId, startAt, endAt) {
       }
       if (values[0] === null || values[1] === null || values[0] + values[1] > Number.MAX_SAFE_INTEGER) { coverage.observed_threads--; coverage.partial_threads++; continue; }
       summed = summed.map((value, index) => addKnown(value, values[index]));
+      threadTotals = totalsFrom(values, state.responses.size, state.calls.size);
       responses += state.responses.size;
       toolCalls += state.calls.size;
       for (const [name, bytes] of state.toolGroups) tools.set(name, [...(tools.get(name) || []), ...bytes]);
     } else if (status === 'unsupported') coverage.unsupported_threads++;
     else if (status === 'partial') coverage.partial_threads++;
+    threadAggregates.push({ thread_id: state.id, parent_thread_id: state.parentThreadId, root_turn_id: state.rootTurns.size === 1 ? [...state.rootTurns][0] : null, task_ids: [...state.taskIds], status, totals: threadTotals, spawn_attempts: state.spawnAttempts });
   }
+  const attribution = attributeThreads(threadAggregates, links);
   const complete = coverage.observed_threads === states.size && states.size > 0 && summed[0] !== null && summed[1] !== null && safeAdd(summed[0], summed[1]) !== null;
   const status = complete ? 'observed' : coverage.observed_threads ? 'partial' : coverage.unsupported_threads ? 'unsupported' : coverage.partial_threads ? 'partial' : 'missing';
   const totals = complete ? totalsFrom(summed, responses, toolCalls) : UNKNOWN;
@@ -118,7 +174,7 @@ function summarize(states, projectId, startAt, endAt) {
   const validEnd = endAt === null ? null : new Date(endAt).toISOString();
   return normalizeTelemetry({ schema_version: 1, project_id: projectId, observed_at: new Date().toISOString(), source: 'codex_rollout', status,
     start_at: validStart, end_at: validEnd, elapsed_ms: validStart && validEnd ? Date.parse(validEnd) - Date.parse(validStart) : null,
-    totals, tasks: [], roles: [], agents: [], unattributed: { ...UNKNOWN, fraction: null }, largest_tool_outputs: largest, spawns: [],
+    totals, tasks: status === 'observed' || status === 'partial' ? attribution.tasks : [], roles: status === 'observed' || status === 'partial' ? attribution.roles : [], agents: status === 'observed' || status === 'partial' ? attribution.agents : [], unattributed: status === 'observed' || status === 'partial' ? attribution.unattributed : { ...UNKNOWN, fraction: null }, largest_tool_outputs: largest, spawns: status === 'observed' || status === 'partial' ? attribution.spawns : [],
     compactions: status === 'observed' || status === 'partial' ? coverage.compactions : null, coverage }, projectId);
 }
 
@@ -157,6 +213,9 @@ export async function aggregateCodexRollouts(paths, { projectId, links } = {}) {
         if (!current) structural(lineNumber);
         if (payload.thread_id != null && payload.thread_id !== current.id) structural(lineNumber);
         if (payload.session_id != null && payload.session_id !== (current.sessionId || current.id)) structural(lineNumber);
+        if (payload.root_turn_id != null && safeId(payload.root_turn_id)) current.rootTurns.add(payload.root_turn_id);
+        if (record.type === 'turn_context' && payload.root_turn_id != null && !safeId(payload.root_turn_id)) structural(lineNumber);
+        if (payload.task_id != null && safeId(payload.task_id)) current.taskIds.add(payload.task_id);
         if (record.type === 'token_usage_record') addResponse(current, payload);
         else if (record.type === 'event_msg') {
           if (payload.type === 'token_count') addCumulative(current, payload.info?.total_token_usage);
@@ -180,5 +239,5 @@ export async function aggregateCodexRollouts(paths, { projectId, links } = {}) {
       throw new Error('rollout import failed');
     } finally { lines.close(); stream.destroy(); }
   }
-  return summarize(states, projectId, startAt, endAt);
+  return summarize(states, projectId, startAt, endAt, links);
 }

@@ -9,6 +9,25 @@ import { RuntimeStore } from '../scripts/runtime-state.mjs';
 
 const legacyHook = (payload, root) => handleHook(payload, RuntimeStore.legacyFixture(root));
 
+test('hook without native child or parent IDs does not fabricate a confirmed link', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
+  await handleHook({ hook_event_name: 'SubagentStart', task_id: 'task-1', root_turn_id: 'root-1', task: 'SECRET_PROMPT' }, store);
+  assert.deepEqual(await store.readChildLinks(), []);
+});
+
+test('hook forwards explicitly observed native IDs into one exact child link', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
+  await handleHook({ hook_event_name: 'SubagentStart', agent_id: 'child-1', parent_thread_id: 'parent-1', root_turn_id: 'root-1', task_id: 'task-1', agent_type: 'worker', spawned_at: '2026-10-01T00:00:00.000Z', task: 'SECRET_PROMPT' }, store);
+  const links = await store.readChildLinks();
+  assert.equal(links.length, 1);
+  assert.deepEqual([links[0].child_agent_id, links[0].parent_agent_id, links[0].root_turn_id], ['child-1', 'parent-1', 'root-1']);
+  assert.equal(JSON.stringify(links).includes('SECRET_PROMPT'), false);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'child-1', completed_at: '2026-10-01T00:00:01.000Z' }, store);
+  assert.equal((await store.readChildLinks())[0].completed_at, '2026-10-01T00:00:01.000Z');
+});
+
 test('actual SubagentStop shape records a neutral lifecycle return', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
   await legacyHook({ hook_event_name: 'SubagentStart', agent_id: 'agent-1', agent_type: 'worker', task: 'Do work' }, root);
