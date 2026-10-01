@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pure Harness project declaration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "displayName", "paths", "adapters"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "displayName": { "type": "string", "minLength": 1 },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tasks", "memory", "runtime"],
+      "properties": {
+        "tasks": { "$ref": "#/$defs/relativePath" },
+        "memory": { "$ref": "#/$defs/relativePath" },
+        "runtime": { "$ref": "#/$defs/relativePath" }
+      }
+    },
+    "adapters": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": { "type": "string", "minLength": 1 },
+          "projectRelativePath": { "$ref": "#/$defs/relativePath" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "relativePath": { "type": "string", "minLength": 1, "not": { "pattern": "^(?:/|\\\\|[A-Za-z]:)" } }
+  }
+}
