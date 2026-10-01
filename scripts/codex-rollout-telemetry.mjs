@@ -31,7 +31,7 @@ function counters(value) {
 }
 
 function thread(id) {
-  return { id, sessionId: null, parentThreadId: null, responses: new Map(), cumulative: null, cumulativeSeen: false, invalid: null, calls: new Map(), outputs: new Map(), toolGroups: new Map(), compactions: 0 };
+  return { id, sessionId: null, parentThreadId: null, responses: new Map(), cumulative: null, cumulativeHighWater: [null, null, null, null], cumulativeSeen: false, invalid: null, calls: new Map(), outputs: new Map(), toolGroups: new Map(), compactions: 0 };
 }
 const mark = (state, kind) => { if (state.invalid !== 'unsupported') state.invalid = kind; };
 function addResponse(state, payload) {
@@ -46,7 +46,8 @@ function addCumulative(state, value) {
   state.cumulativeSeen = true;
   const parsed = counters(value);
   if (parsed.kind !== 'valid') { mark(state, parsed.kind); return; }
-  if (state.cumulative && state.cumulative.some((counter, index) => counter !== null && parsed.value[index] !== null && parsed.value[index] < counter)) mark(state, 'partial');
+  if (state.cumulativeHighWater.some((counter, index) => counter !== null && parsed.value[index] !== null && parsed.value[index] < counter)) mark(state, 'partial');
+  state.cumulativeHighWater = state.cumulativeHighWater.map((counter, index) => parsed.value[index] === null ? counter : parsed.value[index]);
   state.cumulative = parsed.value;
 }
 function addTool(state, item) {
@@ -84,18 +85,18 @@ function totalsFrom(values, responses, toolCalls) {
 }
 function summarize(states, projectId, startAt, endAt) {
   const coverage = { threads: states.size, observed_threads: 0, partial_threads: 0, unsupported_threads: 0, responses: 0, observed_responses: 0, tool_calls: 0, compactions: 0 };
-  let summed = [0, 0, 0, 0], responses = 0, toolCalls = 0, compactions = 0;
+  let summed = [0, 0, 0, 0], responses = 0, toolCalls = 0;
   const tools = new Map();
   for (const state of states.values()) {
     finishTools(state);
     coverage.responses += state.responses.size;
+    coverage.observed_responses += state.responses.size;
     coverage.tool_calls += state.calls.size;
     coverage.compactions += state.compactions;
     let status = state.invalid;
-    if (!status) status = state.cumulativeSeen || state.responses.size ? 'observed' : 'missing';
+    if (!status) status = state.cumulativeSeen ? 'observed' : state.responses.size ? 'partial' : 'missing';
     if (status === 'observed') {
       coverage.observed_threads++;
-      coverage.observed_responses += state.responses.size;
       let values = state.cumulative;
       if (!values) {
         values = [0, 0, 0, 0];
@@ -105,7 +106,6 @@ function summarize(states, projectId, startAt, endAt) {
       summed = summed.map((value, index) => addKnown(value, values[index]));
       responses += state.responses.size;
       toolCalls += state.calls.size;
-      compactions += state.compactions;
       for (const [name, bytes] of state.toolGroups) tools.set(name, [...(tools.get(name) || []), ...bytes]);
     } else if (status === 'unsupported') coverage.unsupported_threads++;
     else if (status === 'partial') coverage.partial_threads++;
@@ -119,7 +119,7 @@ function summarize(states, projectId, startAt, endAt) {
   return normalizeTelemetry({ schema_version: 1, project_id: projectId, observed_at: new Date().toISOString(), source: 'codex_rollout', status,
     start_at: validStart, end_at: validEnd, elapsed_ms: validStart && validEnd ? Date.parse(validEnd) - Date.parse(validStart) : null,
     totals, tasks: [], roles: [], agents: [], unattributed: { ...UNKNOWN, fraction: null }, largest_tool_outputs: largest, spawns: [],
-    compactions: status === 'observed' || status === 'partial' ? compactions : null, coverage }, projectId);
+    compactions: status === 'observed' || status === 'partial' ? coverage.compactions : null, coverage }, projectId);
 }
 
 export async function aggregateCodexRollouts(paths, { projectId, links } = {}) {
@@ -160,13 +160,19 @@ export async function aggregateCodexRollouts(paths, { projectId, links } = {}) {
         if (record.type === 'token_usage_record') addResponse(current, payload);
         else if (record.type === 'event_msg') {
           if (payload.type === 'token_count') addCumulative(current, payload.info?.total_token_usage);
-          else if (COMPACTIONS.has(payload.type)) current.compactions++;
+          else if (COMPACTIONS.has(payload.type)) {
+            if (usageBearing(payload.type, payload)) mark(current, 'unsupported');
+            current.compactions++;
+          }
           else if (usageBearing(payload.type, payload)) mark(current, 'unsupported');
         } else if (record.type === 'response_item') {
-          if ('usage' in payload || 'total_token_usage' in payload) mark(current, 'unsupported');
+          if (usageBearing(payload.type, payload)) mark(current, 'unsupported');
           addTool(current, payload);
         }
-        else if (COMPACTIONS.has(record.type)) current.compactions++;
+        else if (COMPACTIONS.has(record.type)) {
+          if (usageBearing(record.type, payload)) mark(current, 'unsupported');
+          current.compactions++;
+        }
         else if (usageBearing(record.type, payload)) mark(current, 'unsupported');
       }
     } catch (error) {

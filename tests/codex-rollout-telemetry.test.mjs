@@ -26,11 +26,20 @@ async function fixture(files, run) {
 }
 const aggregate = files => fixture(files, paths => aggregateCodexRollouts(paths, { projectId: 'alpha', links: [] }));
 
-test('per-response usage dedupes identical records and keeps subsets inside processed total', async () => {
+test('per-response usage dedupes identical records but stays partial without complete coverage evidence', async () => {
   const result = await aggregate([[meta('thread-1'), usage('response-1', 10, 4, 3, 2), usage('response-1', 10, 4, 3, 2), usage('response-2', 5, 3, 1, 1)]]);
-  assert.equal(result.status, 'observed');
-  assert.deepEqual(result.totals, { input: 15, output: 7, processed: 22, cached_input: 4, reasoning_output: 3, responses: 2, tool_calls: 0 });
+  assert.equal(result.status, 'partial');
+  assert.equal(result.totals.processed, null);
+  assert.equal(result.coverage.responses, 2);
   assert.equal(result.coverage.observed_responses, 2);
+  assert.equal(result.coverage.partial_threads, 1);
+});
+
+test('response item or turn without usage cannot let a per-response map understate measured tokens', async () => {
+  const result = await aggregate([[meta('thread-1'), usage('r1', 2, 1), record('turn_context', { turn_id: 'turn-2' }), record('response_item', { type: 'message', response_id: 'r2', content: 'SECRET_BODY' })]]);
+  assert.equal(result.status, 'partial');
+  assert.equal(result.totals.input, null);
+  assert.equal(result.totals.processed, null);
 });
 
 test('cumulative final snapshot wins over per-response records without double counting', async () => {
@@ -51,8 +60,14 @@ test('counter reset invalidates one thread without turning the other into zero',
   assert.equal(result.coverage.partial_threads, 1);
 });
 
+test('cumulative subset high-water survives a snapshot that omits optional counters', async () => {
+  const result = await aggregate([[meta('thread-1'), cumulative(20, 10, 8, 5), record('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 21, output_tokens: 11 } } }), cumulative(22, 12, 7, 4, 2)]]);
+  assert.equal(result.status, 'partial');
+  assert.equal(result.totals.processed, null);
+});
+
 test('conflict_is_thread_local for exact response identity across files', async () => {
-  const result = await aggregate([[meta('bad'), usage('same', 3, 1)], [meta('bad'), usage('same', 4, 1)], [meta('good'), usage('same', 5, 2)]]);
+  const result = await aggregate([[meta('bad'), usage('same', 3, 1)], [meta('bad'), usage('same', 4, 1)], [meta('good'), usage('same', 5, 2), cumulative(5, 2)]]);
   assert.equal(result.status, 'partial');
   assert.equal(result.totals.processed, null);
   assert.equal(result.coverage.observed_threads, 1);
@@ -60,7 +75,7 @@ test('conflict_is_thread_local for exact response identity across files', async 
 });
 
 test('unknown usage-bearing shape and unknown counter field are unsupported, unrelated records ignored', async () => {
-  const result = await aggregate([[meta('bad'), record('unknown_usage', { usage: { input_tokens: 4 } })], [meta('good'), record('noise', { text: 'SECRET_BODY' }), usage('r', 2, 1)]]);
+  const result = await aggregate([[meta('bad'), record('unknown_usage', { usage: { input_tokens: 4 } })], [meta('good'), record('noise', { text: 'SECRET_BODY' }), usage('r', 2, 1), cumulative(2, 1)]]);
   assert.equal(result.status, 'partial');
   assert.equal(result.coverage.unsupported_threads, 1);
   assert.equal(result.totals.processed, null);
@@ -79,7 +94,7 @@ test('missing and unsupported evidence stay nullable, explicit measured empty cu
 });
 
 test('missing optional subset counters remain unknown instead of fabricated zero', async () => {
-  const result = await aggregate([[meta('thread-1'), record('token_usage_record', { response_id: 'r', usage: { input_tokens: 3, output_tokens: 2 } })]]);
+  const result = await aggregate([[meta('thread-1'), record('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 3, output_tokens: 2 } } })]]);
   assert.equal(result.status, 'observed');
   assert.equal(result.totals.processed, 5);
   assert.equal(result.totals.cached_input, null);
@@ -90,6 +105,20 @@ test('usage-bearing unexpected record family is unsupported even when name is re
   const result = await aggregate([[meta('thread-1'), record('turn_context', { turn_id: 't', usage: { input_tokens: 3 } }), usage('r', 1, 1)]]);
   assert.equal(result.status, 'unsupported');
   assert.equal(result.totals.processed, null);
+});
+
+test('response_item and compaction usage-bearing variants invalidate only their thread', async () => {
+  const badResponse = await aggregate([[meta('bad'), cumulative(2, 1), record('response_item', { type: 'message', info: { total_token_usage: { input_tokens: 99 } } })]]);
+  assert.equal(badResponse.status, 'unsupported');
+  const badCompaction = await aggregate([[meta('bad'), cumulative(2, 1), record('compaction', { usage: { input_tokens: 99 } })]]);
+  assert.equal(badCompaction.status, 'unsupported');
+});
+
+test('explicit compaction count on partial thread remains observed when another thread has valid totals', async () => {
+  const result = await aggregate([[meta('partial'), usage('r', 1, 1), record('event_msg', { type: 'context_compacted' })], [meta('observed'), cumulative(2, 1)]]);
+  assert.equal(result.status, 'partial');
+  assert.equal(result.compactions, 1);
+  assert.equal(result.coverage.compactions, 1);
 });
 
 test('multibyte_even_median and nearest-rank p95 count only joined output bytes', async () => {
@@ -122,7 +151,7 @@ test('ambiguous thread identity aborts import with line number only', async () =
 });
 
 test('session alias identifies its own thread while conflicting parent metadata invalidates coverage', async () => {
-  const alias = await aggregate([[record('session_meta', { id: 'thread-1', session_id: 'session-1' }), usage('r', 2, 1, 0, 0, { session_id: 'session-1' })]]);
+  const alias = await aggregate([[record('session_meta', { id: 'thread-1', session_id: 'session-1' }), usage('r', 2, 1, 0, 0, { session_id: 'session-1' }), cumulative(2, 1)]]);
   assert.equal(alias.status, 'observed');
   const conflict = await aggregate([[record('session_meta', { id: 'thread-1', parent_thread_id: 'parent-a' }), usage('r', 2, 1)], [record('session_meta', { id: 'thread-1', parent_thread_id: 'parent-b' })]]);
   assert.equal(conflict.status, 'unsupported');
