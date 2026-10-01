@@ -51,6 +51,17 @@ test('loads verified linked worktree', async () => {
   assert.equal(context.paths.runtime, path.join(await realpath(f.installation), 'projects/alpha/runtime'));
 });
 
+test('freezes nested adapter data in the returned context', async () => {
+  const f = await fixture();
+  const declaration = manifest('alpha');
+  declaration.adapters.sample = { type: 'sample', options: { labels: ['first'] } };
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(declaration));
+  const context = await loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' });
+  assert.equal(Object.isFrozen(context.adapters.sample.options), true);
+  assert.equal(Object.isFrozen(context.adapters.sample.options.labels), true);
+  assert.throws(() => context.adapters.sample.options.labels.push('second'), TypeError);
+});
+
 test('rejects absent binding without writes', async () => {
   const f = await fixture();
   const before = await readdir(f.root);
@@ -73,7 +84,10 @@ test('rejects duplicate canonical registrations', async () => {
 
 test('rejects another project aliasing the same canonical checkout', async () => {
   const f = await fixture();
-  await writeFile(f.bindingPath, JSON.stringify({ schemaVersion: 1, registrations: [f.registration, { ...f.registration, projectId: 'beta' }] }));
+  const alias = `${f.primary}${path.sep}..${path.sep}primary`;
+  assert.notEqual(alias, f.registration.projectRoot);
+  assert.equal(await realpath(alias), await realpath(f.primary));
+  await writeFile(f.bindingPath, JSON.stringify({ schemaVersion: 1, registrations: [f.registration, { ...f.registration, projectId: 'beta', projectRoot: alias }] }));
   await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /duplicate|alias|ambiguous/i);
 });
 
@@ -120,6 +134,14 @@ test('rejects management paths into another project space', async () => {
   await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /memory|path/i);
 });
 
+test('rejects overlapping management directories', async () => {
+  const f = await fixture();
+  const declaration = manifest('alpha');
+  declaration.paths.memory = 'projects/alpha/tasks/memory';
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(declaration));
+  await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /manifest.paths|overlap/i);
+});
+
 test('rejects selected project symlink into another project space', async () => {
   const f = await fixture();
   const projects = path.join(f.installation, 'projects');
@@ -152,9 +174,23 @@ test('rejects primary checkout with unrelated empty Git directory', async () => 
 test('rejects empty adapter type', async () => {
   const f = await fixture();
   const invalid = manifest('alpha');
-  invalid.adapters.goal = { type: '' };
+  invalid.adapters.sample = { type: '' };
   await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(invalid));
   await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /adapter/i);
+});
+
+test('rejects undeclared top-level manifest fields', async () => {
+  const f = await fixture();
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify({ ...manifest('alpha'), privateRoot: 'other' }));
+  await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /manifest/i);
+});
+
+test('rejects undeclared management path fields', async () => {
+  const f = await fixture();
+  const declaration = manifest('alpha');
+  declaration.paths.backup = 'projects/alpha/backup';
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(declaration));
+  await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /manifest.paths/i);
 });
 
 test('rejects invalid manifest version', async () => {

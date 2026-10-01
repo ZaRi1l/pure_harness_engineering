@@ -16,6 +16,13 @@ const isInside = (owner, target) => {
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 };
 const nested = (left, right) => isInside(left, right) || isInside(right, left);
+const deepFreeze = value => {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+};
 
 async function rootPath(value, field) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) fail('INVALID_ROOT', field);
@@ -102,10 +109,11 @@ async function verifyCheckout(projectRoot, checkoutRoot) {
 
 function validatedManifest(value, projectId) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('INVALID_MANIFEST', 'manifest');
+  if (Object.keys(value).some(name => !['schemaVersion', 'id', 'displayName', 'paths', 'adapters'].includes(name))) fail('INVALID_MANIFEST', 'manifest');
   if (value.schemaVersion !== 1) fail('INVALID_MANIFEST_VERSION', 'manifest');
   if (value.id !== projectId || !/^[a-z][a-z0-9-]*$/.test(value.id)) fail('MISMATCHED_ID', 'manifest.id');
   if (typeof value.displayName !== 'string' || !value.displayName.trim()) fail('INVALID_MANIFEST', 'manifest.displayName');
-  if (!value.paths || typeof value.paths !== 'object') fail('INVALID_MANIFEST', 'manifest.paths');
+  if (!value.paths || typeof value.paths !== 'object' || Array.isArray(value.paths) || Object.keys(value.paths).some(name => !['tasks', 'memory', 'runtime'].includes(name))) fail('INVALID_MANIFEST', 'manifest.paths');
   if (!value.adapters || typeof value.adapters !== 'object' || Array.isArray(value.adapters)) fail('INVALID_MANIFEST', 'manifest.adapters');
   return value;
 }
@@ -139,12 +147,13 @@ export async function loadProjectContext({ checkoutRoot, bindingPath, projectId 
     if (same(paths[name], managementRoot) || !isInside(managementRoot, paths[name])) fail('PATH_ESCAPE', `manifest.paths.${name}`);
     await rejectManagementSymlinks(harnessRoot, paths[name], `manifest.paths.${name}`);
   }
-  if (new Set(Object.values(paths).map(key)).size !== 3 || Object.values(paths).some(item => same(item, harnessRoot))) fail('INVALID_PATHS', 'manifest.paths');
+  const managementPaths = Object.values(paths);
+  if (managementPaths.some((item, index) => managementPaths.slice(index + 1).some(other => nested(item, other)))) fail('INVALID_PATHS', 'manifest.paths');
   const adapters = {};
   for (const [name, adapter] of Object.entries(manifest.adapters)) {
     if (!adapter || typeof adapter !== 'object' || Array.isArray(adapter) || typeof adapter.type !== 'string' || !adapter.type.trim()) fail('INVALID_ADAPTER', `manifest.adapters.${name}`);
     if (adapter.projectRelativePath !== undefined) await containedPath(projectRoot, adapter.projectRelativePath, `manifest.adapters.${name}.projectRelativePath`);
-    adapters[name] = Object.freeze({ ...adapter });
+    adapters[name] = deepFreeze({ ...adapter });
   }
   const safeManifest = Object.freeze({ schemaVersion: 1, id: manifest.id, displayName: manifest.displayName, paths: Object.freeze({ ...manifest.paths }), adapters: Object.freeze(adapters) });
   const context = Object.freeze({ projectId, harnessRoot, projectRoot, checkoutRoot: checkout, manifest: safeManifest, paths: Object.freeze(paths), adapters: Object.freeze(adapters) });
