@@ -41,7 +41,7 @@
 | `preview/dashboard.js`, `preview/index.html`, `preview/preferences.js` | Mount editor, poll data, row labels, styling and translated copy. Do not alter `scripts/generate-preview.mjs` into a writer. |
 | `tests/task-records.test.mjs`, `tests/runtime-state.test.mjs`, `tests/preview-server.test.mjs`, `tests/status-preview.test.mjs` | Pure, lock/concurrency, HTTP security, and simulated-DOM/poll contracts. |
 
-The donor checkout has no matching editable-task implementation; preserve its existing neutral patterns only. Avoid new packages. Append new test files to `tests/all.test.mjs` only if that runner does not already discover them.
+The mixed SILO donor checkout `D:/dev/chrome_extension/Silo_server` has generic-reference task board/order patterns in `preview/task-board.js` and `tests/task-board.test.mjs`. Review those patterns/tests narrowly; do not copy the board wholesale or import SILO product code/data. Avoid new packages. Append new test files to `tests/all.test.mjs` only if that runner does not already discover them.
 
 ### Task 1: Versioned single-task store mutations
 
