@@ -18,18 +18,18 @@ const exists = async absolute => stat(absolute).then(() => true, error => {
   throw error;
 });
 
-async function fixture(t) {
+async function fixture(t, profile = 'core') {
   const root = await mkdtemp(path.join(os.tmpdir(), 'harness-distribution-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const producer = path.join(root, 'producer'), consumer = path.join(root, 'consumer');
   await mkdir(producer);
   await mkdir(consumer);
   const compatibility = JSON.parse(await readFile(path.join(repository, 'harness/compatibility.json'), 'utf8'));
-  const roles = await loadRoles(repository, 'core');
+  const roles = await loadRoles(repository, profile);
   const adapters = [['codex', renderCodexRole], ['claude', renderClaudeRole],
     ['opencode', renderOpenCodeRole], ['antigravity', renderAntigravityRole]];
   const items = adapters.flatMap(([target, render]) => roles.map(role => ({
-    ...render(role, { compatibility, profile: 'core' }), target, roleId: role.id,
+    ...render(role, { compatibility, profile }), target, roleId: role.id,
     sourcePath: role.sourcePath, sourceSha256: role.sourceSha256,
   })));
   const manifest = { entries: [] };
@@ -42,7 +42,7 @@ async function fixture(t) {
   manifest.entries.sort((a, b) => a.target.localeCompare(b.target) || a.path.localeCompare(b.path));
   await writeFile(path.join(consumer, 'AGENTS.md'), '# Existing consumer policy\n');
   await writeFile(path.join(consumer, 'CLAUDE.md'), '# Existing Claude policy\n');
-  const skills = await listSkills(repository, 'core');
+  const skills = await listSkills(repository, profile);
   return { root, producer, consumer, manifest, skills, compatibility };
 }
 
@@ -74,6 +74,17 @@ async function readGeneratedText(root, manifest) {
   return bodies.join('\n');
 }
 
+async function assertPortablePrompts(prompts, consumerRoot) {
+  assert.doesNotMatch(prompts, /localhost|node scripts\/|\.ai\/runtime|npm/i);
+  for (const reference of prompts.matchAll(/\.agents\/skills\/([a-z-]+)\/SKILL\.md/g))
+    assert.equal(await exists(path.join(consumerRoot, reference[0])), true, reference[0]);
+}
+
+test('consumer prompt check rejects runtime commands and unresolved skill references', async () => {
+  await assert.rejects(assertPortablePrompts('Run node scripts/runtime-state.mjs', os.tmpdir()), /node scripts\//);
+  await assert.rejects(assertPortablePrompts('Read .agents/skills/missing/SKILL.md', os.tmpdir()), /missing\/SKILL\.md/);
+});
+
 test('synthetic manifest copies only generated outputs and canonical skills into a Node-free consumer', async t => {
   const { producer, consumer, manifest, skills, compatibility } = await fixture(t);
   const coreIds = ['planner', 'worker', 'verifier', 'reviewer', 'goal-manager'];
@@ -91,9 +102,7 @@ test('synthetic manifest copies only generated outputs and canonical skills into
     assert.equal(await exists(path.join(consumer, absent)), false, absent);
   await rm(producer, { recursive: true });
   const prompts = await readGeneratedText(consumer, manifest);
-  assert.doesNotMatch(prompts, /localhost|node scripts\/|\.ai\/runtime|npm/i);
-  for (const reference of prompts.matchAll(/\.agents\/skills\/([a-z-]+)\/SKILL\.md/g))
-    assert.equal(await exists(path.join(consumer, reference[0])), true, reference[0]);
+  await assertPortablePrompts(prompts, consumer);
 });
 
 test('copied skills do not imply unverified native discovery', async t => {
@@ -104,7 +113,30 @@ test('copied skills do not imply unverified native discovery', async t => {
   assert.equal(copied.skillDiscovery.opencode.status, 'unsupported');
   assert.equal(copied.skillDiscovery.antigravity.status, 'unsupported');
   assert.equal(copied.skillDiscovery.codex.status, skillAvailability('codex', compatibility).status);
-  assert.equal(compatibility.targets.claude.nativeSmoke, 'unverified');
+  for (const target of ['codex', 'claude', 'opencode', 'antigravity'])
+    assert.equal(compatibility.targets[target].nativeSmoke, 'unverified');
+});
+
+test('all-profile distribution copies every role and skill into a producer-free consumer', async t => {
+  const { producer, consumer, manifest, skills, compatibility } = await fixture(t, 'all');
+  const allIds = ['planner', 'worker', 'verifier', 'reviewer', 'goal-manager', 'supervisor',
+    'context-curator', 'preview-manager', 'impact-analyzer', 'integrator',
+    'environment-doctor', 'researcher', 'security-auditor', 'performance-analyzer', 'release-manager'];
+  for (const target of ['codex', 'claude', 'opencode', 'antigravity'])
+    assert.deepEqual(new Set(manifest.entries.filter(entry => entry.target === target).map(entry => entry.roleId)), new Set(allIds));
+  assert.deepEqual(new Set(skills.map(skill => skill.id)), new Set([
+    'context-curation', 'failure-recovery', 'model-routing', 'task-routing',
+    'task-spec', 'testing', 'token-efficiency', 'token-optimization',
+  ]));
+  const copied = await copyDistribution(manifest, skills, producer, consumer, compatibility);
+  assert.equal(copied.paths.length, 15 * 4 + 8);
+  for (const absent of ['node', 'npm', 'scripts', '.ai/runtime', '.codex/hooks.json'])
+    assert.equal(await exists(path.join(consumer, absent)), false, absent);
+  await rm(producer, { recursive: true });
+  const prompts = await readGeneratedText(consumer, manifest);
+  await assertPortablePrompts(prompts, consumer);
+  for (const skill of skills)
+    assert.match(await readFile(path.join(consumer, skill.path), 'utf8'), /^---\r?\nname:/);
 });
 
 test('all 15 canonical roles render portable descriptions and bodies for all four targets', async () => {
