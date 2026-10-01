@@ -79,6 +79,8 @@ Main은 실제 네이티브 하위 에이전트 호출 전후에만 얇은 fallb
 node scripts/runtime-state.mjs --project <프로젝트-id> --checkout <checkout-절대경로> --binding <binding-절대경로> goal "커넥터 구현" --phase execution
 node scripts/runtime-state.mjs --project <프로젝트-id> --checkout <checkout-절대경로> --binding <binding-절대경로> task implementation "커넥터 구현" in_progress --owner worker-1
 node scripts/runtime-state.mjs --project <프로젝트-id> --checkout <checkout-절대경로> --binding <binding-절대경로> claim worker-1 src/backend/
+npm test
+if ($LASTEXITCODE -ne 0) { throw "npm test 실패: passed 기록 중단" }
 node scripts/runtime-state.mjs --project <프로젝트-id> --checkout <checkout-절대경로> --binding <binding-절대경로> verify passed unit-tests --detail "npm test"
 node scripts/runtime-state.mjs --project <프로젝트-id> --checkout <checkout-절대경로> --binding <binding-절대경로> release-claim worker-1
 node scripts/runtime-state.mjs --project <프로젝트-id> --checkout <checkout-절대경로> --binding <binding-절대경로> signal planner worker handoff "작업 명세 준비 완료"
