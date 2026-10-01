@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isValidatedProjectContext, loadProjectContext } from './project-context.mjs';
 import { TASK_STATUSES, safeTask, taskRevision, validateTaskFields } from './task-records.mjs';
+import { normalizeChildLink, normalizeTelemetry } from './telemetry-schema.mjs';
 
 export { TASK_STATUSES } from './task-records.mjs';
 export const VERIFICATION_STATUSES = new Set(['not_run', 'running', 'passed', 'failed', 'blocked']);
@@ -92,6 +93,7 @@ export class RuntimeStore {
     } else throw new Error('validated project or explicit core context required');
     this.statusPath = path.join(this.runtime, 'status.json'); this.tasksPath = path.join(this.runtime, 'tasks.json');
     this.eventsPath = path.join(this.runtime, 'events.jsonl'); this.claimsPath = path.join(this.runtime, 'claims.json'); this.lockPath = path.join(this.runtime, '.state.lock');
+    this.telemetryPath = path.join(this.runtime, 'telemetry.json'); this.agentLinksPath = path.join(this.runtime, 'agent-links.json');
     this.eventLimit = Math.max(1, eventLimit); this.lockTimeoutMs = lockTimeoutMs;
   }
   assertDocument(value, name) {
@@ -184,10 +186,51 @@ export class RuntimeStore {
   async readTasks() { await this.assertRuntimePath(); if (!existsSync(this.tasksPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.tasksPath, 'utf8')), 'tasks'); }
   async readEvents() { await this.assertRuntimePath(); if (!existsSync(this.eventsPath)) await this.initialize(); return this.parseEvents(await readFile(this.eventsPath, 'utf8')); }
   async readClaims() { await this.assertRuntimePath(); if (!existsSync(this.claimsPath)) await this.initialize(); return this.assertDocument(JSON.parse(await readFile(this.claimsPath, 'utf8')), 'claims'); }
+  telemetryProjectId() { if (!this.context) throw new Error('validated project or core context required'); return this.context.projectId; }
+  async readTelemetry() {
+    const projectId = this.telemetryProjectId();
+    await this.assertRuntimePath();
+    if (!existsSync(this.telemetryPath)) return { schema_version: 1, project_id: projectId, status: 'missing' };
+    return normalizeTelemetry(this.assertDocument(JSON.parse(await readFile(this.telemetryPath, 'utf8')), 'telemetry'), projectId);
+  }
+  async replaceTelemetry(value) {
+    const document = normalizeTelemetry(value, this.telemetryProjectId());
+    await this.withLock(async () => { await atomicWrite(this.telemetryPath, `${JSON.stringify(document, null, 2)}\n`); });
+  }
+  async readChildLinks() {
+    const projectId = this.telemetryProjectId();
+    await this.assertRuntimePath();
+    if (!existsSync(this.agentLinksPath)) return [];
+    const document = this.assertDocument(JSON.parse(await readFile(this.agentLinksPath, 'utf8')), 'agent-links');
+    if (!Array.isArray(document.links)) throw new Error('invalid child links');
+    return document.links.map(link => normalizeChildLink({ ...link, acknowledgement: 'success' }, projectId));
+  }
+  async recordChildLink(value) {
+    const projectId = this.telemetryProjectId();
+    const link = normalizeChildLink(value, projectId);
+    await this.withLock(async () => {
+      const links = await this.readChildLinks();
+      const existing = links.find(item => item.child_agent_id === link.child_agent_id);
+      if (existing && JSON.stringify(existing) !== JSON.stringify(link)) throw new Error('conflicting child link');
+      if (!existing) links.push(link);
+      await atomicWrite(this.agentLinksPath, `${JSON.stringify({ schema_version: 1, project_id: projectId, links }, null, 2)}\n`);
+    });
+  }
+  async completeChildLink(childAgentId, completedAt) {
+    const projectId = this.telemetryProjectId();
+    if (typeof childAgentId !== 'string' || !childAgentId) throw new Error('invalid child agent id');
+    await this.withLock(async () => {
+      const links = await this.readChildLinks();
+      const index = links.findIndex(item => item.child_agent_id === childAgentId);
+      if (index < 0) throw new Error('unknown child agent id');
+      links[index] = normalizeChildLink({ ...links[index], acknowledgement: 'success', completed_at: completedAt }, projectId);
+      await atomicWrite(this.agentLinksPath, `${JSON.stringify({ schema_version: 1, project_id: projectId, links }, null, 2)}\n`);
+    });
+  }
   async readSnapshot() {
     await this.assertRuntimePath();
     if (!existsSync(this.statusPath) || !existsSync(this.tasksPath) || !existsSync(this.eventsPath) || !existsSync(this.claimsPath)) await this.initialize();
-    return this.withLock(async () => this.loadUnlocked());
+    return this.withLock(async () => ({ ...await this.loadUnlocked(), ...(this.context ? { telemetry: await this.readTelemetry() } : {}) }));
   }
   async loadUnlocked() {
     await this.assertRuntimePath();

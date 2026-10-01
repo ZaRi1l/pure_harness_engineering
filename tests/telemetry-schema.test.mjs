@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { normalizeTelemetry, normalizeChildLink } from '../scripts/telemetry-schema.mjs';
+
+const totals = { input: 10, output: 4, processed: 14, cached_input: 3, reasoning_output: 2 };
+const base = () => ({ schema_version: 1, project_id: 'alpha', observed_at: '2026-10-01T00:00:00.000Z', source: 'codex_rollout', status: 'observed', start_at: '2026-10-01T00:00:00.000Z', end_at: '2026-10-01T00:00:01.000Z', elapsed_ms: 1000, totals, tasks: [], roles: [], agents: [], unattributed: { ...totals, fraction: 0 }, largest_tool_outputs: [], spawns: [], compactions: 0, coverage: { threads: 1, observed_threads: 1 } });
+
+test('aggregate projects only allowlisted metadata and derives no source content', () => {
+  const input = base();
+  input.prompt = 'PROMPT_SENTINEL'; input.source_path = 'PATH_SENTINEL';
+  input.totals = { ...totals, reasoning: 'REASONING_SENTINEL' };
+  input.tasks = [{ task_id: 'task-1', totals, title: 'BODY_SENTINEL' }];
+  input.largest_tool_outputs = [{ tool: 'SECRET_SENTINEL', count: 1, total_bytes: 1, median_bytes: 1, p95_bytes: 1, max_bytes: 1, output: 'BODY_SENTINEL' }];
+  const normalized = normalizeTelemetry(input, 'alpha');
+  const json = JSON.stringify(normalized);
+  for (const sentinel of ['PROMPT_SENTINEL', 'PATH_SENTINEL', 'REASONING_SENTINEL', 'BODY_SENTINEL', 'SECRET_SENTINEL']) assert.equal(json.includes(sentinel), false);
+  assert.equal(normalized.largest_tool_outputs[0].tool, 'other');
+  assert.equal(normalized.elapsed_ms, 1000);
+  assert.deepEqual(normalized.tasks[0], { task_id: 'task-1', totals });
+});
+
+test('aggregate rejects unsafe numbers, equations, timestamps, and project identity', () => {
+  for (const patch of [
+    { totals: { ...totals, input: -1 } }, { totals: { ...totals, input: 1.5 } },
+    { totals: { ...totals, input: Number.MAX_SAFE_INTEGER + 1 } },
+    { totals: { ...totals, processed: 15 } }, { totals: { ...totals, cached_input: 11 } },
+    { totals: { ...totals, reasoning_output: 5 } },
+    { start_at: null, elapsed_ms: 1000 }, { elapsed_ms: 999 }, { project_id: 'beta' },
+  ]) assert.throws(() => normalizeTelemetry({ ...base(), ...patch }, 'alpha'));
+  assert.equal(normalizeTelemetry({ ...base(), totals: { input: null, output: 4, processed: null, cached_input: null, reasoning_output: 2 } }, 'alpha').totals.processed, null);
+});
+
+test('child link accepts only exact successful acknowledgement and metadata labels', () => {
+  const link = { project_id: 'alpha', acknowledgement: 'success', task_id: 'task-1', root_turn_id: 'turn-1', parent_agent_id: 'parent-1', child_agent_id: 'child-1', role: 'worker', short_task_name: 'Implement storage', fork_turns: 'all', model: 'gpt-6-sol', reasoning_effort: 'medium', spawned_at: '2026-10-01T00:00:00.000Z', completed_at: null, prompt: 'PROMPT_SENTINEL' };
+  const normalized = normalizeChildLink(link, 'alpha');
+  assert.equal(JSON.stringify(normalized).includes('PROMPT_SENTINEL'), false);
+  assert.equal(normalized.child_agent_id, 'child-1');
+  assert.throws(() => normalizeChildLink({ ...link, acknowledgement: 'attempted' }, 'alpha'));
+  assert.throws(() => normalizeChildLink({ ...link, child_agent_id: null }, 'alpha'));
+  assert.throws(() => normalizeChildLink({ ...link, project_id: 'beta' }, 'alpha'));
+  assert.throws(() => normalizeChildLink({ ...link, short_task_name: 'x'.repeat(101) }, 'alpha'));
+});
