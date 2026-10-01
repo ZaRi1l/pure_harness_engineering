@@ -16,7 +16,6 @@ const STATIC_EXTENSIONS = new Set(['.html', '.js', '.css', '.svg']);
 const MODULE_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const within = (root, file) => file === root || file.startsWith(`${root}${path.sep}`);
 const TASK_BODY_LIMIT = 16 * 1024;
-const taskIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
 function json(response, status, value) {
   response.writeHead(status, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
@@ -110,9 +109,10 @@ export async function createPreviewServer(context, host = '127.0.0.1', options =
   const writeTokenBytes = Buffer.from(writeToken, 'utf8');
   const server = http.createServer(async (request, response) => {
     try {
-      let pathname;
-      try { pathname = decodeURIComponent(new URL(request.url, `http://${host}`).pathname); }
+      let pathname, encodedPath;
+      try { encodedPath = new URL(request.url, `http://${host}`).pathname; pathname = decodeURIComponent(encodedPath); }
       catch { json(response, 400, { error: 'invalid_url' }); return; }
+      const rawPath = request.url.split(/[?#]/, 1)[0];
       const taskPath = pathname === '/runtime/tasks';
       const taskItemPath = pathname.startsWith('/runtime/tasks/');
       if (taskPath || taskItemPath) {
@@ -129,7 +129,8 @@ export async function createPreviewServer(context, host = '127.0.0.1', options =
         if (!taskWriteAuthorized(request, server, writeTokenBytes)) {
           json(response, 403, { error: 'forbidden' }); return;
         }
-        if (taskItemPath && !taskIdPattern.test(pathname.slice('/runtime/tasks/'.length))) {
+        const encodedId = taskItemPath && rawPath.startsWith('/runtime/tasks/') ? rawPath.slice('/runtime/tasks/'.length) : '';
+        if (taskItemPath && (!encodedId || encodedId.includes('/') || encodedPath !== rawPath || !pathname.slice('/runtime/tasks/'.length))) {
           json(response, 400, { error: 'invalid_task_id' }); return;
         }
         if (request.headers['content-encoding'] !== undefined || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers['content-type'] || '')) {

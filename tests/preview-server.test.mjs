@@ -633,12 +633,55 @@ test('task HTTP rejects invalid writes without touching task document bytes', as
   const oversized = await fetch(`${base}/runtime/tasks`, { method: 'POST', headers, body: ' '.repeat(16 * 1024 + 1) });
   assert.equal(oversized.status, 413);
   assert.deepEqual(await readFile(pathToTasks), original);
-  for (const url of ['/runtime/tasks/not%20valid', '/runtime/tasks/%2Fetc', '/runtime/tasks/%ZZ']) {
+  for (const url of ['/runtime/tasks/a/b', '/runtime/tasks/%ZZ']) {
     const response = await fetch(base + url, { method: 'PUT', headers, body: JSON.stringify({ ...valid, revision: 'old' }) });
     assert.equal(response.status, 400, url);
   }
   assert.equal((await fetch(`${base}/runtime/tasks/missing`, { method: 'PUT', headers, body: JSON.stringify({ ...valid, revision: 'old' }) })).status, 404);
+  for (const url of ['/runtime/tasks/not%20valid', '/runtime/tasks/%2Fetc']) {
+    assert.equal((await fetch(base + url, { method: 'PUT', headers, body: JSON.stringify({ ...valid, revision: 'old' }) })).status, 404, url);
+  }
   assert.deepEqual(await readFile(pathToTasks), original);
+});
+
+test('task HTTP updates existing opaque legacy IDs through one encoded URL segment', async t => {
+  const f = await projectPreviewFixture();
+  const context = await f.context('alpha');
+  const store = new RuntimeStore(context);
+  const ids = ['with space', '한글', 'part/child'];
+  for (const id of ids) await store.upsertTask(id, 'Before', 'pending', 'original-owner');
+  const base = await listening(t, context);
+  const document = await (await fetch(`${base}/runtime/tasks`)).json();
+  const headers = { origin: base, 'content-type': 'application/json', 'x-task-write-token': document.write_token };
+  for (const id of ids) {
+    const before = document.tasks.find(task => task.id === id);
+    assert.ok(before, id);
+    const response = await fetch(`${base}/runtime/tasks/${encodeURIComponent(id)}`, {
+      method: 'PUT', headers, body: JSON.stringify({ title: `After ${id}`, status: 'completed', branch: 'legacy-fix', revision: before.revision })
+    });
+    assert.equal(response.status, 200, id);
+    const updated = await response.json();
+    assert.equal(updated.id, id);
+    assert.equal(updated.title, `After ${id}`);
+    assert.equal(updated.owner, 'original-owner');
+    assert.notEqual(updated.revision, before.revision);
+  }
+  const beforeRawPath = await readFile(path.join(context.paths.runtime, 'tasks.json'));
+  const rawPath = await fetch(`${base}/runtime/tasks/part/child`, {
+    method: 'PUT', headers, body: JSON.stringify({ title: 'Wrong route', status: 'completed', branch: null, revision: document.tasks.find(task => task.id === 'part/child').revision })
+  });
+  assert.equal(rawPath.status, 400);
+  const doubleEncoded = await fetch(`${base}/runtime/tasks/part%252Fchild`, {
+    method: 'PUT', headers, body: JSON.stringify({ title: 'Wrong decode', status: 'completed', branch: null, revision: document.tasks.find(task => task.id === 'part/child').revision })
+  });
+  assert.equal(doubleEncoded.status, 404);
+  const normalizedTraversal = await new Promise((resolve, reject) => {
+    const request = http.request(base, { method: 'PUT', path: '/runtime/tasks/part/../child', headers }, response => { response.resume(); resolve(response.statusCode); });
+    request.on('error', reject);
+    request.end(JSON.stringify({ title: 'Wrong normalization', status: 'completed', branch: null, revision: document.tasks.find(task => task.id === 'part/child').revision }));
+  });
+  assert.equal(normalizedTraversal, 400);
+  assert.deepEqual(await readFile(path.join(context.paths.runtime, 'tasks.json')), beforeRawPath);
 });
 
 test('task HTTP enforces origin, host, token, type, and method gates', async t => {
