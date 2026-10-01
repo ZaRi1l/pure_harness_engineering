@@ -78,7 +78,7 @@ export function toolOutputStats(byteLengths) {
 
 function usageBearing(type, payload) {
   if (!object(payload)) return false;
-  return 'usage' in payload || 'total_token_usage' in payload || (object(payload.info) && 'total_token_usage' in payload.info) || /(?:token|usage)/i.test(type);
+  return 'usage' in payload || 'total_token_usage' in payload || (object(payload.info) && ('usage' in payload.info || 'total_token_usage' in payload.info)) || /(?:token|usage)/i.test(type);
 }
 function totalsFrom(values, responses, toolCalls) {
   return { input: values[0], output: values[1], processed: values[0] + values[1], cached_input: values[2], reasoning_output: values[3], responses, tool_calls: toolCalls };

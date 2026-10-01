@@ -114,6 +114,15 @@ test('response_item and compaction usage-bearing variants invalidate only their 
   assert.equal(badCompaction.status, 'unsupported');
 });
 
+test('response_item info.usage metadata is unsupported without inspecting output body text', async () => {
+  const result = await aggregate([[meta('bad'), cumulative(2, 1), record('response_item', { type: 'message', info: { usage: { input_tokens: 99 } } })], [meta('good'), cumulative(3, 1), tool('function_call', 'c1', { name: 'exec_command' }), tool('function_call_output', 'c1', { output: 'info.usage SECRET_BODY' })]]);
+  assert.equal(result.status, 'partial');
+  assert.equal(result.coverage.unsupported_threads, 1);
+  assert.equal(result.coverage.observed_threads, 1);
+  assert.equal(result.totals.processed, null);
+  assert.equal(JSON.stringify(result).includes('SECRET_BODY'), false);
+});
+
 test('explicit compaction count on partial thread remains observed when another thread has valid totals', async () => {
   const result = await aggregate([[meta('partial'), usage('r', 1, 1), record('event_msg', { type: 'context_compacted' })], [meta('observed'), cumulative(2, 1)]]);
   assert.equal(result.status, 'partial');
