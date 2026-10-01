@@ -20,6 +20,8 @@ let networkHost;
 let renderedLocale = preferences.locale;
 let taskEditor;
 let taskPollGeneration = 0;
+let snapshotPollGeneration = 0;
+let taskFetchError;
 
 const fallbackPolicy = (model, reasoning) => /^gpt-6-(sol|luna)$/.test(model || '')
   ? `${model.replace('gpt-6-', 'gpt-5.6-')} · ${q(reasoning || t('common.inherited'))}`
@@ -59,6 +61,7 @@ async function dashboard() {
   grid.innerHTML = `<section class="card wide"><h2>${t('section.goal')}</h2><div id="goal"></div><div id="progress"></div></section><section class="card"><h2>${t('section.phase')}</h2><div id="phase"></div></section><section class="card wide"><h2>${t('section.activeAgents')}</h2><div id="agents"></div></section><section class="card"><h2>${t('section.verification')}</h2><div id="verification"></div></section><section class="card"><h2>${t('section.tasks')}</h2><div id="tasks"></div></section><section class="card"><h2>${t('section.claims')}</h2><div id="claims"></div></section><section class="card"><h2>${t('section.warnings')}</h2><div id="warnings"></div></section><section class="card"><h2>${t('section.blockers')}</h2><div id="blockers"></div></section><section class="card wide"><h2>${t('section.signals')}</h2><div id="signals"></div></section><section class="card full"><h2>${t('section.network')}</h2><div id="agent-network"></div></section><section class="card wide"><h2>${t('section.events')}</h2><div id="events"></div></section><section class="card"><h2>${t('section.artifacts')}</h2><div id="artifacts"></div></section>`;
   app.append(grid);
   taskEditor = createTaskEditor(document.querySelector('#tasks'), { fetchImpl: fetch, translate: t });
+  taskFetchError = undefined;
   paint();
 }
 
@@ -86,15 +89,31 @@ function updateNetwork(snapshot) {
   networkController.update(snapshot, catalog);
 }
 
-async function paint() {
-  if (!document.querySelector('#goal')) return;
+async function paintTasks() {
   const requestGeneration = ++taskPollGeneration;
   try {
-    const [snapshot, taskDocument] = await Promise.all([
-      fetch('/runtime/snapshot', { cache: 'no-store' }).then(response => response.json()),
-      fetch('/runtime/tasks', { cache: 'no-store' }).then(response => response.json())
-    ]);
-    if (requestGeneration !== taskPollGeneration || !document.querySelector('#goal')) return;
+    const taskDocument = await fetch('/runtime/tasks', { cache: 'no-store' }).then(response => {
+      if (response.ok === false) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    });
+    if (requestGeneration !== taskPollGeneration || !document.querySelector('#tasks')) return;
+    taskEditor.update(taskDocument.tasks, taskDocument.write_token ?? null);
+    taskFetchError?.remove?.();
+    taskFetchError = undefined;
+  } catch (error) {
+    if (requestGeneration !== taskPollGeneration || !document.querySelector('#tasks')) return;
+    if (!taskFetchError) { taskFetchError = el('p', 'bad'); document.querySelector('#tasks').append(taskFetchError); }
+    taskFetchError.textContent = `${t('section.tasks')}: ${error.message}`;
+  }
+}
+
+async function paint() {
+  if (!document.querySelector('#goal')) return;
+  paintTasks();
+  const requestGeneration = ++snapshotPollGeneration;
+  try {
+    const snapshot = await fetch('/runtime/snapshot', { cache: 'no-store' }).then(response => response.json());
+    if (requestGeneration !== snapshotPollGeneration || !document.querySelector('#goal')) return;
     const status = snapshot.status;
     const fill = (selector, items, render) => {
       const host = document.querySelector(selector);
@@ -118,7 +137,6 @@ async function paint() {
     });
     const recentCount = reportedAgents.filter(agent => startedWithinPastHour(agent, observedAt)).length;
     document.querySelector('#agents').append(el('p', 'muted', t('dashboard.agentCount', { reported: reportedAgents.length, recent: recentCount, outside: reportedAgents.length - recentCount })));
-    taskEditor.update(taskDocument.tasks, taskDocument.write_token ?? null);
     fill('#claims', snapshot.claims.claims, (li, claim) => { li.textContent = `${q(claim.agent_id)} — ${claim.scopes.join(', ')}`; });
     fill('#warnings', status.warnings, (li, warning) => { li.className = 'bad'; li.textContent = q(warning.message); });
     fill('#blockers', status.blockers, (li, blocker) => { li.textContent = q(blocker.message); });
@@ -131,7 +149,7 @@ async function paint() {
     updateNetwork(snapshot);
     document.querySelector('#dashboard-error')?.remove();
   } catch (error) {
-    if (requestGeneration !== taskPollGeneration || !document.querySelector('#goal')) return;
+    if (requestGeneration !== snapshotPollGeneration || !document.querySelector('#goal')) return;
     let message = document.querySelector('#dashboard-error');
     if (!message) { message = el('p', 'bad'); message.id = 'dashboard-error'; app.append(message); }
     message.textContent = t('dashboard.unavailable', { message: error.message });
@@ -220,8 +238,10 @@ function route() {
   }
   if (view !== dashboard && taskEditor) {
     taskPollGeneration++;
+    snapshotPollGeneration++;
     taskEditor.destroy();
     taskEditor = undefined;
+    taskFetchError = undefined;
   }
   document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === viewName));
   view();

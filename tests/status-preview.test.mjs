@@ -103,6 +103,40 @@ test('task editor adopts saved record and retains it after network retry and a s
   assert.match(host.textContent, /Saved/);
   editor.update([task('old')], 'token');
   assert.match(host.textContent, /Saved/);
+  editor.update([task('new', { title: 'External update', revision: 'rev-later' })], 'token');
+  assert.match(host.textContent, /External update/);
+  assert.doesNotMatch(host.textContent, /Saved/);
+  editor.destroy();
+});
+
+test('an accepted edit does not mask a newer external revision that arrives before its own poll echo', async () => {
+  const { host } = taskDOM();
+  const saved = task('a', { title: 'Mine', revision: 'rev-2' });
+  const editor = createTaskEditor(host, { fetchImpl: async () => ({ ok: true, status: 200, json: async () => saved }), translate: key => key });
+  editor.update([task()], 'token');
+  action(host, 'edit-a').click(); field(host, 'title').value = 'Mine';
+  action(host, 'save').click(); await new Promise(resolve => setImmediate(resolve));
+  editor.update([task()], 'token');
+  assert.match(host.textContent, /Mine/);
+  editor.update([task('a', { title: 'Theirs', revision: 'rev-3' })], 'token');
+  assert.match(host.textContent, /Theirs/);
+  assert.doesNotMatch(host.textContent, /Mine/);
+  editor.destroy();
+});
+
+test('rapid Save clicks and Enter submit dispatch only one in-flight add', async () => {
+  const { host } = taskDOM();
+  let resolveRequest;
+  let calls = 0;
+  const editor = createTaskEditor(host, { fetchImpl: () => { calls++; return new Promise(resolve => { resolveRequest = resolve; }); }, translate: key => key });
+  editor.update([], 'token');
+  action(host, 'add').click(); field(host, 'title').value = 'One';
+  action(host, 'save').click(); action(host, 'save').click();
+  descendants(host).find(node => node.tagName === 'form').onsubmit({ preventDefault() {} });
+  assert.equal(calls, 1);
+  resolveRequest({ ok: true, status: 201, json: async () => task('new', { title: 'One', revision: 'rev-2' }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(field(host, 'title'), undefined);
   editor.destroy();
 });
 

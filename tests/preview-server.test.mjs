@@ -527,13 +527,17 @@ test('out_of_order_poll_is_ignored for snapshot and Current Tasks', async () => 
     get textContent() { return this.text ?? this.children.map(child => child.textContent).join(''); }
   });
   for (const selector of ['#app', '#preview-preferences', '#app-tagline', '#sidebar-note']) nodes.set(selector, element());
-  const pending = [];
+  const pending = [], pendingTasks = [];
   const taskUpdates = [];
+  let refresh;
+  let taskHttpFailure = false;
   const snapshot = current_goal => ({ status: { current_goal, active_agents: [], verification: { status: 'passed' }, warnings: [], blockers: [], artifact_preview_links: [] }, tasks: { tasks: [] }, claims: { claims: [] }, events: [] });
   runInNewContext(source.replace(/^import .*?;\s*/gm, ''), {
     document: { querySelector: selector => nodes.get(selector), querySelectorAll: () => [], createElement: element },
-    location: { hash: '#dashboard' }, addEventListener() {}, setInterval() {},
-    fetch: async url => ({ json: () => url === '/runtime/catalog' ? Promise.resolve({ agents: [], skills: [] }) : url === '/runtime/tasks' ? Promise.resolve({ tasks: [], write_token: null }) : new Promise(resolve => pending.push(resolve)) }),
+    location: { hash: '#dashboard' }, addEventListener() {}, setInterval(callback) { refresh = callback; },
+    fetch: async url => url === '/runtime/tasks' && taskHttpFailure
+      ? { ok: false, status: 503, json: async () => ({ error: 'unavailable' }) }
+      : { json: () => url === '/runtime/catalog' ? Promise.resolve({ agents: [], skills: [] }) : url === '/runtime/tasks' ? new Promise((resolve, reject) => pendingTasks.push({ resolve, reject })) : new Promise(resolve => pending.push(resolve)) },
     createTaskEditor: () => ({ update(tasks, token) { taskUpdates.push({ tasks, token }); }, destroy() {} }),
     renderArtifactTabs: () => ({}),
     PreviewPreferences: { create: () => ({ locale: 'en', t: key => key, mount() {}, subscribe() {} }) },
@@ -541,13 +545,35 @@ test('out_of_order_poll_is_ignored for snapshot and Current Tasks', async () => 
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(pending.length, 2);
+  assert.equal(pendingTasks.length, 2);
   pending[1](snapshot('newer'));
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(nodes.get('#goal').textContent, 'newer');
+  assert.equal(nodes.get('#goal').textContent, 'newer', 'slow task GET must not delay snapshot');
+  pendingTasks[1].resolve({ tasks: [{ id: 'new', title: 'New task', revision: 'r2' }], write_token: 'new-token' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(taskUpdates.length, 1);
+  assert.equal(taskUpdates[0].tasks[0].title, 'New task');
+  assert.equal(taskUpdates[0].token, 'new-token');
   pending[0](snapshot('older'));
+  pendingTasks[0].resolve({ tasks: [{ id: 'old', title: 'Old task', revision: 'r1' }], write_token: 'old-token' });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(nodes.get('#goal').textContent, 'newer');
   assert.equal(taskUpdates.length, 1);
+  assert.equal(taskUpdates[0].token, 'new-token');
+  refresh();
+  await new Promise(resolve => setImmediate(resolve));
+  pendingTasks[2].reject(Error('task endpoint unavailable'));
+  pending[2](snapshot('latest'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nodes.get('#goal').textContent, 'latest', 'task GET failure must not suppress snapshot');
+  assert.equal(taskUpdates.length, 1);
+  taskHttpFailure = true;
+  refresh();
+  await new Promise(resolve => setImmediate(resolve));
+  pending[3](snapshot('latest again'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nodes.get('#goal').textContent, 'latest again');
+  assert.equal(taskUpdates.length, 1, 'HTTP failure must not clear a previously rendered task list');
 });
 
 test('validated task HTTP writes stay in the selected project and expose only safe records', async t => {

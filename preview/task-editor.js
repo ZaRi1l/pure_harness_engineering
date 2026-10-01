@@ -44,8 +44,9 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
   const renderRows = () => {
     rows.replaceChildren();
     const visible = new Map(tasks.map(task => [task.id, task]));
-    for (const [id, task] of adopted) {
-      if (visible.get(id)?.revision === task.revision) adopted.delete(id);
+    for (const [id, { task, priorRevision }] of adopted) {
+      const polled = visible.get(id);
+      if (polled && (polled.revision === task.revision || polled.revision !== priorRevision)) adopted.delete(id);
       else visible.set(id, task);
     }
     for (const task of sortTasks(visible.values(), oldestFirst)) {
@@ -82,12 +83,13 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
     formHost.replaceChildren(form); renderToolbar(); renderRows(); title.focus?.();
   };
   async function save() {
-    if (!active || !writeToken || active.conflict) return;
+    if (!active || !writeToken || active.conflict || active.saving) return;
     const draft = active;
     const title = draft.fields.title.value.trim(), branch = draft.fields.branch.value.trim();
     if (!title || title.length > 300) { showMessage('validation', translate('task.invalidTitle')); return; }
     if (branch.length > 120 || (branch && /[\u0000-\u001f\u007f]/.test(branch))) { showMessage('validation', translate('task.invalidBranch')); return; }
     clearMessage('validation'); clearMessage('error');
+    draft.saving = true;
     const requestId = ++generation;
     const body = { title, status: draft.fields.status.value, branch: branch || null };
     if (draft.mode === 'edit') body.revision = draft.originalRevision;
@@ -102,12 +104,12 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
         showMessage('conflict', `${translate('task.conflict')}: ${result.current.status} — ${result.current.title} — ${result.current.branch || translate('common.none')}`);
         if (!draft.reloadButton) { draft.reloadButton = button('task.reload', 'reload', () => { const current = draft.conflict; cancel(); start('edit', current); }); draft.messageHost.append(draft.reloadButton); }
       } else if (!response.ok) showMessage('error', translate('task.saveFailed'));
-      else { adopted.set(result.id, result); cancel(); }
+      else { adopted.set(result.id, { task: result, priorRevision: draft.originalRevision ?? null }); cancel(); }
     } catch {
       if (destroyed || requestId !== generation || active !== draft) return;
       showMessage('error', translate('task.networkError'));
       if (!draft.retryButton) { draft.retryButton = button('task.retry', 'retry', save); draft.messageHost.append(draft.retryButton); }
-    }
+    } finally { draft.saving = false; }
   }
   return {
     update(nextTasks, nextToken) { if (destroyed) return; tasks = Array.isArray(nextTasks) ? nextTasks : []; writeToken = nextToken || null; renderToolbar(); renderRows(); },
