@@ -64,6 +64,10 @@ test('fraction requires known positive total and known unattributed numerator', 
   assert.throws(() => normalizeTelemetry({ ...base(), unattributed: { ...totals, fraction: 0 } }, 'alpha'));
 });
 
+test('known unattributed count cannot exceed known total even when fraction is unknown', () => {
+  assert.throws(() => normalizeTelemetry({ ...base(), unattributed: { input: 11, output: 4, processed: 15, cached_input: 3, reasoning_output: 2, fraction: null } }, 'alpha'));
+});
+
 test('link label is only the exact task identifier and fork turns is a bounded enum', () => {
   const link = { project_id: 'alpha', acknowledgement: 'success', task_id: 'task-1', root_turn_id: null, parent_agent_id: null, child_agent_id: 'child-1', role: 'worker', short_task_name: 'task-1', fork_turns: '4', model: null, reasoning_effort: null, spawned_at: '2026-10-01T00:00:00.000Z', completed_at: null };
   assert.equal(normalizeChildLink(link, 'alpha').fork_turns, '4');

@@ -104,7 +104,8 @@ export function normalizeTelemetry(input, projectId) {
     return { parent_agent_id: id(row.parent_agent_id, 'parent agent', { nullable: true }), child_agent_id: id(row.child_agent_id, 'child agent', { nullable: true }), task_id: id(row.task_id, 'task id', { nullable: true }), role: known(row.role, ROLES, 'role'), fork_turns: forkTurns(row.fork_turns), attempts: count(row.attempts, 'spawn attempts'), confirmed: count(row.confirmed, 'confirmed spawns') };
   });
   const denominator = output.totals.processed, numerator = output.unattributed.processed, ratio = output.unattributed.fraction;
-  if (ratio !== null && (denominator === null || denominator === 0 || numerator === null || numerator > denominator || Math.abs(ratio - numerator / denominator) > 1e-12)) throw new Error('invalid unattributed fraction');
+  if (denominator !== null && numerator !== null && numerator > denominator) throw new Error('unattributed exceeds total');
+  if (ratio !== null && (denominator === null || denominator === 0 || numerator === null || Math.abs(ratio - numerator / denominator) > 1e-12)) throw new Error('invalid unattributed fraction');
   if (value.status === 'missing' || value.status === 'unsupported') {
     const tokenFields = ['input', 'output', 'processed', 'cached_input', 'reasoning_output', 'responses', 'tool_calls'];
     if (tokenFields.some(key => output.totals[key] != null || output.unattributed[key] != null) || ratio !== null || output.compactions !== null || output.tasks.length || output.roles.length || output.agents.length || output.largest_tool_outputs.length || output.spawns.length) throw new Error('unobserved telemetry cannot contain measured values');
