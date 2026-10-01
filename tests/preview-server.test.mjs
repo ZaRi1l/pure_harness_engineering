@@ -304,14 +304,18 @@ test('catalog route refuses a replaced skills-root junction while preserving nor
   assert.doesNotMatch(JSON.stringify(catalog), /PRIVATE_SKILL_SOURCE/);
 });
 
-test('staged setup guide advertises only backed, non-reset commands', async () => {
+test('staged setup guide advertises backed commands with selected-project context', async () => {
   const scripts = JSON.parse(await readFile(path.resolve('package.json'), 'utf8')).scripts;
   const context = { globalThis: {}, document: { documentElement: { dataset: {}, setAttribute() {} } } };
   runInNewContext(await readFile(path.resolve('preview/preferences.js'), 'utf8'), context);
   const guide = context.globalThis.PreviewPreferences.create(context.document, { storage: null }).t('guide.body');
   const commands = [...guide.matchAll(/npm(?: run)? [\w:-]+/g)].map(match => match[0]);
-  assert.deepEqual(commands, ['npm test', 'npm run self-check']);
+  for (const command of ['npm test', 'npm run self-check', 'npm run status', 'npm run preview:live', 'npm run preview']) {
+    assert.ok(commands.includes(command), `guide omits ${command}`);
+  }
   for (const command of commands) assert.ok(scripts[command.replace(/^npm(?: run)? /, '')]);
+  assert.match(guide, /npm run preview:live -- --project .* --checkout .* --binding /);
+  assert.match(guide, /npm run preview -- --project .* --checkout .* --binding /);
   assert.doesNotMatch(guide, /Remove-Item|Get-ChildItem|\.ai\/tasks\/\*\.md/i);
 });
 

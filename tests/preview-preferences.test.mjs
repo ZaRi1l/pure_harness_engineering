@@ -172,7 +172,28 @@ test('guide keeps project state intact and directs setup to a staged installatio
   preferences.setLocale('ko');
   const korean = preferences.t('guide.body');
   assert.match(korean, /별도.*설치/);
-  assert.match(korean, /선택한 프로젝트.*관리 경로/);
+  assert.match(korean, /선택.*프로젝트.*관리 경로/);
   assert.match(korean, /기존.*runtime.*보존/);
   assert.doesNotMatch(korean, /Remove-Item|Get-ChildItem|\.ai\/tasks\/\*\.md/i);
+});
+
+test('both guide locales distinguish read-only generator inspection from gated writes and show selected-project preview context', () => {
+  const { api, document, storage } = fixture();
+  const preferences = api.create(document, { storage });
+  for (const locale of ['en', 'ko']) {
+    preferences.setLocale(locale);
+    const body = preferences.t('guide.body');
+    const network = preferences.t('guide.networkBody');
+    for (const command of [
+      'node scripts/detect-targets.mjs --json',
+      'node scripts/validate.mjs --targets codex --profile core --json',
+      'node scripts/sync.mjs --targets codex --profile core --dry-run',
+      'node scripts/sync.mjs --targets codex --profile core --check'
+    ]) assert.ok(body.includes(command), `${locale} guide omits ${command}`);
+    assert.match(body, /native smoke/i);
+    assert.match(body, /preview\/index\.html.*#guide/s);
+    assert.match(body, /npm run preview:live -- --project .* --checkout .* --binding /);
+    assert.match(network, /npm run preview:live -- --project .* --checkout .* --binding /);
+    assert.doesNotMatch(network, /(?:^|\n)(?:Real runtime|실제 runtime): npm run preview:live(?:\n|<)/);
+  }
 });
