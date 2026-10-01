@@ -31,13 +31,13 @@ test('telemetry replacement is project scoped, atomic on validation failure, and
   await assert.rejects(() => store.replaceTelemetry({ ...first, project_id: 'other' }));
   await assert.rejects(() => store.replaceTelemetry({ ...first, totals: { ...first.totals, processed: 6 } }));
   assert.equal(await readFile(store.telemetryPath, 'utf8'), before);
-  await store.replaceTelemetry({ ...first, totals: { input: 1, output: 1, processed: 2, cached_input: 0, reasoning_output: 0 } });
+  await store.replaceTelemetry({ ...first, totals: { input: 1, output: 1, processed: 2, cached_input: 0, reasoning_output: 0 }, unattributed: { input: 1, output: 1, processed: 2, cached_input: 0, reasoning_output: 0, fraction: 1 } });
   assert.equal((await store.readTelemetry()).totals.processed, 2);
 });
 
 test('confirmed child links update exact identity without leaking prompt or creating attempted spawns', async () => {
   const store = await editableStore();
-  const link = { project_id: 'core', acknowledgement: 'success', task_id: 't-1', root_turn_id: 'turn-1', parent_agent_id: 'parent-1', child_agent_id: 'child-1', role: 'worker', short_task_name: 'Store telemetry', fork_turns: 'all', model: 'gpt-6-sol', reasoning_effort: 'medium', spawned_at: '2026-10-01T00:00:00.000Z', completed_at: null, prompt: 'PROMPT_SENTINEL' };
+  const link = { project_id: 'core', acknowledgement: 'success', task_id: 't-1', root_turn_id: 'turn-1', parent_agent_id: 'parent-1', child_agent_id: 'child-1', role: 'worker', short_task_name: 't-1', fork_turns: 'all', model: 'gpt-6-sol', reasoning_effort: 'medium', spawned_at: '2026-10-01T00:00:00.000Z', completed_at: null, prompt: 'PROMPT_SENTINEL' };
   await assert.rejects(() => store.recordChildLink({ ...link, acknowledgement: 'attempted' }));
   await assert.rejects(() => store.recordChildLink({ ...link, child_agent_id: null }));
   await store.recordChildLink(link);

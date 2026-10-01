@@ -7,6 +7,11 @@ const count = (value, name) => {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error(`invalid ${name}`);
   return value;
 };
+const midpoint = (value, name) => {
+  if (value === null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || !Number.isSafeInteger(value * 2)) throw new Error(`invalid ${name}`);
+  return value;
+};
 const timestamp = (value, name) => {
   if (value === null) return null;
   if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) throw new Error(`invalid ${name}`);
@@ -54,6 +59,11 @@ const fraction = value => {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) throw new Error('invalid fraction');
   return value;
 };
+const forkTurns = value => {
+  if (value == null) return null;
+  if (typeof value !== 'string' || !/^(?:none|all|0|[1-9][0-9]{0,2})$/.test(value)) throw new Error('invalid fork turns');
+  return value;
+};
 
 export function normalizeTelemetry(input, projectId) {
   const value = object(input, 'telemetry');
@@ -87,12 +97,18 @@ export function normalizeTelemetry(input, projectId) {
   if (!Array.isArray(value.largest_tool_outputs) || !Array.isArray(value.spawns)) throw new Error('invalid telemetry rows');
   output.largest_tool_outputs = value.largest_tool_outputs.map(raw => {
     const row = object(raw, 'tool output');
-    return { tool: known(row.tool, TOOLS, 'tool'), count: count(row.count, 'tool count'), total_bytes: count(row.total_bytes, 'tool bytes'), median_bytes: count(row.median_bytes, 'median bytes'), p95_bytes: count(row.p95_bytes, 'p95 bytes'), max_bytes: count(row.max_bytes, 'max bytes') };
+    return { tool: known(row.tool, TOOLS, 'tool'), count: count(row.count, 'tool count'), total_bytes: count(row.total_bytes, 'tool bytes'), median_bytes: midpoint(row.median_bytes, 'median bytes'), p95_bytes: count(row.p95_bytes, 'p95 bytes'), max_bytes: count(row.max_bytes, 'max bytes') };
   });
   output.spawns = value.spawns.map(raw => {
     const row = object(raw, 'spawn');
-    return { parent_agent_id: id(row.parent_agent_id, 'parent agent', { nullable: true }), child_agent_id: id(row.child_agent_id, 'child agent', { nullable: true }), task_id: id(row.task_id, 'task id', { nullable: true }), role: known(row.role, ROLES, 'role'), fork_turns: id(row.fork_turns, 'fork turns', { nullable: true }), attempts: count(row.attempts, 'spawn attempts'), confirmed: count(row.confirmed, 'confirmed spawns') };
+    return { parent_agent_id: id(row.parent_agent_id, 'parent agent', { nullable: true }), child_agent_id: id(row.child_agent_id, 'child agent', { nullable: true }), task_id: id(row.task_id, 'task id', { nullable: true }), role: known(row.role, ROLES, 'role'), fork_turns: forkTurns(row.fork_turns), attempts: count(row.attempts, 'spawn attempts'), confirmed: count(row.confirmed, 'confirmed spawns') };
   });
+  const denominator = output.totals.processed, numerator = output.unattributed.processed, ratio = output.unattributed.fraction;
+  if (ratio !== null && (denominator === null || denominator === 0 || numerator === null || numerator > denominator || Math.abs(ratio - numerator / denominator) > 1e-12)) throw new Error('invalid unattributed fraction');
+  if (value.status === 'missing' || value.status === 'unsupported') {
+    const tokenFields = ['input', 'output', 'processed', 'cached_input', 'reasoning_output', 'responses', 'tool_calls'];
+    if (tokenFields.some(key => output.totals[key] != null || output.unattributed[key] != null) || ratio !== null || output.compactions !== null || output.tasks.length || output.roles.length || output.agents.length || output.largest_tool_outputs.length || output.spawns.length) throw new Error('unobserved telemetry cannot contain measured values');
+  }
   return output;
 }
 
@@ -106,11 +122,11 @@ export function normalizeChildLink(input, projectId) {
   const completedAt = timestamp(value.completed_at, 'completed at');
   if (completedAt && completedAt < spawnedAt) throw new Error('completion precedes spawn');
   const label = value.short_task_name;
-  if (label != null && (typeof label !== 'string' || label.length > 100 || !/^[A-Za-z0-9가-힣][A-Za-z0-9가-힣 ._:-]*$/.test(label))) throw new Error('invalid short task name');
+  if (label != null && (typeof label !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(label) || label !== value.task_id)) throw new Error('invalid short task name');
   return {
     project_id: projectId, task_id: id(value.task_id, 'task id', { nullable: true }), root_turn_id: id(value.root_turn_id, 'root turn id', { nullable: true }),
     parent_agent_id: id(value.parent_agent_id, 'parent agent id', { nullable: true }), child_agent_id: id(value.child_agent_id, 'child agent id'),
-    role: known(value.role, ROLES, 'role'), short_task_name: label ?? null, fork_turns: id(value.fork_turns, 'fork turns', { nullable: true, max: 20 }),
+    role: known(value.role, ROLES, 'role'), short_task_name: label ?? null, fork_turns: forkTurns(value.fork_turns),
     model: known(value.model, MODELS, 'model'), reasoning_effort: known(value.reasoning_effort, EFFORTS, 'reasoning effort'),
     spawned_at: spawnedAt, completed_at: completedAt,
   };
