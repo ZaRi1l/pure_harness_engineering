@@ -136,6 +136,7 @@ test('live dashboard reuses its network controller during polling and destroys i
   const agents = [{ id: 'worker', model: 'gpt-6-sol' }];
   const controllers = [];
   const taskEditors = [];
+  const telemetryPanels = [];
   const listeners = {};
   let preferenceListener;
   let refresh;
@@ -145,6 +146,7 @@ test('live dashboard reuses its network controller during polling and destroys i
     location: { hash: '#dashboard' }, addEventListener: (name, callback) => { listeners[name] = callback; }, setInterval: callback => { refresh = callback; },
     fetch: async url => ({ json: async () => url === '/runtime/catalog' ? { agents, skills: [] } : url === '/runtime/tasks' ? { tasks: [], write_token: null } : snapshots.shift() ?? second }),
     createTaskEditor: host => { const editor = { host, updates: [], destroyCount: 0, update(tasks, token) { this.updates.push({ tasks, token }); }, destroy() { this.destroyCount++; } }; taskEditors.push(editor); return editor; },
+    createTelemetryPanel: host => { const panel = { host, refreshCount: 0, destroyCount: 0, refresh() { this.refreshCount++; }, rerender() {}, destroy() { this.destroyCount++; } }; telemetryPanels.push(panel); return panel; },
     PreviewPreferences: { create: () => ({ locale: 'en', t: key => key, mount() {}, subscribe(callback) { preferenceListener = callback; } }) },
     AgentSignalNetwork: { create: (host, options = {}) => { const controller = { host, options, state: options.initialState || { mode: 'live', filter: 'all', taskId: '', selection: null, transform: { x: 0, y: 0, scale: 1 } }, updates: [], destroyCount: 0, update(snapshot, catalog) { this.updates.push({ snapshot, catalog }); }, getState() { return this.state; }, destroy() { this.destroyCount++; } }; controllers.push(controller); return controller; } }
   };
@@ -152,6 +154,7 @@ test('live dashboard reuses its network controller during polling and destroys i
   await new Promise(resolve => setImmediate(resolve));
   const retained = controllers.at(-1);
   const beforeRefresh = controllers.length;
+  const telemetryBeforeRefresh = telemetryPanels[0].refreshCount;
   refresh();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(controllers.length, beforeRefresh);
@@ -159,6 +162,8 @@ test('live dashboard reuses its network controller during polling and destroys i
   assert.equal(retained.updates.at(-1).snapshot, second);
   assert.equal(retained.updates.at(-1).catalog.agents[0].id, 'worker');
   assert.equal(taskEditors.length, 1);
+  assert.equal(telemetryPanels.length, 1);
+  assert.equal(telemetryPanels[0].refreshCount, telemetryBeforeRefresh + 1);
   assert.equal(taskEditors[0].updates.at(-1).token, null);
   retained.state = { mode: 'history', filter: 'failures', taskId: 'ui', selection: { type: 'node', id: 'worker-1' }, transform: { x: 12, y: 8, scale: 1.2 } };
   preferenceListener({ locale: 'ko' });
@@ -208,6 +213,7 @@ test('dashboard buckets reported agents by start age including exact hour, missi
     location: { hash: '#dashboard' }, addEventListener() {}, setInterval() {},
     fetch: async url => ({ json: async () => url === '/runtime/catalog' ? { agents: [], skills: [] } : url === '/runtime/tasks' ? { tasks: [], write_token: null } : snapshot }),
     createTaskEditor: () => ({ update() {}, destroy() {} }),
+    createTelemetryPanel: () => ({ refresh() {}, rerender() {}, destroy() {} }),
     PreviewPreferences: { create: () => ({ locale: 'en', t: (key, values = {}) => ({
       'dashboard.futureStart': 'future start',
       'dashboard.reportedRunning': 'reported running', 'dashboard.startedRecent': 'started/resumed within past hour; liveness unconfirmed',
@@ -620,6 +626,7 @@ test('out_of_order_poll_is_ignored for snapshot and Current Tasks', async () => 
       ? { ok: false, status: 503, json: async () => ({ error: 'unavailable' }) }
       : { json: () => url === '/runtime/catalog' ? Promise.resolve({ agents: [], skills: [] }) : url === '/runtime/tasks' ? new Promise((resolve, reject) => pendingTasks.push({ resolve, reject })) : new Promise(resolve => pending.push(resolve)) },
     createTaskEditor: () => ({ update(tasks, token) { taskUpdates.push({ tasks, token }); }, destroy() {} }),
+    createTelemetryPanel: () => ({ refresh() {}, rerender() {}, destroy() {} }),
     renderArtifactTabs: () => ({}),
     PreviewPreferences: { create: () => ({ locale: 'en', t: key => key, mount() {}, subscribe() {} }) },
     AgentSignalNetwork: { create: () => ({ update() {}, destroy() {} }) }

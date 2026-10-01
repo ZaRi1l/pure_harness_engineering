@@ -1,5 +1,6 @@
 import { renderArtifactTabs } from '/preview/artifact-tabs.js';
 import { createTaskEditor } from '/preview/task-editor.js';
+import { createTelemetryPanel } from '/preview/telemetry-panel.js';
 
 const app = document.querySelector('#app');
 const preferences = globalThis.PreviewPreferences.create(document);
@@ -19,6 +20,7 @@ let networkController;
 let networkHost;
 let renderedLocale = preferences.locale;
 let taskEditor;
+let telemetryPanel;
 let taskPollGeneration = 0;
 let snapshotPollGeneration = 0;
 let taskFetchError;
@@ -59,8 +61,15 @@ async function dashboard() {
   app.replaceChildren(head(t('dashboard.title'), t('dashboard.detail')));
   const grid = el('section', 'grid');
   grid.innerHTML = `<section class="card wide"><h2>${t('section.goal')}</h2><div id="goal"></div><div id="progress"></div></section><section class="card"><h2>${t('section.phase')}</h2><div id="phase"></div></section><section class="card wide"><h2>${t('section.activeAgents')}</h2><div id="agents"></div></section><section class="card"><h2>${t('section.verification')}</h2><div id="verification"></div></section><section class="card"><h2>${t('section.tasks')}</h2><div id="tasks"></div></section><section class="card"><h2>${t('section.claims')}</h2><div id="claims"></div></section><section class="card"><h2>${t('section.warnings')}</h2><div id="warnings"></div></section><section class="card"><h2>${t('section.blockers')}</h2><div id="blockers"></div></section><section class="card wide"><h2>${t('section.signals')}</h2><div id="signals"></div></section><section class="card full"><h2>${t('section.network')}</h2><div id="agent-network"></div></section><section class="card wide"><h2>${t('section.events')}</h2><div id="events"></div></section><section class="card"><h2>${t('section.artifacts')}</h2><div id="artifacts"></div></section>`;
+  const telemetryCard = el('section', 'card full');
+  telemetryCard.append(el('h2', '', t('section.telemetry')));
+  const telemetryHost = el('div');
+  telemetryHost.id = 'telemetry';
+  telemetryCard.append(telemetryHost);
+  grid.append(telemetryCard);
   app.append(grid);
   taskEditor = createTaskEditor(document.querySelector('#tasks'), { fetchImpl: fetch, translate: t });
+  telemetryPanel = createTelemetryPanel(telemetryHost, { fetchImpl: fetch, translate: t });
   taskFetchError = undefined;
   paint();
 }
@@ -110,6 +119,7 @@ async function paintTasks() {
 async function paint() {
   if (!document.querySelector('#goal')) return;
   paintTasks();
+  telemetryPanel?.refresh();
   const requestGeneration = ++snapshotPollGeneration;
   try {
     const snapshot = await fetch('/runtime/snapshot', { cache: 'no-store' }).then(response => response.json());
@@ -243,6 +253,10 @@ function route() {
     taskEditor = undefined;
     taskFetchError = undefined;
   }
+  if (view !== dashboard && telemetryPanel) {
+    telemetryPanel.destroy();
+    telemetryPanel = undefined;
+  }
   document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === viewName));
   view();
 }
@@ -253,6 +267,7 @@ preferences.mount(document.querySelector('#preview-preferences'));
 preferences.subscribe(({ locale }) => {
   if (locale === renderedLocale) return;
   renderedLocale = locale;
+  telemetryPanel?.rerender();
   artifactRenderKey = '';
   localizeShell();
   route();

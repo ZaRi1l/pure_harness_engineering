@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { renderStatus } from '../scripts/status.mjs';
 import { renderStaticPreview } from '../scripts/generate-preview.mjs';
 import { createTaskEditor, sortTasks } from '../preview/task-editor.js';
+import { createTelemetryPanel } from '../preview/telemetry-panel.js';
 
 const snapshot = { status: { current_goal: 'Ship <safe>', phase: 'execution', progress: { completed: 1, total: 2 }, active_agents: [], verification: { checks: [], status: 'passed' }, warnings: [{ message: 'Needs review' }] }, tasks: { tasks: [{ title: 'Implement', status: 'completed', owner: 'worker' }] }, claims: { claims: [{ agent_id: 'worker', scopes: ['src/backend/'] }] } };
 const networkSource = readFileSync(new URL('../preview/agent-network.js', import.meta.url), 'utf8');
@@ -37,6 +38,125 @@ function taskDOM() {
 const task = (id = 'a', overrides = {}) => ({ id, title: 'Original', status: 'pending', branch: null, owner: 'worker', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-02T00:00:00Z', revision: 'rev-1', ...overrides });
 const action = (host, value) => find(host, 'task-action', value);
 const field = (host, value) => find(host, 'task-field', value);
+const telemetryTotals = (processed, input = processed, output = 0) => ({ input, output, processed, cached_input: null, reasoning_output: null });
+const telemetryFixture = (overrides = {}) => ({
+  schema_version: 1, project_id: 'example', observed_at: '2026-10-01T00:00:00.000Z', source: 'codex_rollout', status: 'observed',
+  start_at: '2026-10-01T00:00:00.000Z', end_at: '2026-10-01T00:00:02.000Z', elapsed_ms: 2000,
+  totals: { ...telemetryTotals(100, 70, 30), cached_input: 10, reasoning_output: 5 },
+  tasks: [{ task_id: 'task-a', totals: telemetryTotals(40, 30, 10) }, { task_id: 'task-ab', totals: telemetryTotals(20, 15, 5) }],
+  roles: [{ role: 'worker', totals: telemetryTotals(40, 30, 10) }],
+  agents: [{ agent_id: 'agent-a', totals: telemetryTotals(40, 30, 10) }],
+  unattributed: { ...telemetryTotals(40), fraction: .4 },
+  largest_tool_outputs: [{ tool: 'exec_command', count: 2, total_bytes: 9, median_bytes: 4.5, p95_bytes: 5, max_bytes: 5 }],
+  spawns: [{ parent_agent_id: 'parent', child_agent_id: 'agent-a', task_id: 'task-a', role: 'worker', fork_turns: 'all', attempts: 2, confirmed: 1 }],
+  compactions: 1, coverage: { threads: 3, observed_threads: 2, partial_threads: 1 }, ...overrides
+});
+const telemetryPanel = (documents) => {
+  const { host } = taskDOM();
+  const queue = [...documents];
+  const panel = createTelemetryPanel(host, { fetchImpl: async () => {
+    const next = queue.shift();
+    if (next instanceof Error) throw next;
+    return { ok: true, json: async () => next };
+  }, translate: key => key === 'telemetry.unknown' ? 'Unknown' : key });
+  return { host, panel };
+};
+
+test('telemetry panel shows observed project metrics and only exact selected task metrics', async () => {
+  const { host, panel } = telemetryPanel([telemetryFixture()]);
+  await panel.refresh();
+  assert.match(host.textContent, /telemetry.status.observed/);
+  assert.match(host.textContent, /telemetry.source.codex_rollout/);
+  assert.match(host.textContent, /telemetry.coverage/);
+  assert.equal(find(host, 'telemetry-value', 'processed').textContent, '100');
+  assert.equal(find(host, 'telemetry-value', 'cached_input').textContent, '10');
+  assert.equal(find(host, 'telemetry-value', 'reasoning_output').textContent, '5');
+  assert.match(host.textContent, /exec_command/);
+  assert.match(host.textContent, /agent-a/);
+  assert.match(host.textContent, /worker/);
+  assert.match(host.textContent, /2/);
+  assert.match(host.textContent, /40%/);
+  assert.equal(find(host, 'telemetry-task', 'selector').value, '');
+  const selector = find(host, 'telemetry-task', 'selector');
+  selector.value = 'task-a';
+  selector.dispatch('change');
+  assert.equal(find(host, 'telemetry-value', 'processed').textContent, '40');
+  assert.match(host.textContent, /telemetry.selectedExcludesUnassigned/);
+  assert.equal(find(host, 'telemetry-value', 'unattributed').textContent, 'Unknown');
+  assert.doesNotMatch(host.textContent, /exec_command|telemetry.agents/);
+  panel.setTask('task-ab');
+  assert.equal(find(host, 'telemetry-value', 'processed').textContent, '20');
+  panel.destroy();
+});
+
+test('telemetry panel keeps unsupported optional counters and empty sections absent', async () => {
+  const { host, panel } = telemetryPanel([telemetryFixture({
+    tasks: [], roles: [], agents: [], largest_tool_outputs: [], spawns: [],
+    totals: telemetryTotals(1), coverage: {}
+  })]);
+  await panel.refresh();
+  assert.equal(find(host, 'telemetry-task', 'selector').children.length, 1);
+  assert.equal(find(host, 'telemetry-value', 'responses'), undefined);
+  assert.doesNotMatch(host.textContent, /telemetry.largestToolOutputs|telemetry.spawns/);
+  panel.destroy();
+});
+
+test('telemetry panel distinguishes missing, partial and unsupported from observed zero', async () => {
+  const { host, panel } = telemetryPanel([
+    { schema_version: 1, project_id: 'example', status: 'missing' },
+    telemetryFixture({ status: 'partial', totals: telemetryTotals(null, null, null) }),
+    telemetryFixture({ status: 'unsupported', totals: telemetryTotals(null, null, null) }),
+    telemetryFixture({ totals: telemetryTotals(0, 0, 0), unattributed: { ...telemetryTotals(0, 0, 0), fraction: null } })
+  ]);
+  for (const status of ['missing', 'partial', 'unsupported']) {
+    await panel.refresh();
+    assert.match(host.textContent, new RegExp(`telemetry.status.${status}`));
+    assert.equal(find(host, 'telemetry-value', 'processed').textContent, 'Unknown');
+  }
+  await panel.refresh();
+  assert.equal(find(host, 'telemetry-value', 'processed').textContent, '0');
+  assert.equal(find(host, 'telemetry-value', 'unattributedFraction').textContent, 'Unknown');
+  panel.destroy();
+});
+
+test('telemetry panel retains selected task on polls and marks old display stale after a failed read', async () => {
+  const value = telemetryFixture();
+  const { host, panel } = telemetryPanel([value, value, Error('offline')]);
+  await panel.refresh();
+  panel.setTask('task-a');
+  await panel.refresh();
+  assert.equal(find(host, 'telemetry-task', 'selector').value, 'task-a');
+  await panel.refresh();
+  assert.match(host.textContent, /telemetry.stale/);
+  assert.equal(find(host, 'telemetry-value', 'processed').textContent, '40');
+  panel.destroy();
+});
+
+test('refresh_race_keeps_newest_state', async () => {
+  const { host } = taskDOM();
+  let resolveOld;
+  let calls = 0;
+  const panel = createTelemetryPanel(host, { fetchImpl: () => ++calls === 1
+    ? new Promise(resolve => { resolveOld = resolve; })
+    : Promise.resolve({ ok: true, json: async () => telemetryFixture({ totals: telemetryTotals(9) }) }), translate: key => key === 'telemetry.unknown' ? 'Unknown' : key });
+  const old = panel.refresh();
+  await panel.refresh();
+  resolveOld({ ok: false, status: 503 });
+  await old;
+  assert.equal(find(host, 'telemetry-value', 'processed').textContent, '9');
+  assert.doesNotMatch(host.textContent, /telemetry.stale/);
+  panel.destroy();
+});
+
+test('telemetry panel renders labels as text and never displays source paths', async () => {
+  const data = telemetryFixture({ tasks: [{ task_id: '<script>bad</script>', totals: telemetryTotals(1) }], source_path: 'C:/secret/source.jsonl' });
+  const { host, panel } = telemetryPanel([data]);
+  await panel.refresh();
+  assert.match(host.textContent, /<script>bad<\/script>/);
+  assert.equal(descendants(host).some(node => node.tagName === 'script'), false);
+  assert.doesNotMatch(host.textContent, /secret|source\.jsonl/);
+  panel.destroy();
+});
 
 test('task editor preserves add draft controls, focus, selection, scroll and validation across polls without blur writes', () => {
   const { host, document } = taskDOM();
