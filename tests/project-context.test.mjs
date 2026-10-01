@@ -51,6 +51,17 @@ test('loads verified linked worktree', async () => {
   assert.equal(context.paths.runtime, path.join(await realpath(f.installation), 'projects/alpha/runtime'));
 });
 
+test('freezes nested adapter data in the returned context', async () => {
+  const f = await fixture();
+  const declaration = manifest('alpha');
+  declaration.adapters.sample = { type: 'sample', options: { labels: ['first'] } };
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(declaration));
+  const context = await loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' });
+  assert.equal(Object.isFrozen(context.adapters.sample.options), true);
+  assert.equal(Object.isFrozen(context.adapters.sample.options.labels), true);
+  assert.throws(() => context.adapters.sample.options.labels.push('second'), TypeError);
+});
+
 test('rejects absent binding without writes', async () => {
   const f = await fixture();
   const before = await readdir(f.root);
@@ -120,6 +131,14 @@ test('rejects management paths into another project space', async () => {
   await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /memory|path/i);
 });
 
+test('rejects overlapping management directories', async () => {
+  const f = await fixture();
+  const declaration = manifest('alpha');
+  declaration.paths.memory = 'projects/alpha/tasks/memory';
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(declaration));
+  await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /manifest.paths|overlap/i);
+});
+
 test('rejects selected project symlink into another project space', async () => {
   const f = await fixture();
   const projects = path.join(f.installation, 'projects');
@@ -155,6 +174,30 @@ test('rejects empty adapter type', async () => {
   invalid.adapters.goal = { type: '' };
   await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(invalid));
   await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /adapter/i);
+});
+
+test('rejects undeclared top-level manifest fields', async () => {
+  const f = await fixture();
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify({ ...manifest('alpha'), privateRoot: 'other' }));
+  await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /manifest/i);
+});
+
+test('rejects undeclared management path fields', async () => {
+  const f = await fixture();
+  const declaration = manifest('alpha');
+  declaration.paths.backup = 'projects/alpha/backup';
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(declaration));
+  await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /manifest.paths/i);
+});
+
+test('rejects array-shaped management paths', async () => {
+  const f = await fixture();
+  const declaration = manifest('alpha');
+  declaration.paths = ['projects/alpha/tasks', 'projects/alpha/memory', 'projects/alpha/runtime'];
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(declaration));
+  const diagnostic = await diagnoseProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' });
+  assert.equal(diagnostic.code, 'INVALID_MANIFEST');
+  assert.match(diagnostic.message, /manifest.paths/i);
 });
 
 test('rejects invalid manifest version', async () => {
