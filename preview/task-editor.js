@@ -1,15 +1,18 @@
 const STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'cancelled'];
 let pageSortOldestFirst = false;
 const validTime = value => { const time = Date.parse(value || ''); return Number.isFinite(time) ? time : null; };
-export function sortTasks(tasks, oldestFirst = false) {
-  return [...tasks].sort((a, b) => {
-    const byId = String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0;
-    const left = validTime(a.updated_at) ?? validTime(a.created_at);
-    const right = validTime(b.updated_at) ?? validTime(b.created_at);
+function orderedTaskRows(tasks, oldestFirst) {
+  return [...tasks].map(task => {
+    const createdAt = validTime(task.created_at), updatedAt = validTime(task.updated_at);
+    return { task, createdAt, updatedAt, sortAt: updatedAt ?? createdAt };
+  }).sort((a, b) => {
+    const byId = String(a.task.id) < String(b.task.id) ? -1 : String(a.task.id) > String(b.task.id) ? 1 : 0;
+    const left = a.sortAt, right = b.sortAt;
     if (left === null || right === null) return left === null && right === null ? byId : left === null ? 1 : -1;
     return (oldestFirst ? left - right : right - left) || byId;
   });
 }
+export function sortTasks(tasks, oldestFirst = false) { return orderedTaskRows(tasks, oldestFirst).map(row => row.task); }
 
 export function createTaskEditor(host, { fetchImpl = fetch, translate = key => key }) {
   const document = host.ownerDocument;
@@ -49,12 +52,14 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
       if (polled && (polled.revision === task.revision || polled.revision !== priorRevision)) adopted.delete(id);
       else visible.set(id, task);
     }
-    for (const task of sortTasks(visible.values(), oldestFirst)) {
+    for (const { task, createdAt, updatedAt } of orderedTaskRows(visible.values(), oldestFirst)) {
       const li = make('li', undefined, 'task-row');
-      li.append(make('div', `${task.status ?? ''} — ${task.title ?? ''}`));
+      li.append(make('div', task.title ?? ''));
+      li.append(make('div', `${translate('task.status')}: ${task.status ?? translate('common.unknown')}`, 'muted'));
       li.append(make('div', `${translate('task.branch')}: ${task.branch || translate('common.none')}`, 'muted'));
-      li.append(make('div', `${translate('task.created')}: ${task.created_at || translate('common.unknown')}`, 'muted'));
-      li.append(make('div', `${translate('task.updated')}: ${task.updated_at || translate('common.unknown')}`, 'muted'));
+      li.append(make('div', `${translate('task.owner')}: ${task.owner || translate('dashboard.unassigned')}`, 'muted'));
+      li.append(make('div', `${translate('task.created')}: ${createdAt === null ? translate('common.unknown') : task.created_at}`, 'muted'));
+      li.append(make('div', `${translate('task.updated')}: ${updatedAt === null ? translate('common.unknown') : task.updated_at}`, 'muted'));
       if (writeToken && !active) li.append(button('task.edit', `edit-${task.id}`, () => start('edit', task)));
       rows.append(li);
     }

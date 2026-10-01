@@ -151,17 +151,53 @@ test('task ordering uses updated time, falls back to created time, and leaves un
   assert.deepEqual(sortTasks(records, true).map(item => item.id), ['created', 'tie', 'updated', 'undated']);
 });
 
-test('task sort choice persists for the page session when the Dashboard is remounted', () => {
+test('invalid_dates_sort_last in both directions while a valid created time is a fallback', () => {
+  const records = [
+    task('undated', { created_at: 'invalid', updated_at: '' }),
+    task('fallback', { created_at: '2026-01-04T00:00:00Z', updated_at: 'invalid' }),
+    task('updated', { created_at: 'invalid', updated_at: '2026-01-05T00:00:00Z' })
+  ];
+  assert.deepEqual(sortTasks(records).map(item => item.id), ['updated', 'fallback', 'undated']);
+  assert.deepEqual(sortTasks(records, true).map(item => item.id), ['fallback', 'updated', 'undated']);
+});
+
+test('task rows label status, branch, owner, created, and updated without treating owner as branch', () => {
+  const { host } = taskDOM();
+  const editor = createTaskEditor(host, { translate: key => key });
+  editor.update([task('a', { title: 'Record', branch: null, owner: 'reviewer', created_at: '2026-01-01T00:00:00Z', updated_at: 'invalid' })], 'token');
+  const row = descendants(host).find(node => node.tagName === 'li');
+  assert.match(row.textContent, /task.status: pending/);
+  assert.match(row.textContent, /task.branch: common.none/);
+  assert.match(row.textContent, /task.owner: reviewer/);
+  assert.match(row.textContent, /task.created: 2026-01-01T00:00:00Z/);
+  assert.match(row.textContent, /task.updated: common.unknown/);
+  action(host, 'edit-a').click();
+  assert.equal(field(host, 'owner'), undefined);
+  editor.destroy();
+});
+
+test('task sort toggle persists through polling and remount, but resets on module reload', async () => {
+  const records = [task('older', { title: 'Older', updated_at: '2026-01-02T00:00:00Z' }), task('newer', { title: 'Newer', updated_at: '2026-01-03T00:00:00Z' })];
   const first = taskDOM();
   const editor = createTaskEditor(first.host, { translate: key => key });
-  editor.update([task()], null);
+  editor.update(records, null);
+  assert.match(descendants(first.host).find(node => node.tagName === 'li').textContent, /Newer/);
   action(first.host, 'sort').click();
   assert.equal(action(first.host, 'sort').textContent, 'task.newest');
+  editor.update(records, null);
+  assert.match(descendants(first.host).find(node => node.tagName === 'li').textContent, /Older/);
   editor.destroy();
   const second = taskDOM();
   const remounted = createTaskEditor(second.host, { translate: key => key });
-  remounted.update([task()], null);
+  remounted.update(records, null);
   assert.equal(action(second.host, 'sort').textContent, 'task.newest');
+  assert.match(descendants(second.host).find(node => node.tagName === 'li').textContent, /Older/);
+  const { createTaskEditor: freshController } = await import(`../preview/task-editor.js?reload=${Date.now()}`);
+  const reloaded = taskDOM();
+  const fresh = freshController(reloaded.host, { translate: key => key });
+  fresh.update(records, null);
+  assert.match(descendants(reloaded.host).find(node => node.tagName === 'li').textContent, /Newer/);
+  fresh.destroy();
   action(second.host, 'sort').click();
   remounted.destroy();
 });
