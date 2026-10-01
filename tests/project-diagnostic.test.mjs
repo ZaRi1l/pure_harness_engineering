@@ -85,6 +85,16 @@ test('ambiguous registration exits nonzero without project writes', async () => 
   assert.deepEqual(await readdir(f.harnessRoot), before);
 });
 
+test('undeclared manifest field exits nonzero without project writes', async () => {
+  const f = await fixture();
+  await writeFile(path.join(f.checkoutRoot, 'harness-adapter', 'project.json'), JSON.stringify({ ...manifest, privateRoot: 'other' }));
+  const before = await readdir(f.harnessRoot);
+  const cli = spawnSync(process.execPath, [diagnosticScript, '--checkout', f.checkoutRoot, '--binding', f.bindingPath, '--project', 'alpha'], { encoding: 'utf8' });
+  assert.notEqual(cli.status, 0);
+  assert.match(cli.stderr, /INVALID_MANIFEST: manifest:/);
+  assert.deepEqual(await readdir(f.harnessRoot), before);
+});
+
 test('legacy runtime remains an explicit read fixture after context cutover', async () => {
   const f = await fixture();
   const store = RuntimeStore.legacyFixture(f.checkoutRoot);

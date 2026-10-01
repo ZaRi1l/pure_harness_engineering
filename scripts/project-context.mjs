@@ -149,7 +149,7 @@ export async function loadProjectContext({ checkoutRoot, bindingPath, projectId 
   }
   const managementPaths = Object.values(paths);
   if (managementPaths.some((item, index) => managementPaths.slice(index + 1).some(other => nested(item, other)))) fail('INVALID_PATHS', 'manifest.paths');
-  const adapters = {};
+  const adapters = Object.create(null);
   for (const [name, adapter] of Object.entries(manifest.adapters)) {
     if (!adapter || typeof adapter !== 'object' || Array.isArray(adapter) || typeof adapter.type !== 'string' || !adapter.type.trim()) fail('INVALID_ADAPTER', `manifest.adapters.${name}`);
     if (adapter.projectRelativePath !== undefined) await containedPath(projectRoot, adapter.projectRelativePath, `manifest.adapters.${name}.projectRelativePath`);
