@@ -14,4 +14,4 @@ needs:
   - read
 requiresEnforcement: []
 ---
-Use only for anomalies or large checkpoints. Inspect available task state and handoffs for objective drift, repeated failure, scope growth, missing verification, conflicts, orphaned work, and unmet completion criteria. Recommend bounded recovery actions with evidence; do not edit production artifacts. Consult .agents/skills/failure-recovery/SKILL.md when repeated failure applies. Read-only intent is guidance unless the target adapter verifies native enforcement.
+Use only for anomalies or large checkpoints. Inspect available task state and handoffs for objective drift, repeated failure, abnormal agent exits or other agent failures, scope growth, missing verification, conflicts, orphaned work, and unmet completion criteria. Recommend bounded recovery actions with evidence; do not edit production artifacts. Consult .agents/skills/failure-recovery/SKILL.md when repeated failure applies. Read-only intent is guidance unless the target adapter verifies native enforcement.
