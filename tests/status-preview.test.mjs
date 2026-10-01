@@ -4,6 +4,7 @@ import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { renderStatus } from '../scripts/status.mjs';
 import { renderStaticPreview } from '../scripts/generate-preview.mjs';
+import { createTaskEditor, sortTasks } from '../preview/task-editor.js';
 
 const snapshot = { status: { current_goal: 'Ship <safe>', phase: 'execution', progress: { completed: 1, total: 2 }, active_agents: [], verification: { checks: [], status: 'passed' }, warnings: [{ message: 'Needs review' }] }, tasks: { tasks: [{ title: 'Implement', status: 'completed', owner: 'worker' }] }, claims: { claims: [{ agent_id: 'worker', scopes: ['src/backend/'] }] } };
 const networkSource = readFileSync(new URL('../preview/agent-network.js', import.meta.url), 'utf8');
@@ -22,6 +23,114 @@ class Element {
   get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
   getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 440 }; }
 }
+class TaskElement extends Element {
+  append(...children) { for (const child of children) child.parentNode = this; super.append(...children); }
+  replaceChildren(...children) { for (const child of children) child.parentNode = this; super.replaceChildren(...children); }
+  remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(child => child !== this); }
+  focus() { this.ownerDocument.activeElement = this; }
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
+}
+function taskDOM() {
+  const document = { activeElement: null, createElement(name) { return new TaskElement(name, this); } };
+  return { document, host: document.createElement('section') };
+}
+const task = (id = 'a', overrides = {}) => ({ id, title: 'Original', status: 'pending', branch: null, owner: 'worker', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-02T00:00:00Z', revision: 'rev-1', ...overrides });
+const action = (host, value) => find(host, 'task-action', value);
+const field = (host, value) => find(host, 'task-field', value);
+
+test('task editor preserves add draft controls, focus, selection, scroll and validation across polls without blur writes', () => {
+  const { host, document } = taskDOM();
+  let writes = 0;
+  const editor = createTaskEditor(host, { fetchImpl: () => { writes++; }, translate: key => key });
+  editor.update([task()], 'token');
+  action(host, 'add').click();
+  const title = field(host, 'title');
+  title.value = ''; title.focus(); title.setSelectionRange(0, 0); title.scrollTop = 13;
+  action(host, 'save').click();
+  const message = find(host, 'task-message', 'validation');
+  assert.ok(message?.textContent);
+  title.value = 'Draft'; title.setSelectionRange(2, 4);
+  const live = task('a', { title: 'Updated elsewhere', revision: 'rev-2' });
+  editor.update([live], 'token');
+  assert.equal(field(host, 'title'), title);
+  assert.equal(title.value, 'Draft');
+  assert.equal(document.activeElement, title);
+  assert.deepEqual([title.selectionStart, title.selectionEnd, title.scrollTop], [2, 4, 13]);
+  assert.equal(find(host, 'task-message', 'validation'), message);
+  title.dispatch('blur');
+  assert.equal(writes, 0);
+  action(host, 'cancel').click();
+  assert.equal(field(host, 'title'), undefined);
+  editor.destroy();
+});
+
+test('task editor keeps edit revision and draft on conflict until explicit reload', async () => {
+  const { host, document } = taskDOM();
+  let request;
+  const current = task('a', { title: 'Server', revision: 'rev-2' });
+  const editor = createTaskEditor(host, { fetchImpl: async (_url, init) => { request = init; return { ok: false, status: 409, json: async () => ({ current }) }; }, translate: key => key });
+  editor.update([task()], 'token');
+  action(host, 'edit-a').click();
+  const title = field(host, 'title'); title.value = 'My draft'; title.focus(); title.setSelectionRange(2, 5); title.scrollTop = 8;
+  editor.update([current], 'token');
+  assert.equal(field(host, 'title'), title);
+  assert.equal(title.value, 'My draft');
+  assert.equal(document.activeElement, title);
+  assert.deepEqual([title.selectionStart, title.selectionEnd, title.scrollTop], [2, 5, 8]);
+  action(host, 'save').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(request.body), { title: 'My draft', status: 'pending', branch: null, revision: 'rev-1' });
+  assert.equal(request.headers['x-task-write-token'], 'token');
+  assert.equal(title.value, 'My draft');
+  assert.match(host.textContent, /Server/);
+  action(host, 'reload').click();
+  assert.equal(field(host, 'title').value, 'Server');
+  editor.destroy();
+});
+
+test('task editor adopts saved record and retains it after network retry and a stale list', async () => {
+  const { host } = taskDOM();
+  let calls = 0;
+  const created = task('new', { title: 'Saved', revision: 'rev-new' });
+  const editor = createTaskEditor(host, { fetchImpl: async () => { if (++calls === 1) throw Error('offline'); return { ok: true, status: 201, json: async () => created }; }, translate: key => key });
+  editor.update([], 'token');
+  action(host, 'add').click(); field(host, 'title').value = 'Saved';
+  action(host, 'save').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(field(host, 'title').value, 'Saved');
+  assert.ok(action(host, 'retry'));
+  action(host, 'retry').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(field(host, 'title'), undefined);
+  assert.match(host.textContent, /Saved/);
+  editor.update([task('old')], 'token');
+  assert.match(host.textContent, /Saved/);
+  editor.destroy();
+});
+
+test('task ordering uses updated time, falls back to created time, and leaves undated rows last in either direction', () => {
+  const records = [
+    task('updated', { updated_at: '2026-01-03T00:00:00Z' }),
+    task('created', { updated_at: 'invalid', created_at: '2026-01-02T00:00:00Z' }),
+    task('undated', { updated_at: '', created_at: '' }),
+    task('tie', { updated_at: '2026-01-03T00:00:00Z' })
+  ];
+  assert.deepEqual(sortTasks(records).map(item => item.id), ['tie', 'updated', 'created', 'undated']);
+  assert.deepEqual(sortTasks(records, true).map(item => item.id), ['created', 'tie', 'updated', 'undated']);
+});
+
+test('task sort choice persists for the page session when the Dashboard is remounted', () => {
+  const first = taskDOM();
+  const editor = createTaskEditor(first.host, { translate: key => key });
+  editor.update([task()], null);
+  action(first.host, 'sort').click();
+  assert.equal(action(first.host, 'sort').textContent, 'task.newest');
+  editor.destroy();
+  const second = taskDOM();
+  const remounted = createTaskEditor(second.host, { translate: key => key });
+  remounted.update([task()], null);
+  assert.equal(action(second.host, 'sort').textContent, 'task.newest');
+  action(second.host, 'sort').click();
+  remounted.destroy();
+});
 const descendants = root => root.children.flatMap(child => [child, ...descendants(child)]);
 const find = (root, name, value) => descendants(root).find(child => child.getAttribute(`data-${name}`) === value);
 function executeStatic(html) {
@@ -66,6 +175,7 @@ test('static preview embeds shared language and theme controls without polling',
   assert.match(html, /data-theme="light"/);
   assert.doesNotMatch(html, /setInterval|runtime\/snapshot/);
   const rendered = executeStatic(html);
+  assert.equal(descendants(rendered.host).some(node => node.getAttribute('data-task-action') !== null), false);
   const language = descendants(rendered.preferencesHost).find(node => node.dataset.preferenceAction === 'language');
   const theme = descendants(rendered.preferencesHost).find(node => node.dataset.preferenceAction === 'theme');
   assert.ok(language && theme);

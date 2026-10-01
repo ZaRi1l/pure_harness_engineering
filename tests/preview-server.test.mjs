@@ -116,7 +116,7 @@ test('live dashboard reuses its network controller during polling and destroys i
   const element = () => ({
     children: [], classList: { toggle() {} },
     append(...children) { this.children.push(...children); },
-    replaceChildren(...children) { this.children = children; },
+    replaceChildren(...children) { if (this === nodes.get('#app')) for (const key of [...nodes.keys()]) if (!['#app', '#preview-preferences', '#app-tagline', '#sidebar-note'].includes(key)) nodes.delete(key); this.children = children; },
     set innerHTML(value) { for (const [, id] of value.matchAll(/id="([^"]+)"/g)) nodes.set(`#${id}`, element()); },
     set textContent(value) { this.text = value; },
     get textContent() { return this.text ?? ''; }
@@ -131,17 +131,20 @@ test('live dashboard reuses its network controller during polling and destroys i
   const snapshots = [first, second];
   const agents = [{ id: 'worker', model: 'gpt-6-sol' }];
   const controllers = [];
+  const taskEditors = [];
   const listeners = {};
   let preferenceListener;
   let refresh;
   const context = {
+    renderArtifactTabs: () => ({}),
     document: { querySelector: selector => nodes.get(selector), querySelectorAll: () => [], createElement: element },
     location: { hash: '#dashboard' }, addEventListener: (name, callback) => { listeners[name] = callback; }, setInterval: callback => { refresh = callback; },
-    fetch: async url => ({ json: async () => url === '/runtime/catalog' ? { agents, skills: [] } : snapshots.shift() ?? second }),
+    fetch: async url => ({ json: async () => url === '/runtime/catalog' ? { agents, skills: [] } : url === '/runtime/tasks' ? { tasks: [], write_token: null } : snapshots.shift() ?? second }),
+    createTaskEditor: host => { const editor = { host, updates: [], destroyCount: 0, update(tasks, token) { this.updates.push({ tasks, token }); }, destroy() { this.destroyCount++; } }; taskEditors.push(editor); return editor; },
     PreviewPreferences: { create: () => ({ locale: 'en', t: key => key, mount() {}, subscribe(callback) { preferenceListener = callback; } }) },
     AgentSignalNetwork: { create: (host, options = {}) => { const controller = { host, options, state: options.initialState || { mode: 'live', filter: 'all', taskId: '', selection: null, transform: { x: 0, y: 0, scale: 1 } }, updates: [], destroyCount: 0, update(snapshot, catalog) { this.updates.push({ snapshot, catalog }); }, getState() { return this.state; }, destroy() { this.destroyCount++; } }; controllers.push(controller); return controller; } }
   };
-  runInNewContext(moduleSource.replace(/^import .*?;\s*/m, 'const renderArtifactTabs = () => {};\n'), context);
+  runInNewContext(moduleSource.replace(/^import .*?;\s*/gm, ''), context);
   await new Promise(resolve => setImmediate(resolve));
   const retained = controllers.at(-1);
   const beforeRefresh = controllers.length;
@@ -151,21 +154,24 @@ test('live dashboard reuses its network controller during polling and destroys i
   assert.equal(retained.host, nodes.get('#agent-network'));
   assert.equal(retained.updates.at(-1).snapshot, second);
   assert.equal(retained.updates.at(-1).catalog.agents[0].id, 'worker');
+  assert.equal(taskEditors.length, 1);
+  assert.equal(taskEditors[0].updates.at(-1).token, null);
   retained.state = { mode: 'history', filter: 'failures', taskId: 'ui', selection: { type: 'node', id: 'worker-1' }, transform: { x: 12, y: 8, scale: 1.2 } };
   preferenceListener({ locale: 'ko' });
   await new Promise(resolve => setImmediate(resolve));
-  const localized = controllers.at(-1);
-  assert.deepEqual(localized.options.initialState, retained.state);
-  assert.equal(retained.destroyCount, 1, 'language rebuild destroys the old controller after retaining its state');
+  assert.equal(controllers.at(-1), retained, 'language change keeps the live Dashboard controller');
+  assert.equal(retained.destroyCount, 0);
   context.location.hash = '#preview';
   listeners.hashchange();
-  assert.equal(localized.destroyCount, 1, 'the detached Dashboard controller is destroyed synchronously');
+  assert.equal(retained.destroyCount, 1, 'the detached Dashboard controller is destroyed synchronously');
+  assert.equal(taskEditors[0].destroyCount, 1);
   context.location.hash = '#dashboard';
   listeners.hashchange();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(controllers.length, beforeRefresh + 2);
-  assert.notEqual(controllers.at(-1), localized);
+  assert.equal(controllers.length, beforeRefresh + 1);
+  assert.notEqual(controllers.at(-1), retained);
   assert.equal(controllers.at(-1).host, nodes.get('#agent-network'));
+  assert.equal(taskEditors.length, 2);
 });
 
 test('dashboard buckets reported agents by start age including exact hour, missing, and future starts and shows signal time', async () => {
@@ -192,10 +198,12 @@ test('dashboard buckets reported agents by start age including exact hour, missi
     }, tasks: { tasks: [] }, claims: { claims: [] }, events: []
   };
   const FixedDate = class extends Date { static now() { return Date.parse('2026-09-25T12:00:00Z'); } };
-  runInNewContext(source.replace(/^import .*?;\s*/m, 'const renderArtifactTabs = () => {};\n'), {
+  runInNewContext(source.replace(/^import .*?;\s*/gm, ''), {
+    renderArtifactTabs: () => ({}),
     Date: FixedDate, document: { querySelector: selector => nodes.get(selector), querySelectorAll: () => [], createElement: element },
     location: { hash: '#dashboard' }, addEventListener() {}, setInterval() {},
-    fetch: async url => ({ json: async () => url === '/runtime/catalog' ? { agents: [], skills: [] } : snapshot }),
+    fetch: async url => ({ json: async () => url === '/runtime/catalog' ? { agents: [], skills: [] } : url === '/runtime/tasks' ? { tasks: [], write_token: null } : snapshot }),
+    createTaskEditor: () => ({ update() {}, destroy() {} }),
     PreviewPreferences: { create: () => ({ locale: 'en', t: (key, values = {}) => ({
       'dashboard.futureStart': 'future start',
       'dashboard.reportedRunning': 'reported running', 'dashboard.startedRecent': 'started/resumed within past hour; liveness unconfirmed',
@@ -505,6 +513,41 @@ test('unregistered GOAL runtime route returns 404', async t => {
     const response = await fetch(base + route);
     assert.equal(response.status, 404, route);
   }
+});
+
+test('out_of_order_poll_is_ignored for snapshot and Current Tasks', async () => {
+  const source = await readFile(path.resolve('preview/dashboard.js'), 'utf8');
+  const nodes = new Map();
+  const element = () => ({
+    children: [], classList: { toggle() {} },
+    append(...children) { this.children.push(...children); },
+    replaceChildren(...children) { this.children = children; },
+    set innerHTML(value) { for (const [, id] of value.matchAll(/id="([^"]+)"/g)) nodes.set(`#${id}`, element()); },
+    set textContent(value) { this.text = value; this.children = []; },
+    get textContent() { return this.text ?? this.children.map(child => child.textContent).join(''); }
+  });
+  for (const selector of ['#app', '#preview-preferences', '#app-tagline', '#sidebar-note']) nodes.set(selector, element());
+  const pending = [];
+  const taskUpdates = [];
+  const snapshot = current_goal => ({ status: { current_goal, active_agents: [], verification: { status: 'passed' }, warnings: [], blockers: [], artifact_preview_links: [] }, tasks: { tasks: [] }, claims: { claims: [] }, events: [] });
+  runInNewContext(source.replace(/^import .*?;\s*/gm, ''), {
+    document: { querySelector: selector => nodes.get(selector), querySelectorAll: () => [], createElement: element },
+    location: { hash: '#dashboard' }, addEventListener() {}, setInterval() {},
+    fetch: async url => ({ json: () => url === '/runtime/catalog' ? Promise.resolve({ agents: [], skills: [] }) : url === '/runtime/tasks' ? Promise.resolve({ tasks: [], write_token: null }) : new Promise(resolve => pending.push(resolve)) }),
+    createTaskEditor: () => ({ update(tasks, token) { taskUpdates.push({ tasks, token }); }, destroy() {} }),
+    renderArtifactTabs: () => ({}),
+    PreviewPreferences: { create: () => ({ locale: 'en', t: key => key, mount() {}, subscribe() {} }) },
+    AgentSignalNetwork: { create: () => ({ update() {}, destroy() {} }) }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(pending.length, 2);
+  pending[1](snapshot('newer'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nodes.get('#goal').textContent, 'newer');
+  pending[0](snapshot('older'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nodes.get('#goal').textContent, 'newer');
+  assert.equal(taskUpdates.length, 1);
 });
 
 test('validated task HTTP writes stay in the selected project and expose only safe records', async t => {
