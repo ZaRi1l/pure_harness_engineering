@@ -28,6 +28,16 @@ test('hook forwards explicitly observed native IDs into one exact child link', a
   assert.equal((await store.readChildLinks())[0].completed_at, '2026-10-01T00:00:01.000Z');
 });
 
+test('hook preserves an opaque legacy task ID without copying prompt text into its short label', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
+  await handleHook({ hook_event_name: 'SubagentStart', agent_id: 'child-1', parent_thread_id: 'parent-1', root_turn_id: 'root-1', task_id: '한글/작업 1', agent_type: 'worker', spawned_at: '2026-10-01T00:00:00.000Z', task: 'PROMPT_SENTINEL' }, store);
+  const links = await store.readChildLinks();
+  assert.equal(links[0].task_id, '한글/작업 1');
+  assert.equal(links[0].short_task_name, null);
+  assert.doesNotMatch(JSON.stringify(links), /PROMPT_SENTINEL/);
+});
+
 test('actual SubagentStop shape records a neutral lifecycle return', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
   await legacyHook({ hook_event_name: 'SubagentStart', agent_id: 'agent-1', agent_type: 'worker', task: 'Do work' }, root);

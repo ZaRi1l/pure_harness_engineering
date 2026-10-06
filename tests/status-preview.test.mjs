@@ -258,6 +258,32 @@ test('task editor adopts saved record and retains it after network retry and a s
   editor.destroy();
 });
 
+test('add Retry resends the same request ID and payload after a committed response is lost', async () => {
+  const { host } = taskDOM();
+  const requests = [];
+  const created = task('new', { title: 'Saved', revision: 'rev-new' });
+  const committed = new Map();
+  const editor = createTaskEditor(host, { fetchImpl: async (_url, init) => {
+    const body = JSON.parse(init.body);
+    requests.push(body);
+    if (!committed.has(body.request_id)) committed.set(body.request_id, created);
+    if (requests.length === 1) throw Error('response lost after commit');
+    return { ok: true, status: 200, json: async () => committed.get(body.request_id) };
+  }, translate: key => key });
+  editor.update([], 'token');
+  action(host, 'add').click(); field(host, 'title').value = 'Saved';
+  action(host, 'save').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.ok(action(host, 'retry'));
+  assert.equal(field(host, 'title').readOnly, true);
+  action(host, 'retry').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 2);
+  assert.equal(committed.size, 1);
+  assert.deepEqual(requests[1], requests[0]);
+  assert.match(requests[0].request_id, /^[0-9a-f-]{36}$/i);
+  assert.equal(field(host, 'title'), undefined);
+  editor.destroy();
+});
+
 test('an accepted edit does not mask a newer external revision that arrives before its own poll echo', async () => {
   const { host } = taskDOM();
   const saved = task('a', { title: 'Mine', revision: 'rev-2' });
@@ -315,13 +341,28 @@ test('task rows label status, branch, owner, created, and updated without treati
   const editor = createTaskEditor(host, { translate: key => key });
   editor.update([task('a', { title: 'Record', branch: null, owner: 'reviewer', created_at: '2026-01-01T00:00:00Z', updated_at: 'invalid' })], 'token');
   const row = descendants(host).find(node => node.tagName === 'li');
-  assert.match(row.textContent, /task.status: pending/);
+  assert.match(row.textContent, /task.status: task.status.pending/);
   assert.match(row.textContent, /task.branch: common.none/);
   assert.match(row.textContent, /task.owner: reviewer/);
   assert.match(row.textContent, /task.created: 2026-01-01T00:00:00Z/);
   assert.match(row.textContent, /task.updated: common.unknown/);
   action(host, 'edit-a').click();
   assert.equal(field(host, 'owner'), undefined);
+  editor.destroy();
+});
+
+test('Korean task rows translate stored status enums for display', () => {
+  const { host, document } = taskDOM();
+  document.documentElement = { dataset: {}, setAttribute() {} };
+  const context = { document, globalThis: {} };
+  runInNewContext(preferencesSource, context);
+  const preferences = context.globalThis.PreviewPreferences.create(document, { storage: null });
+  preferences.setLocale('ko');
+  const editor = createTaskEditor(host, { translate: key => preferences.t(key) });
+  editor.update([task('a', { status: 'in_progress' })], null);
+  const row = descendants(host).find(node => node.tagName === 'li');
+  assert.match(row.textContent, /진행 중/);
+  assert.doesNotMatch(row.textContent, /in_progress/);
   editor.destroy();
 });
 

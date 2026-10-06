@@ -55,7 +55,7 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
     for (const { task, createdAt, updatedAt } of orderedTaskRows(visible.values(), oldestFirst)) {
       const li = make('li', undefined, 'task-row');
       li.append(make('div', task.title ?? ''));
-      li.append(make('div', `${translate('task.status')}: ${task.status ?? translate('common.unknown')}`, 'muted'));
+      li.append(make('div', `${translate('task.status')}: ${task.status == null ? translate('common.unknown') : translate(`task.status.${task.status}`)}`, 'muted'));
       li.append(make('div', `${translate('task.branch')}: ${task.branch || translate('common.none')}`, 'muted'));
       li.append(make('div', `${translate('task.owner')}: ${task.owner || translate('dashboard.unassigned')}`, 'muted'));
       li.append(make('div', `${translate('task.created')}: ${createdAt === null ? translate('common.unknown') : task.created_at}`, 'muted'));
@@ -84,20 +84,22 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
     }
     const messageHost = make('div'); form.append(messageHost);
     form.append(button('task.save', 'save', save), button('task.cancel', 'cancel', cancel));
-    active = { mode, id: record?.id, originalRevision: record?.revision, fields: { title, status, branch }, messages: {}, messageHost, form, conflict: null };
+    active = { mode, id: record?.id, originalRevision: record?.revision, requestId: mode === 'add' ? globalThis.crypto.randomUUID() : null, sentBody: null, fields: { title, status, branch }, messages: {}, messageHost, form, conflict: null };
     formHost.replaceChildren(form); renderToolbar(); renderRows(); title.focus?.();
   };
   async function save() {
     if (!active || !writeToken || active.conflict || active.saving) return;
     const draft = active;
     const title = draft.fields.title.value.trim(), branch = draft.fields.branch.value.trim();
-    if (!title || title.length > 300) { showMessage('validation', translate('task.invalidTitle')); return; }
-    if (branch.length > 120 || (branch && /[\u0000-\u001f\u007f]/.test(branch))) { showMessage('validation', translate('task.invalidBranch')); return; }
+    if (!draft.sentBody && (!title || title.length > 300)) { showMessage('validation', translate('task.invalidTitle')); return; }
+    if (!draft.sentBody && (branch.length > 120 || (branch && /[\u0000-\u001f\u007f]/.test(branch)))) { showMessage('validation', translate('task.invalidBranch')); return; }
     clearMessage('validation'); clearMessage('error');
     draft.saving = true;
     const requestId = ++generation;
-    const body = { title, status: draft.fields.status.value, branch: branch || null };
+    const body = draft.sentBody || { title, status: draft.fields.status.value, branch: branch || null };
+    if (draft.mode === 'add') body.request_id = draft.requestId;
     if (draft.mode === 'edit') body.revision = draft.originalRevision;
+    if (draft.mode === 'add') draft.sentBody = body;
     const url = draft.mode === 'add' ? '/runtime/tasks' : `/runtime/tasks/${encodeURIComponent(draft.id)}`;
     try {
       const response = await fetchImpl(url, { method: draft.mode === 'add' ? 'POST' : 'PUT', headers: { 'content-type': 'application/json', 'x-task-write-token': writeToken }, body: JSON.stringify(body) });
@@ -106,12 +108,16 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
       if (destroyed || requestId !== generation || active !== draft) return;
       if (response.status === 409 && result.current) {
         draft.conflict = result.current;
-        showMessage('conflict', `${translate('task.conflict')}: ${result.current.status} — ${result.current.title} — ${result.current.branch || translate('common.none')}`);
+        showMessage('conflict', `${translate('task.conflict')}: ${translate(`task.status.${result.current.status}`)} — ${result.current.title} — ${result.current.branch || translate('common.none')}`);
         if (!draft.reloadButton) { draft.reloadButton = button('task.reload', 'reload', () => { const current = draft.conflict; cancel(); start('edit', current); }); draft.messageHost.append(draft.reloadButton); }
-      } else if (!response.ok) showMessage('error', translate('task.saveFailed'));
+      } else if (!response.ok) {
+        if (draft.mode === 'add') { draft.fields.title.readOnly = true; draft.fields.status.disabled = true; draft.fields.branch.readOnly = true; }
+        showMessage('error', translate('task.saveFailed'));
+      }
       else { adopted.set(result.id, { task: result, priorRevision: draft.originalRevision ?? null }); cancel(); }
     } catch {
       if (destroyed || requestId !== generation || active !== draft) return;
+      if (draft.mode === 'add') { draft.fields.title.readOnly = true; draft.fields.status.disabled = true; draft.fields.branch.readOnly = true; }
       showMessage('error', translate('task.networkError'));
       if (!draft.retryButton) { draft.retryButton = button('task.retry', 'retry', save); draft.messageHost.append(draft.retryButton); }
     } finally { draft.saving = false; }

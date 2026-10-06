@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -260,14 +260,24 @@ export class RuntimeStore {
   async setGoal(goal, phase = 'planning') { await this.mutate(({ status, events }) => { status.current_goal = String(goal).slice(0, 500); status.phase = phase; events.push(this.event('goal', 'Goal updated', { phase })); }); }
   async setPhase(phase) { await this.mutate(({ status, events }) => { status.phase = phase; events.push(this.event('phase', `Phase: ${phase}`)); }); }
   async upsertTask(id, title, taskStatus, owner = null) { if (!TASK_STATUSES.has(taskStatus)) throw new Error(`invalid task status: ${taskStatus}`); await this.mutate(({ tasks, events }) => { assertUniqueTaskIds(tasks); let record = tasks.tasks.find(task => task.id === id); if (!record) { record = { id, created_at: now() }; tasks.tasks.push(record); } Object.assign(record, { title: String(title).slice(0, 300), status: taskStatus, owner, updated_at: now(), revision: uniqueTaskToken(tasks, 'revision') }); events.push(this.event('task', `${id}: ${taskStatus}`, { owner })); }); }
-  async createTask(fields) {
+  async createTask(fields, requestId = null) {
     if (!this.context) throw new Error('validated project or core context required');
     const editable = validateTaskFields(fields);
+    if (requestId !== null && (typeof requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId))) throw new Error('invalid create request id');
+    const requestHash = requestId === null ? null : createHash('sha256').update(JSON.stringify(editable)).digest('hex');
     return this.withLock(async () => {
       const state = await this.loadUnlocked();
       assertUniqueTaskIds(state.tasks);
+      if (requestId !== null) {
+        const matches = state.tasks.tasks.filter(task => task.create_request_id === requestId);
+        if (matches.length > 1) throw new Error('duplicate create request id');
+        if (matches.length) {
+          if (matches[0].create_request_hash !== requestHash) throw Object.assign(new Error('create request conflict'), { code: 'TASK_REQUEST_CONFLICT' });
+          return safeTask(matches[0]);
+        }
+      }
       const timestamp = now();
-      const record = { id: uniqueTaskToken(state.tasks, 'id'), ...editable, created_at: timestamp, updated_at: timestamp, revision: uniqueTaskToken(state.tasks, 'revision') };
+      const record = { id: uniqueTaskToken(state.tasks, 'id'), ...editable, created_at: timestamp, updated_at: timestamp, revision: uniqueTaskToken(state.tasks, 'revision'), ...(requestId === null ? {} : { create_request_id: requestId, create_request_hash: requestHash }) };
       state.tasks.tasks.push(record);
       state.events.push(this.event('task', `${record.id}: ${record.status}`, { task_id: record.id, status: record.status }));
       await this.persist(state.status, state.tasks, state.events, state.claims);

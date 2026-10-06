@@ -22,6 +22,13 @@ const id = (value, name, { nullable = false, max = 128 } = {}) => {
   if (typeof value !== 'string' || !value || value.length > max || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)) throw new Error(`invalid ${name}`);
   return value;
 };
+export const isOpaqueTaskId = value => typeof value === 'string' && value.length > 0 && value.length <= 500 && !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
+const taskId = (value, { nullable = false } = {}) => {
+  if (nullable && value == null) return null;
+  if (!isOpaqueTaskId(value)) throw new Error('invalid task id');
+  return value;
+};
+export const shortTaskNameForId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(value) ? value : null;
 const known = (value, allowed, name, fallback = 'other') => {
   if (value == null) return null;
   if (typeof value !== 'string') throw new Error(`invalid ${name}`);
@@ -51,7 +58,7 @@ const rows = (input, name, field) => {
   if (!Array.isArray(input)) throw new Error(`invalid ${name}`);
   return input.map(item => {
     const row = object(item, name);
-    return { [field]: field === 'role' ? known(row[field], ROLES, field) : id(row[field], field), totals: normalizeTotals(row.totals) };
+    return { [field]: field === 'role' ? known(row[field], ROLES, field) : field === 'task_id' ? taskId(row[field]) : id(row[field], field), totals: normalizeTotals(row.totals) };
   });
 };
 const fraction = value => {
@@ -101,7 +108,7 @@ export function normalizeTelemetry(input, projectId) {
   });
   output.spawns = value.spawns.map(raw => {
     const row = object(raw, 'spawn');
-    return { parent_agent_id: id(row.parent_agent_id, 'parent agent', { nullable: true }), child_agent_id: id(row.child_agent_id, 'child agent', { nullable: true }), task_id: id(row.task_id, 'task id', { nullable: true }), role: known(row.role, ROLES, 'role'), fork_turns: forkTurns(row.fork_turns), attempts: count(row.attempts, 'spawn attempts'), confirmed: count(row.confirmed, 'confirmed spawns') };
+    return { parent_agent_id: id(row.parent_agent_id, 'parent agent', { nullable: true }), child_agent_id: id(row.child_agent_id, 'child agent', { nullable: true }), task_id: taskId(row.task_id, { nullable: true }), role: known(row.role, ROLES, 'role'), fork_turns: forkTurns(row.fork_turns), attempts: count(row.attempts, 'spawn attempts'), confirmed: count(row.confirmed, 'confirmed spawns') };
   });
   const denominator = output.totals.processed, numerator = output.unattributed.processed, ratio = output.unattributed.fraction;
   if (denominator !== null && numerator !== null && numerator > denominator) throw new Error('unattributed exceeds total');
@@ -123,11 +130,11 @@ export function normalizeChildLink(input, projectId) {
   const completedAt = timestamp(value.completed_at, 'completed at');
   if (completedAt && completedAt < spawnedAt) throw new Error('completion precedes spawn');
   const label = value.short_task_name;
-  if (label != null && (typeof label !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(label) || label !== value.task_id)) throw new Error('invalid short task name');
+  if (label != null && label !== value.task_id) throw new Error('invalid short task name');
   return {
-    project_id: projectId, task_id: id(value.task_id, 'task id', { nullable: true }), root_turn_id: id(value.root_turn_id, 'root turn id', { nullable: true }),
+    project_id: projectId, task_id: taskId(value.task_id, { nullable: true }), root_turn_id: id(value.root_turn_id, 'root turn id', { nullable: true }),
     parent_agent_id: id(value.parent_agent_id, 'parent agent id', { nullable: true }), child_agent_id: id(value.child_agent_id, 'child agent id'),
-    role: known(value.role, ROLES, 'role'), short_task_name: label ?? null, fork_turns: forkTurns(value.fork_turns),
+    role: known(value.role, ROLES, 'role'), short_task_name: shortTaskNameForId(label), fork_turns: forkTurns(value.fork_turns),
     model: known(value.model, MODELS, 'model'), reasoning_effort: known(value.reasoning_effort, EFFORTS, 'reasoning effort'),
     spawned_at: spawnedAt, completed_at: completedAt,
   };

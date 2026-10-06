@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { RuntimeStore, contextFromArgs } from './runtime-state.mjs';
+import { shortTaskNameForId } from './telemetry-schema.mjs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -23,7 +24,7 @@ export async function handleHook(payload, context) {
       project_id: store.context.projectId, acknowledgement: 'success', child_agent_id: agentId,
       parent_agent_id: payload.parent_thread_id, root_turn_id: payload.root_turn_id ?? null,
       task_id: payload.task_id ?? null, role: payload.agent_type ?? null,
-      short_task_name: payload.task_id ?? null, fork_turns: payload.fork_turns ?? null,
+      short_task_name: shortTaskNameForId(payload.task_id), fork_turns: payload.fork_turns ?? null,
       model: payload.model ?? null, reasoning_effort: payload.reasoning_effort ?? null,
       spawned_at: payload.spawned_at, completed_at: null,
     });

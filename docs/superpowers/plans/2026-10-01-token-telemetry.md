@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Neutral engine in this isolated checkout only; do not alter SILO code/data, the original `D:/dev/pure_harness_engineering` checkout, GOAL, or backend. Claim exact paths before writes.
+- Neutral engine in this isolated checkout only; do not alter product code/data, the original checkout, project goals, or backend. Claim exact paths before writes.
 - CLI import requires one or more explicit JSONL paths and a validated selected-project context. No background discovery, browser upload/write API, global database, or source-log copy.
 - Normalize allowlisted aggregate and link metadata only. Never persist or expose prompts, messages, reasoning, tool arguments/output bodies, raw records, source/filesystem paths, or arbitrary labels. Bound known tool/model/role identifiers or map to `other`/`null`.
 - Counts are nonnegative safe integers or `null`; unknown/unsupported/incomplete is never zero. `processed = input + output`; cached input and reasoning output are subsets, never additions. Elapsed is observed end minus start only.
@@ -42,7 +42,7 @@
 | `preview/telemetry-panel.js` (new), `preview/dashboard.js`, `preview/index.html`, `preview/preferences.js` | All-tasks/task-select view, coverage, null/partial/stale presentation and translated copy. |
 | `tests/telemetry-schema.test.mjs`, `tests/codex-rollout-telemetry.test.mjs`, `tests/runtime-state.test.mjs`, `tests/hook-runtime.test.mjs`, `tests/preview-server.test.mjs`, `tests/status-preview.test.mjs` | Focused deterministic fixtures. |
 
-The mixed SILO donor checkout `D:/dev/chrome_extension/Silo_server` has generic-reference parser, attribution, runtime, and board patterns in `scripts/token-rollout-importer.mjs`, `scripts/telemetry-attribution.mjs`, `scripts/token-telemetry-runtime.mjs`, `preview/telemetry-board.js`, and their focused tests. Review only the relevant patterns/fixtures; do not copy these files wholesale or import SILO product code/data. Add new tests to `tests/all.test.mjs` if its explicit runner requires it. The current hooks do not guarantee parent, child, or root-turn IDs; lack of them remains null/unattributed.
+Add new tests to `tests/all.test.mjs` if its explicit runner requires it. The current hooks do not guarantee parent, child, or root-turn IDs; lack of them remains null/unattributed.
 
 ### Task 1: Versioned aggregate and exact-link storage
 

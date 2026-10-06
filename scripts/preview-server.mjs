@@ -58,12 +58,13 @@ function parsedTaskBody(source, update) {
   try { value = JSON.parse(source); } catch { throw Object.assign(new Error('invalid JSON'), { status: 400 }); }
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw Object.assign(new Error('invalid task'), { status: 400 });
   const keys = Object.keys(value);
-  if (keys.length !== (update ? 4 : 3) || !keys.every(key => ['title', 'status', 'branch', ...(update ? ['revision'] : [])].includes(key))) throw Object.assign(new Error('invalid task'), { status: 400 });
+  if (keys.length !== (update ? 4 : 'request_id' in value ? 4 : 3) || !keys.every(key => ['title', 'status', 'branch', ...(update ? ['revision'] : ['request_id'])].includes(key))) throw Object.assign(new Error('invalid task'), { status: 400 });
   if (update && (typeof value.revision !== 'string' || !value.revision)) throw Object.assign(new Error('invalid revision'), { status: 400 });
+  if (!update && value.request_id !== undefined && (typeof value.request_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.request_id))) throw Object.assign(new Error('invalid create request id'), { status: 400 });
   let fields;
   try { fields = validateTaskFields({ title: value.title, status: value.status, branch: value.branch }); }
   catch { throw Object.assign(new Error('invalid task fields'), { status: 400 }); }
-  return { fields, revision: value.revision };
+  return { fields, revision: value.revision, requestId: value.request_id ?? null };
 }
 
 async function registeredRoutes(context, routes) {
@@ -137,8 +138,8 @@ export async function createPreviewServer(context, host = '127.0.0.1', options =
           json(response, 400, { error: 'invalid_content_type' }); return;
         }
         try {
-          const { fields, revision } = parsedTaskBody(await readTaskBody(request), taskItemPath);
-          if (taskPath) json(response, 201, await store.createTask(fields));
+          const { fields, revision, requestId } = parsedTaskBody(await readTaskBody(request), taskItemPath);
+          if (taskPath) json(response, 201, await store.createTask(fields, requestId));
           else {
             const result = await store.updateTask(pathname.slice('/runtime/tasks/'.length), revision, fields);
             if (result.kind === 'missing') json(response, 404, { error: 'task_not_found' });
@@ -146,7 +147,8 @@ export async function createPreviewServer(context, host = '127.0.0.1', options =
             else json(response, 200, result.task);
           }
         } catch (error) {
-          if (error.status === 400 || error.status === 413) json(response, error.status, { error: error.status === 413 ? 'body_too_large' : 'invalid_task' });
+          if (error.code === 'TASK_REQUEST_CONFLICT') json(response, 409, { error: 'create_request_conflict' });
+          else if (error.status === 400 || error.status === 413) json(response, error.status, { error: error.status === 413 ? 'body_too_large' : 'invalid_task' });
           else throw error;
         }
         return;

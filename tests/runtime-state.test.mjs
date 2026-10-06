@@ -80,6 +80,25 @@ test('createTask generates unique identity, timestamps, revision, and private ev
   assert.equal(JSON.stringify(events).includes('secret/branch'), false);
 });
 
+test('createTask replays one request ID without a second write and rejects a changed payload', async () => {
+  const store = await editableStore();
+  const requestId = 'b37e7cbb-c4f4-4c06-b797-4a0c94463dc9';
+  const fields = { title: 'Original', status: 'pending', branch: null };
+  const first = await store.createTask(fields, requestId);
+  const beforeTasks = await readFile(store.tasksPath, 'utf8');
+  const beforeEvents = await readFile(store.eventsPath, 'utf8');
+  assert.deepEqual(await store.createTask(fields, requestId), first);
+  assert.equal(await readFile(store.tasksPath, 'utf8'), beforeTasks);
+  assert.equal(await readFile(store.eventsPath, 'utf8'), beforeEvents);
+  await assert.rejects(() => store.createTask({ ...fields, title: 'Changed' }, requestId), /request.*conflict/i);
+  assert.equal((await store.readTasks()).tasks.length, 1);
+  assert.equal((await store.readSnapshot()).tasks.tasks[0].id, first.id);
+  const concurrentId = '808937b6-6105-44ea-9e29-4c2cfb88913c';
+  const concurrent = await Promise.all([store.createTask(fields, concurrentId), store.createTask(fields, concurrentId)]);
+  assert.equal(concurrent[0].id, concurrent[1].id);
+  assert.equal((await store.readTasks()).tasks.length, 2);
+});
+
 test('updateTask changes only its target and preserves owner and other revision', async () => {
   const store = await editableStore();
   await store.upsertTask('owned', 'Before', 'pending', 'worker');

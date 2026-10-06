@@ -37,6 +37,16 @@ test('exact child, parent, root and task links yield task, role and agent rows',
   assert.equal(result.unattributed.processed, 0);
 });
 
+test('rollout import attributes exact opaque legacy task IDs without prompt text', async () => {
+  const taskId = '한글/작업 1';
+  const links = [{ ...link('child-1', 'parent-1', taskId), project_id: 'alpha', acknowledgement: 'success', short_task_name: null, model: null, reasoning_effort: null, spawned_at: at(0), completed_at: null }];
+  const result = await fixture([[meta('child-1'), record('turn_context', { root_turn_id: 'root-1', task_id: taskId, task: 'PROMPT_SENTINEL' }), cumulative(4, 2)]], paths => aggregateCodexRollouts(paths, { projectId: 'alpha', links }));
+  assert.equal(result.tasks[0].task_id, taskId);
+  assert.equal(result.tasks[0].totals.processed, 6);
+  assert.equal(result.unattributed.processed, 0);
+  assert.doesNotMatch(JSON.stringify(result), /PROMPT_SENTINEL/);
+});
+
 test('contradictory_parent_is_unattributed despite matching child ID', () => {
   const result = attributeThreads([observed('child-1', 'other-parent')], [link('child-1', 'parent-1')]);
   assert.deepEqual(result.tasks, []);

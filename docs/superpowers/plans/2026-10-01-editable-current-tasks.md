@@ -12,8 +12,8 @@
 
 ## Global Constraints
 
-- Neutral engine only; no SILO code, data, GOAL, backend, or original `D:/dev/pure_harness_engineering` checkout changes. Execute in this isolated checkout and claim exact paths before writing.
-- `RuntimeStore` lock, atomic persistence, validated project context, project stamp, and existing ACL/path checks remain authoritative.
+- Neutral engine only; no product code, data, goals, backend, or original checkout changes. Execute in this isolated checkout and claim exact paths before writing.
+- `RuntimeStore` lock, atomic persistence, validated project context, project stamp, and existing ACL/path checks remain authoritative. A stable add-draft request ID makes an ambiguous POST retry return the same task rather than create another; a changed payload with the same ID conflicts.
 - Title: trimmed, nonempty, at most 300 characters. Status: existing `TASK_STATUSES`. Branch: `null` or trimmed, nonempty, at most 120 characters and no control characters; never map `owner` to branch.
 - `revision` is opaque exact equality, not time or authorization; all mutation paths rotate it, including unchanged and same-millisecond CLI upserts.
 - Writes require `127.0.0.1`, exact current `Host`/`Origin`, per-process token header, JSON content type, strict small body limit, and constant-time comparison. No CORS write allowance, token persistence/logging, bulk/partial writes, or client project/path/ID generation.
@@ -41,13 +41,13 @@
 | `preview/dashboard.js`, `preview/index.html`, `preview/preferences.js` | Mount editor, poll data, row labels, styling and translated copy. Do not alter `scripts/generate-preview.mjs` into a writer. |
 | `tests/task-records.test.mjs`, `tests/runtime-state.test.mjs`, `tests/preview-server.test.mjs`, `tests/status-preview.test.mjs` | Pure, lock/concurrency, HTTP security, and simulated-DOM/poll contracts. |
 
-The mixed SILO donor checkout `D:/dev/chrome_extension/Silo_server` has generic-reference task board/order patterns in `preview/task-board.js` and `tests/task-board.test.mjs`. Review those patterns/tests narrowly; do not copy the board wholesale or import SILO product code/data. Avoid new packages. Append new test files to `tests/all.test.mjs` only if that runner does not already discover them.
+Avoid new packages. Append new test files to `tests/all.test.mjs` only if that runner does not already discover them.
 
 ### Task 1: Versioned single-task store mutations
 
 **Files:** Create `scripts/task-records.mjs`, `tests/task-records.test.mjs`; modify `scripts/runtime-state.mjs`, `tests/runtime-state.test.mjs`, and `tests/all.test.mjs` if needed.
 
-**Interfaces:** Produce `validateTaskFields(value: unknown): {title:string,status:string,branch:string|null}`; `taskRevision(task: object): string` (stored opaque value or deterministic hash of canonical editable fields, `created_at`, `updated_at` for legacy records); `safeTask(task: object): object`; `RuntimeStore.createTask(fields): Promise<object>`; `RuntimeStore.updateTask(id: string, revision: string, fields): Promise<{kind:'updated',task:object}|{kind:'missing'}|{kind:'conflict',task:object}>`. Store errors distinguish malformed input/duplicate IDs from conflicts; do not persist on failure. `upsertTask` remains source-compatible.
+**Interfaces:** Produce `validateTaskFields(value: unknown): {title:string,status:string,branch:string|null}`; `taskRevision(task: object): string` (stored opaque value or deterministic hash of canonical editable fields, `created_at`, `updated_at` for legacy records); `safeTask(task: object): object`; `RuntimeStore.createTask(fields, requestId?): Promise<object>`; `RuntimeStore.updateTask(id: string, revision: string, fields): Promise<{kind:'updated',task:object}|{kind:'missing'}|{kind:'conflict',task:object}>`. Store errors distinguish malformed input/duplicate IDs from conflicts; do not persist on failure. `upsertTask` remains source-compatible.
 
 - [ ] **Step 1: Write failing pure/store tests.** In `tests/task-records.test.mjs`, assert validation trims fields, rejects unknown/client-owned fields, invalid status/control branch/overlong labels, and `unicode_whitespace_not_a_label`; assert stable legacy revision. In `tests/runtime-state.test.mjs`, assert create generates unique ID/timestamps/revision, update changes only one task and preserves owner/other revisions, stale update returns current safe record unchanged, `duplicate_existing_ids_rejected`, and two same-millisecond/unchanged upserts rotate revision.
 - [ ] **Step 2: Run red checks.** `node --test tests/task-records.test.mjs tests/runtime-state.test.mjs`; expect new tests to fail for absent exports/methods.
@@ -59,7 +59,7 @@ The mixed SILO donor checkout `D:/dev/chrome_extension/Silo_server` has generic-
 
 **Files:** Modify `scripts/preview-server.mjs`, `tests/preview-server.test.mjs`.
 
-**Interfaces:** Consume Task 1 store methods and `safeTask`; produce `GET /runtime/tasks` as `{...existing document, tasks:[safe records], write_token:string}` only for validated live context (legacy GET remains compatible without token); `POST /runtime/tasks` → `201` record; `PUT /runtime/tasks/:id` → `200` record; typed `400/403/404/405/409/413` responses with safe `409` current record. Token header: `X-Task-Write-Token`. Fix maximum body at 16 KiB; reject unsupported content encoding and any extra JSON keys. Do not return token in `/runtime/snapshot`.
+**Interfaces:** Consume Task 1 store methods and `safeTask`; produce `GET /runtime/tasks` as `{...existing document, tasks:[safe records], write_token:string}` only for validated live context (legacy GET remains compatible without token); `POST /runtime/tasks` → `201` record and accepts an optional UUID `request_id` for exact replay (a changed payload with the same ID returns `409`); `PUT /runtime/tasks/:id` → `200` record; typed `400/403/404/405/409/413` responses with safe `409` current record for stale updates. Token header: `X-Task-Write-Token`. Fix maximum body at 16 KiB; reject unsupported content encoding and any extra JSON keys. Do not return token in `/runtime/snapshot`.
 
 - [ ] **Step 1: Write failing HTTP tests.** In a two-project validated fixture assert create/update and A/B isolation; malformed IDs/bodies/JSON/status/branch and client-owned fields → `400`; missing task → `404`; stale revision → `409` plus safe current record; oversized body → `413`; bad remote address/Host/Origin/token/content type → `403` or `400` per contract; `token_rotates_on_restart`; legacy/static PUT/POST → `405`; existing GETs continue working; failed requests leave task document bytes unchanged.
 - [ ] **Step 2: Run red check.** `node --test tests/preview-server.test.mjs`; expect new route tests to fail.
@@ -71,7 +71,7 @@ The mixed SILO donor checkout `D:/dev/chrome_extension/Silo_server` has generic-
 
 **Files:** Create `preview/task-editor.js`; modify `preview/dashboard.js`, `preview/index.html`, `preview/preferences.js`, `tests/status-preview.test.mjs`.
 
-**Interfaces:** Produce `createTaskEditor(host: HTMLElement, {fetchImpl, translate}): {update(tasks: object[], writeToken: string|null): void, destroy(): void}`. Controller owns active `{mode,id,originalRevision,fields,validation,conflict}` and request-generation counter. `update` refreshes non-edited rows but does not recreate active form controls; Save/Cancel are explicit, 409 displays current record and explicit Reload/Cancel, network failure retains draft and Retry.
+**Interfaces:** Produce `createTaskEditor(host: HTMLElement, {fetchImpl, translate}): {update(tasks: object[], writeToken: string|null): void, destroy(): void}`. Controller owns active `{mode,id,originalRevision,fields,validation,conflict}` and request-generation counter. `update` refreshes non-edited rows but does not recreate active form controls; Save/Cancel are explicit, 409 displays current record and explicit Reload/Cancel, network failure retains draft and Retry. An add draft reuses one UUID and its original submitted payload on ambiguous retry.
 
 - [ ] **Step 1: Write failing simulated-DOM tests.** Use existing test DOM helpers (or minimal in-test DOM doubles; no dependency). Assert Add and Edit retain field values, active element, selection range, scroll and validation through `update`; successful Save adopts returned record; `409` retains draft and shows safe current record until Reload; Cancel discards; `out_of_order_poll_is_ignored`; no write from blur; static preview has no controls.
 - [ ] **Step 2: Run red check.** `node --test tests/status-preview.test.mjs`; expect new controller tests to fail.

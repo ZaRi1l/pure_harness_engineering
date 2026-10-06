@@ -452,6 +452,26 @@ test('telemetry import rejects another project stamp without replacing its bytes
   await assert.rejects(createPreviewServer(alpha, '0.0.0.0'), /localhost/);
 });
 
+test('telemetry CLI imports an exact legacy task ID through stored link and safe HTTP response', async t => {
+  const f = await projectPreviewFixture();
+  const context = await f.context('alpha');
+  const store = new RuntimeStore(context);
+  const taskId = '한글/작업 1';
+  await store.upsertTask(taskId, 'Legacy task', 'pending');
+  await store.recordChildLink({ project_id: 'alpha', acknowledgement: 'success', task_id: taskId, root_turn_id: 'root-1', parent_agent_id: 'parent-1', child_agent_id: 'child-1', role: 'worker', short_task_name: null, fork_turns: 'all', model: null, reasoning_effort: null, spawned_at: '2026-10-01T00:00:00.000Z', completed_at: null, prompt: 'PROMPT_SENTINEL' });
+  const line = (type, payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type, payload });
+  const file = path.join(f.root, 'private-rollout.jsonl');
+  await writeFile(file, [line('session_meta', { id: 'child-1', parent_thread_id: 'parent-1' }), line('turn_context', { root_turn_id: 'root-1', task_id: taskId, task: 'PROMPT_SENTINEL' }), line('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 4, output_tokens: 2 } } })].join('\n'));
+  const run = spawnSync(process.execPath, ['scripts/import-telemetry.mjs', '--project', 'alpha', '--checkout', f.alpha, '--binding', f.bindingPath, '--file', file], { cwd: path.resolve('.'), encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  const telemetry = await store.readTelemetry();
+  assert.deepEqual(telemetry.tasks.map(row => [row.task_id, row.totals.processed]), [[taskId, 6]]);
+  const base = await listening(t, context);
+  const body = await (await fetch(`${base}/runtime/telemetry`)).text();
+  assert.equal(JSON.parse(body).tasks[0].task_id, taskId);
+  assert.doesNotMatch(body + JSON.stringify(await store.readChildLinks()), /PROMPT_SENTINEL|private-rollout\.jsonl/);
+});
+
 test('omitted asset root serves module-owned preview instead of malicious installation bytes', async t => {
   const f = await projectPreviewFixture();
   await writeFile(path.join(f.installation, 'preview', 'index.html'), 'MALICIOUS_INSTALLATION_PAGE');
@@ -698,6 +718,38 @@ test('validated task HTTP writes stay in the selected project and expose only sa
   assert.equal(visible.project_id, 'alpha');
 });
 
+test('committed create with lost response replays exactly once across HTTP retry', async t => {
+  const f = await projectPreviewFixture();
+  const alpha = await f.context('alpha'), beta = await f.context('beta');
+  const base = await listening(t, alpha);
+  const token = (await (await fetch(`${base}/runtime/tasks`)).json()).write_token;
+  const headers = { origin: base, 'content-type': 'application/json', 'x-task-write-token': token };
+  const requestId = '6c7151b3-f8eb-40f4-8a79-e18a96915d96';
+  const body = JSON.stringify({ title: 'Once', status: 'pending', branch: null, request_id: requestId });
+  const first = await fetch(`${base}/runtime/tasks`, { method: 'POST', headers, body });
+  assert.equal(first.status, 201);
+  // Deliberately discard the committed response, as a client would after a transport loss.
+  const afterCommit = await readFile(path.join(alpha.paths.runtime, 'tasks.json'));
+  const replay = await fetch(`${base}/runtime/tasks`, { method: 'POST', headers, body });
+  assert.ok([200, 201].includes(replay.status));
+  const record = await replay.json();
+  assert.equal(record.title, 'Once');
+  assert.deepEqual(await readFile(path.join(alpha.paths.runtime, 'tasks.json')), afterCommit);
+  assert.equal((await new RuntimeStore(alpha).readTasks()).tasks.length, 1);
+  assert.equal('request_id' in record, false);
+  const restarted = await listening(t, alpha);
+  const restartedToken = (await (await fetch(`${restarted}/runtime/tasks`)).json()).write_token;
+  const resumed = await fetch(`${restarted}/runtime/tasks`, { method: 'POST', headers: { ...headers, origin: restarted, 'x-task-write-token': restartedToken }, body });
+  assert.equal((await resumed.json()).id, record.id);
+  assert.equal((await new RuntimeStore(alpha).readTasks()).tasks.length, 1);
+  const conflict = await fetch(`${base}/runtime/tasks`, { method: 'POST', headers, body: JSON.stringify({ title: 'Different', status: 'pending', branch: null, request_id: requestId }) });
+  assert.equal(conflict.status, 409);
+  assert.deepEqual(await readFile(path.join(alpha.paths.runtime, 'tasks.json')), afterCommit);
+  const isolated = await new RuntimeStore(beta).createTask({ title: 'Other project', status: 'pending', branch: null }, requestId);
+  assert.notEqual(isolated.id, record.id);
+  assert.equal((await new RuntimeStore(beta).readTasks()).tasks.length, 1);
+});
+
 test('task HTTP rejects invalid writes without touching task document bytes', async t => {
   const f = await projectPreviewFixture();
   const context = await f.context('alpha');
@@ -712,7 +764,8 @@ test('task HTTP rejects invalid writes without touching task document bytes', as
     JSON.stringify({ ...valid, created_at: 'now' }), JSON.stringify({ ...valid, revision: 'client' }),
     JSON.stringify({ ...valid, status: 'unknown' }), JSON.stringify({ ...valid, branch: '' }),
     JSON.stringify({ ...valid, branch: 'a\n' }), JSON.stringify({ ...valid, title: '' }),
-    JSON.stringify({ title: 'Partial', status: 'pending' })
+    JSON.stringify({ title: 'Partial', status: 'pending' }),
+    JSON.stringify({ ...valid, request_id: 'not-a-uuid' })
   ]) {
     const response = await fetch(`${base}/runtime/tasks`, { method: 'POST', headers, body });
     assert.equal(response.status, 400, body);

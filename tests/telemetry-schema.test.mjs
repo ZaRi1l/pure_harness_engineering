@@ -83,3 +83,17 @@ test('link label is only the exact task identifier and fork turns is a bounded e
   for (const fork_turns of ['PROMPT_SENTINEL', '1000', '-1', '01']) assert.throws(() => normalizeChildLink({ ...link, fork_turns }, 'alpha'));
   for (const short_task_name of ['PROMPT_SENTINEL', 'token=SECRET_SENTINEL', 'task-1 extra']) assert.throws(() => normalizeChildLink({ ...link, short_task_name }, 'alpha'));
 });
+
+test('opaque legacy task IDs remain exact while unsuitable short labels stay null', () => {
+  for (const taskId of ['with space', '한글/하위', 'part/child', 'task.v1:fix']) {
+    const input = base();
+    input.tasks = [{ task_id: taskId, totals }];
+    assert.equal(normalizeTelemetry(input, 'alpha').tasks[0].task_id, taskId);
+    const link = { project_id: 'alpha', acknowledgement: 'success', task_id: taskId, root_turn_id: 'turn-1', parent_agent_id: 'parent-1', child_agent_id: 'child-1', role: 'worker', short_task_name: null, fork_turns: 'all', model: null, reasoning_effort: null, spawned_at: '2026-10-01T00:00:00.000Z', completed_at: null, task: 'PROMPT_SENTINEL' };
+    const normalized = normalizeChildLink(link, 'alpha');
+    assert.equal(normalized.task_id, taskId);
+    assert.equal(normalized.short_task_name, null);
+    assert.equal(normalizeChildLink({ ...link, short_task_name: taskId }, 'alpha').short_task_name, null);
+    assert.doesNotMatch(JSON.stringify(normalized), /PROMPT_SENTINEL/);
+  }
+});

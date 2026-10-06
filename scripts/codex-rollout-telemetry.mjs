@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { normalizeTelemetry } from './telemetry-schema.mjs';
+import { isOpaqueTaskId, normalizeTelemetry } from './telemetry-schema.mjs';
 
 const COUNTERS = ['input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_output_tokens'];
 const TOOL_NAMES = new Set(['exec_command', 'apply_patch', 'write_stdin', 'web.run', 'functions.exec', 'functions.wait', 'mcp__cua_repl.js', 'image_gen.imagegen', 'collaboration.spawn_agent', 'collaboration.send_message']);
@@ -220,7 +220,7 @@ export async function aggregateCodexRollouts(paths, { projectId, links } = {}) {
           current.rootTurns.add(payload.root_turn_id);
         }
         if ((nativeTurn || nativeUsage) && payload.task_id != null) {
-          if (!safeId(payload.task_id)) structural(lineNumber);
+          if (!isOpaqueTaskId(payload.task_id)) structural(lineNumber);
           current.taskIds.add(payload.task_id);
         }
         if (record.type === 'token_usage_record') addResponse(current, payload);
