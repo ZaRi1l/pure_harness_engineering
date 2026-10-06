@@ -5,6 +5,7 @@ export function createTelemetryPanel(host, { fetchImpl = fetch, translate = key 
   let stale = false;
   let generation = 0;
   let destroyed = false;
+  let renderedSelector;
 
   const node = (tag, text, attribute, value) => {
     const element = document.createElement(tag);
@@ -25,13 +26,15 @@ export function createTelemetryPanel(host, { fetchImpl = fetch, translate = key 
 
   function render() {
     if (destroyed) return;
+    const restoreTaskFocus = document.activeElement === renderedSelector;
+    if (selectedTask && !((snapshot?.tasks || []).some(task => task.task_id === selectedTask))) selectedTask = null;
     const status = safeStatus(snapshot?.status);
     const root = node('div');
-    if (stale) root.append(node('p', translate('telemetry.stale'), 'data-telemetry-state', 'stale'));
-    root.append(node('p', translate(`telemetry.status.${status}`)));
+    if (stale) root.append(node('p', translate(snapshot === null ? 'telemetry.unavailable' : 'telemetry.stale'), 'data-telemetry-state', snapshot === null ? 'unavailable' : 'stale'));
+    if (snapshot !== null) root.append(node('p', translate(`telemetry.status.${status}`)));
     if (snapshot?.source) root.append(node('p', translate(`telemetry.source.${safeSource(snapshot.source)}`)));
     const coverage = snapshot?.coverage;
-    if (coverage) {
+    if (coverage && !selectedTask) {
       const summary = ['threads', 'observed_threads', 'partial_threads', 'unsupported_threads']
         .filter(key => coverage[key] !== undefined)
         .map(key => `${translate(`telemetry.${key}`)}: ${value(coverage[key])}`);
@@ -49,7 +52,6 @@ export function createTelemetryPanel(host, { fetchImpl = fetch, translate = key 
       option.value = task.task_id;
       selector.append(option);
     }
-    if (selectedTask && !((snapshot?.tasks || []).some(task => task.task_id === selectedTask))) selectedTask = null;
     selector.value = selectedTask || '';
     selector.addEventListener('change', () => { selectedTask = selector.value || null; render(); });
     selectorLabel.append(selector);
@@ -115,6 +117,8 @@ export function createTelemetryPanel(host, { fetchImpl = fetch, translate = key 
       root.append(timing);
     }
     host.replaceChildren(root);
+    renderedSelector = selector;
+    if (restoreTaskFocus) selector.focus();
   }
 
   async function refresh() {

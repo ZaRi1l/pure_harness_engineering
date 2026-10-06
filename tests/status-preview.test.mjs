@@ -81,6 +81,7 @@ test('telemetry panel shows observed project metrics and only exact selected tas
   selector.value = 'task-a';
   selector.dispatch('change');
   assert.equal(find(host, 'telemetry-value', 'processed').textContent, '40');
+  assert.doesNotMatch(host.textContent, /telemetry.coverage|telemetry.threads/);
   assert.match(host.textContent, /telemetry.selectedExcludesUnassigned/);
   assert.equal(find(host, 'telemetry-value', 'unattributed').textContent, 'Unknown');
   assert.doesNotMatch(host.textContent, /exec_command|telemetry.agents/);
@@ -129,6 +130,34 @@ test('telemetry panel retains selected task on polls and marks old display stale
   await panel.refresh();
   assert.match(host.textContent, /telemetry.stale/);
   assert.equal(find(host, 'telemetry-value', 'processed').textContent, '40');
+  panel.destroy();
+});
+
+test('initial telemetry read failure shows unavailable without claiming a previous result', async () => {
+  const { host, panel } = telemetryPanel([Error('offline')]);
+  await panel.refresh();
+  assert.match(host.textContent, /telemetry.unavailable/);
+  assert.doesNotMatch(host.textContent, /telemetry.stale/);
+  assert.doesNotMatch(host.textContent, /telemetry.status.missing/);
+  assert.equal(find(host, 'telemetry-value', 'processed').textContent, 'Unknown');
+  panel.destroy();
+});
+
+test('successful telemetry poll keeps keyboard focus on the task selector', async () => {
+  const { host, document } = taskDOM();
+  const panel = createTelemetryPanel(host, {
+    fetchImpl: async () => ({ ok: true, json: async () => telemetryFixture() }),
+    translate: key => key === 'telemetry.unknown' ? 'Unknown' : key
+  });
+  await panel.refresh();
+  const selector = find(host, 'telemetry-task', 'selector');
+  selector.value = 'task-a';
+  selector.dispatch('change');
+  const focused = find(host, 'telemetry-task', 'selector');
+  focused.focus();
+  await panel.refresh();
+  assert.equal(find(host, 'telemetry-task', 'selector').value, 'task-a');
+  assert.equal(document.activeElement, find(host, 'telemetry-task', 'selector'));
   panel.destroy();
 });
 
