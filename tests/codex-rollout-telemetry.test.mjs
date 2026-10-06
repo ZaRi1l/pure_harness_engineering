@@ -259,6 +259,22 @@ test('current rollout exec and wait tool names are recognized, unknown names rem
   assert.deepEqual(result.largest_tool_outputs.map(row => [row.tool, row.total_bytes]), [['exec', 3], ['wait', 2], ['other', 1]]);
 });
 
+test('array tool outputs sum UTF-8 text blocks without retaining bodies or inventing bytes for unknown blocks', async () => {
+  const result = await aggregate([[meta('thread-1'), cumulative(2, 1),
+    tool('function_call', 'array', { name: 'exec' }),
+    tool('function_call_output', 'array', { output: [{ type: 'input_text', text: 'é SECRET_BODY' }, { type: 'input_text', text: '🙂' }] }),
+    tool('function_call', 'string', { name: 'exec' }),
+    tool('function_call_output', 'string', { output: 'abc' }),
+    tool('function_call', 'nontext', { name: 'exec' }),
+    tool('function_call_output', 'nontext', { output: [{ type: 'input_text', text: 'partial SECRET_BODY' }, { type: 'input_image', image_url: 'SECRET_IMAGE' }] }),
+    tool('function_call', 'malformed', { name: 'exec' }),
+    tool('function_call_output', 'malformed', { output: [{ type: 'input_text', text: 12 }] })]]);
+  assert.equal(result.status, 'observed');
+  assert.equal(result.totals.tool_calls, 4);
+  assert.deepEqual(result.largest_tool_outputs, [{ tool: 'exec', count: 2, total_bytes: 21, median_bytes: 10.5, p95_bytes: 18, max_bytes: 18 }]);
+  assert.doesNotMatch(JSON.stringify(result), /SECRET_BODY|SECRET_IMAGE/);
+});
+
 test('explicit compaction only, observed interval, and source content excluded', async () => {
   const result = await aggregate([[meta('thread-1'), record('turn_context', { turn_id: 'turn-1', model: 'SECRET_MODEL', effort: 'SECRET_EFFORT' }, 1), cumulative(2, 1, 0, 0, 2), record('event_msg', { type: 'context_compacted', text: 'SECRET_COMPACTION' }, 3), record('compaction', { text: 'SECRET_BODY' }, 4), record('noise', { text: 'SECRET_REASONING' }, 5)]]);
   assert.equal(result.compactions, 2);

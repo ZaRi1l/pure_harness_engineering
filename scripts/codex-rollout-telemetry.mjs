@@ -52,6 +52,17 @@ function addCumulative(state, value) {
   state.cumulativeHighWater = state.cumulativeHighWater.map((counter, index) => parsed.value[index] === null ? counter : parsed.value[index]);
   state.cumulative = parsed.value;
 }
+function toolOutputBytes(output) {
+  if (typeof output === 'string') return Buffer.byteLength(output, 'utf8');
+  if (!Array.isArray(output)) return null;
+  let bytes = 0;
+  for (const block of output) {
+    if (!object(block) || block.type !== 'input_text' || typeof block.text !== 'string') return null;
+    bytes = safeAdd(bytes, Buffer.byteLength(block.text, 'utf8'));
+    if (bytes === null) return null;
+  }
+  return bytes;
+}
 function addTool(state, item) {
   if (!object(item) || !safeId(item.call_id)) return;
   if (item.type === 'custom_tool_call' || item.type === 'function_call') {
@@ -59,7 +70,8 @@ function addTool(state, item) {
     state.calls.set(item.call_id, TOOL_NAMES.has(item.name) ? item.name : 'other');
     if (item.name === 'collaboration.spawn_agent') state.spawnAttempts++;
   } else if (item.type === 'custom_tool_call_output' || item.type === 'function_call_output') {
-    if (typeof item.output === 'string') state.outputs.set(item.call_id, Buffer.byteLength(item.output, 'utf8'));
+    const bytes = toolOutputBytes(item.output);
+    if (bytes !== null) state.outputs.set(item.call_id, bytes);
   }
 }
 function finishTools(state) {
