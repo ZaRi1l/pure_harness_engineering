@@ -4,18 +4,98 @@ Pure Harness는 Codex 중심의 가벼운 작업 흐름 도구입니다. Main Co
 
 ## 시작하기
 
-1. 추적되는 중립 엔진 파일로 별도의 단계적 로컬 설치를 준비하고 프로젝트 checkout과 분리합니다.
-2. 프로젝트 하나와 작업 명세·메모리·runtime 관리 경로를 선언하고, 선택한 checkout을 가리키는 로컬 binding을 설정합니다.
-3. 상태 변경 명령 전에 binding을 검증합니다. 선택한 프로젝트 checkout을 Codex에서 열고 에이전트, Skill, 훅의 네이티브 탐색을 확인합니다.
-4. 엔진 테스트와 자체 점검을 실행합니다. 프로젝트 명령에는 검증된 프로젝트 맥락을 명시합니다.
+### 새 프로젝트를 처음 시작할 때 (Windows PowerShell 7)
+
+이 절차는 **아직 Pure Harness runtime이 없는 새 Git 프로젝트**를 위한 예시입니다. Node.js 20+와 Git이 필요합니다. 먼저 이 Pure Harness 저장소를 별도 경로에 clone(예: `git clone https://github.com/ZaRi1l/pure_harness_engineering.git C:\tools\pure-harness`)하거나 이미 clone한 설치를 사용하세요. 엔진 설치와 프로젝트 Git checkout은 서로 안에 두지 않습니다. 아래 두 절대경로를 자신의 환경에 맞게 바꾸고, 빈 프로젝트 디렉터리에서만 시작하세요. 이미 작업 중인 프로젝트에 붙이거나 기존 runtime을 옮기는 경우에는 아래 `init`을 실행하지 말고 [프로젝트 분리 전환 게이트](docs/project-isolation-cutover.md)를 먼저 검토하세요.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$HarnessRoot = 'C:\tools\pure-harness' # 이 저장소의 별도 로컬 설치 경로
+$ProjectRoot = 'C:\work\my-project'   # 새 빈 프로젝트 경로
+$ProjectId = 'my-project'               # 소문자 영문으로 시작, 이후 영문·숫자·하이픈만
+$HarnessRoot = (Resolve-Path $HarnessRoot).Path
+if (Test-Path $ProjectRoot) { throw '프로젝트 경로가 이미 존재합니다. 새 빈 경로를 선택하세요.' }
+New-Item -ItemType Directory -Path (Split-Path $ProjectRoot -Parent) -Force | Out-Null
+New-Item -ItemType Directory -Path $ProjectRoot | Out-Null
+Set-Location $ProjectRoot
+git init
+if ($LASTEXITCODE -ne 0) { throw 'Git 초기화 실패' }
+$ProjectRoot = (Resolve-Path .).Path
+New-Item -ItemType Directory -Path (Join-Path $ProjectRoot 'harness-adapter') | Out-Null
+```
+
+프로젝트의 추적 대상인 `harness-adapter/project.json`에 다음처럼 선언합니다. `paths`는 프로젝트 코드 경로가 아니라 **Harness 설치 아래**의 관리 경로입니다. 세 경로는 서로 겹치면 안 됩니다.
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "my-project",
+  "displayName": "My Project",
+  "paths": {
+    "tasks": "projects/my-project/tasks",
+    "memory": "projects/my-project/memory",
+    "runtime": "projects/my-project/runtime"
+  },
+  "adapters": {}
+}
+```
+
+위 예시를 다음 명령으로 저장합니다. 다른 ID를 선택했다면 위 JSON과 `$ProjectId`의 모든 `my-project` 값을 동일하게 바꾸세요.
+
+```powershell
+$Manifest = Join-Path $ProjectRoot 'harness-adapter/project.json'
+@{
+  schemaVersion = 1
+  id = $ProjectId
+  displayName = 'My Project'
+  paths = @{
+    tasks = "projects/$ProjectId/tasks"
+    memory = "projects/$ProjectId/memory"
+    runtime = "projects/$ProjectId/runtime"
+  }
+  adapters = @{}
+} | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM $Manifest
+git -C $ProjectRoot add harness-adapter/project.json
+if ($LASTEXITCODE -ne 0) { throw '프로젝트 manifest Git 추가 실패' }
+```
+
+설치 쪽의 `harness-adapter/binding.local.json`은 로컬 전용이며 이 저장소의 `.gitignore`에 포함됩니다. 프로젝트 ID와 절대경로를 실제 값으로 바꾸세요. Windows 경로를 JSON에 직접 입력할 때는 역슬래시를 `\\`로 이스케이프해야 합니다. 다음 PowerShell 코드는 이를 자동 처리합니다.
+
+```powershell
+Set-Location $HarnessRoot
+New-Item -ItemType Directory -Path (Join-Path $HarnessRoot 'harness-adapter') -Force | Out-Null
+$Binding = Join-Path $HarnessRoot 'harness-adapter/binding.local.json'
+@{
+  schemaVersion = 1
+  registrations = @(@{
+    projectId = $ProjectId
+    harnessRoot = $HarnessRoot
+    projectRoot = $ProjectRoot
+  })
+} | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM $Binding
+```
+
+이후 **Harness 설치 디렉터리**에서 다음 순서로 실행합니다. 모든 명령에 같은 명시적 프로젝트 맥락을 전달하며, 진단은 읽기 전용입니다.
 
 ```powershell
 npm test
+if ($LASTEXITCODE -ne 0) { throw '엔진 테스트 실패: init 중단' }
 npm run self-check
-node scripts/project-diagnostic.mjs --checkout <checkout-절대경로> --binding <binding-절대경로> --project <프로젝트-id>
+if ($LASTEXITCODE -ne 0) { throw '엔진 자체 점검 실패: init 중단' }
+node scripts/project-diagnostic.mjs --checkout $ProjectRoot --binding $Binding --project $ProjectId
+if ($LASTEXITCODE -ne 0) { throw '프로젝트 binding 진단 실패: init 중단' }
+npm run init -- --project $ProjectId --checkout $ProjectRoot --binding $Binding
+if ($LASTEXITCODE -ne 0) { throw '프로젝트 runtime 초기화 실패' }
+npm run status -- --project $ProjectId --checkout $ProjectRoot --binding $Binding
+if ($LASTEXITCODE -ne 0) { throw '프로젝트 상태 조회 실패' }
+npm run preview:live -- --project $ProjectId --checkout $ProjectRoot --binding $Binding
 ```
 
-이 단계적 중립 엔진의 `init`, `status`, `watchdog`, `preview`, `preview:live` 스크립트는 모두 `--project`, `--checkout`, `--binding`을 요구합니다. 아래는 검증된 binding을 전제로 합니다. `init`은 선택 프로젝트 runtime을 초기화하고, `status`는 누락된 runtime 파일을 만들 수 있으며, `watchdog`는 경고와 이벤트를 기록합니다. 기존 설치나 다른 checkout의 명령 동작까지 이 설명으로 일반화하지 마세요.
+진단 성공 시 `OK: Project context is valid`가 출력됩니다. `init`은 선언한 `projects/my-project/runtime`에 상태 파일을 만들고, `status`는 `Pure Harness`, `Goal none`, `Phase idle`을 표시합니다. `preview:live`가 출력한 localhost URL에 `#guide`를 붙여 가이드를 여세요. 프로젝트 checkout을 Codex에서 별도로 열고, 필요한 에이전트·Skill·훅이 그 환경에서 실제 탐색되는지도 확인해야 합니다. 네 도구용 생성 역할의 native smoke는 아직 미검증이며 이 절차는 자동 배포나 프로젝트 전환을 완료하지 않습니다.
+
+진단이 실패하면 `init`을 실행하지 마세요. `MISSING_FILE`은 manifest 또는 binding 위치, `INVALID_GIT`은 기본 Git checkout 여부, `NESTED_ROOT`는 두 디렉터리의 분리, `MISMATCHED_ID`는 세 위치의 프로젝트 ID, `PATH_ESCAPE`는 관리 경로가 `projects/<id>/` 아래인지 확인하세요. `--checkout`에는 원본 프로젝트 root 또는 그 프로젝트의 **실제 Git worktree**만 사용합니다. `status`도 누락된 runtime 파일을 만들 수 있으므로 진단보다 앞서 실행하지 마세요. 기존 runtime·작업 명세·메모리·점유·열린 세션을 삭제하거나 초기화하지 마세요.
+
+이 단계적 중립 엔진의 `init`, `status`, `watchdog`, `preview`, `preview:live` 스크립트는 모두 `--project`, `--checkout`, `--binding`을 요구합니다. `watchdog`는 경고와 이벤트를 기록합니다. 기존 설치나 다른 checkout의 명령 동작까지 이 설명으로 일반화하지 마세요.
 
 ```powershell
 npm run status -- --project <프로젝트-id> --checkout <checkout-절대경로> --binding <binding-절대경로>

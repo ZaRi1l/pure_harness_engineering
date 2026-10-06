@@ -167,6 +167,9 @@
     }
   };
 
+  messages.en['guide.body'] = '<h2>Start a new project</h2><p>For a new, empty Git project, follow the complete Windows PowerShell sequence under <code>README.md → 시작하기</code> in your Harness installation. Keep the project checkout separate from the installation. Track <code>harness-adapter/project.json</code> in the project and keep <code>harness-adapter/binding.local.json</code> local to the installation; then run diagnostic → init → status → preview:live with the same explicit project, checkout, and binding. Do not run init on an existing project or migrate runtime data as part of this start guide.</p>' + messages.en['guide.body'];
+  messages.ko['guide.body'] = '<h2>새 프로젝트 시작</h2><p>새 빈 Git 프로젝트라면 Harness 설치의 <code>README.md → 시작하기</code>에서 Windows PowerShell 전체 순서를 따르세요. 프로젝트 checkout과 설치를 분리합니다. 프로젝트의 <code>harness-adapter/project.json</code>은 추적하고 설치 쪽의 <code>harness-adapter/binding.local.json</code>은 로컬 전용으로 둡니다. 같은 프로젝트·checkout·binding 인자로 진단 → init → status → preview:live 순서로 실행하세요. 기존 프로젝트에 init을 실행하거나 이 절차에서 runtime을 이관하지 마세요.</p>' + messages.ko['guide.body'];
+
   const read = (storage, key) => {
     try { return storage?.getItem(key); } catch { return null; }
   };
