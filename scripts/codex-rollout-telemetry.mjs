@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import { isOpaqueTaskId, normalizeTelemetry } from './telemetry-schema.mjs';
 
 const COUNTERS = ['input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_output_tokens', 'cache_write_input_tokens', 'total_tokens'];
-const TOOL_NAMES = new Set(['exec_command', 'apply_patch', 'write_stdin', 'web.run', 'functions.exec', 'functions.wait', 'exec', 'wait', 'mcp__cua_repl.js', 'image_gen.imagegen', 'collaboration.spawn_agent', 'collaboration.send_message']);
+const TOOL_NAMES = new Set(['exec_command', 'apply_patch', 'write_stdin', 'web.run', 'functions.exec', 'functions.wait', 'exec', 'wait', 'send_message', 'request_user_input', 'mcp__cua_repl.js', 'image_gen.imagegen', 'collaboration.spawn_agent', 'collaboration.send_message']);
 const COMPACTIONS = new Set(['context_compacted', 'compaction', 'compacted']);
 const UNKNOWN = { input: null, output: null, processed: null, cached_input: null, reasoning_output: null, responses: null, tool_calls: null };
 
@@ -75,14 +75,17 @@ function addTool(state, item) {
   }
 }
 function finishTools(state) {
+  let measured = 0;
   for (const [id, bytes] of state.outputs) {
     const name = state.calls.get(id);
     if (!name) continue;
+    measured++;
     const values = state.toolGroups.get(name) || [];
     values.push(bytes);
     state.toolGroups.set(name, values);
   }
   state.outputs.clear();
+  return measured;
 }
 
 export function toolOutputStats(byteLengths) {
@@ -148,15 +151,17 @@ export function attributeThreads(threads, links) {
   return { tasks: rows(tasks, 'task_id'), roles: rows(roles, 'role'), agents: rows(agents, 'agent_id'), unattributed: { ...(unknown ? UNKNOWN : unattributed), fraction: unknown || !all.processed ? null : unattributed.processed / all.processed }, spawns, coverage: { attributed_threads: valid.size, unattributed_threads: threads.length - valid.size } };
 }
 function summarize(states, projectId, startAt, endAt, links) {
-  const coverage = { threads: states.size, observed_threads: 0, partial_threads: 0, unsupported_threads: 0, responses: 0, observed_responses: 0, tool_calls: 0, compactions: 0 };
+  const coverage = { threads: states.size, observed_threads: 0, partial_threads: 0, unsupported_threads: 0, responses: 0, observed_responses: 0, tool_calls: 0, tool_outputs_measured: 0, tool_outputs_unmeasured: 0, compactions: 0 };
   let summed = [0, 0, 0, 0], responses = 0, toolCalls = 0;
   const tools = new Map();
   const threadAggregates = [];
   for (const state of states.values()) {
-    finishTools(state);
+    const measuredOutputs = finishTools(state);
     coverage.responses += state.responses.size;
     coverage.observed_responses += state.responses.size;
     coverage.tool_calls += state.calls.size;
+    coverage.tool_outputs_measured += measuredOutputs;
+    coverage.tool_outputs_unmeasured += state.calls.size - measuredOutputs;
     coverage.compactions += state.compactions;
     let status = state.invalid;
     if (!status) status = state.cumulativeSeen ? 'observed' : state.responses.size ? 'partial' : 'missing';

@@ -90,9 +90,13 @@ export function createTelemetryPanel(host, { fetchImpl = fetch, translate = key 
         root.append(section);
       }
       const tools = snapshot?.largest_tool_outputs || [];
-      if (tools.length) {
+      const outputCoverage = snapshot?.coverage;
+      const hasOutputCoverage = outputCoverage?.tool_outputs_measured !== undefined && outputCoverage?.tool_outputs_unmeasured !== undefined;
+      if (tools.length || hasOutputCoverage) {
         const section = node('section');
         section.append(node('h3', translate('telemetry.largestToolOutputs')));
+        if (hasOutputCoverage) section.append(node('p', `${translate('telemetry.toolOutputsMeasured')}: ${value(outputCoverage.tool_outputs_measured)} · ${translate('telemetry.toolOutputsUnmeasured')}: ${value(outputCoverage.tool_outputs_unmeasured)}`));
+        section.append(node('p', translate('telemetry.toolOutputTextOnly')));
         for (const row of tools) section.append(node('p', `${row.tool} · ${translate('telemetry.count')}: ${value(row.count)} · ${translate('telemetry.totalBytes')}: ${value(row.total_bytes)} · ${translate('telemetry.medianBytes')}: ${row.median_bytes ?? unknown()} · ${translate('telemetry.p95Bytes')}: ${value(row.p95_bytes)} · ${translate('telemetry.maxBytes')}: ${value(row.max_bytes)}`));
         root.append(section);
       }

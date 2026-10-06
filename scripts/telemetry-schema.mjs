@@ -39,7 +39,7 @@ const MODELS = new Set(['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna',
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'other']);
 const SOURCES = new Set(['codex_rollout', 'other']);
 const STATUSES = new Set(['observed', 'partial', 'missing', 'unsupported']);
-const TOOLS = new Set(['exec_command', 'apply_patch', 'write_stdin', 'web.run', 'functions.exec', 'functions.wait', 'exec', 'wait', 'mcp__cua_repl.js', 'image_gen.imagegen', 'collaboration.spawn_agent', 'collaboration.send_message', 'other']);
+const TOOLS = new Set(['exec_command', 'apply_patch', 'write_stdin', 'web.run', 'functions.exec', 'functions.wait', 'exec', 'wait', 'send_message', 'request_user_input', 'mcp__cua_repl.js', 'image_gen.imagegen', 'collaboration.spawn_agent', 'collaboration.send_message', 'other']);
 
 export function normalizeTotals(input) {
   const value = object(input, 'totals');
@@ -91,7 +91,9 @@ export function normalizeTelemetry(input, projectId) {
   const unassigned = object(value.unattributed, 'unattributed');
   const coverage = object(value.coverage, 'coverage');
   const projectedCoverage = {};
-  for (const key of ['threads', 'observed_threads', 'partial_threads', 'unsupported_threads', 'responses', 'observed_responses', 'tool_calls', 'compactions']) if (key in coverage) projectedCoverage[key] = count(coverage[key], `coverage ${key}`);
+  for (const key of ['threads', 'observed_threads', 'partial_threads', 'unsupported_threads', 'responses', 'observed_responses', 'tool_calls', 'tool_outputs_measured', 'tool_outputs_unmeasured', 'compactions']) if (key in coverage) projectedCoverage[key] = count(coverage[key], `coverage ${key}`);
+  const outputCoveragePresent = 'tool_outputs_measured' in coverage || 'tool_outputs_unmeasured' in coverage;
+  if (outputCoveragePresent && (projectedCoverage.tool_outputs_measured == null || projectedCoverage.tool_outputs_unmeasured == null || projectedCoverage.tool_calls == null || projectedCoverage.tool_outputs_measured + projectedCoverage.tool_outputs_unmeasured !== projectedCoverage.tool_calls)) throw new Error('invalid tool output coverage');
   const output = {
     schema_version: 1, project_id: projectId, observed_at: observedAt,
     source: known(value.source, SOURCES, 'source'), status: value.status,

@@ -58,6 +58,12 @@ test('preview preferences preserve the existing English and dark defaults', () =
   assert.equal(preferences.t('dashboard.title'), 'Live Dashboard');
   assert.equal(action(host, 'language').textContent, '한국어');
   assert.equal(action(host, 'theme').textContent, 'Light');
+  assert.equal(preferences.t('telemetry.toolOutputsMeasured'), 'Measured text outputs');
+  assert.equal(preferences.t('telemetry.toolOutputsUnmeasured'), 'Unmeasured/unsupported outputs');
+  assert.match(preferences.t('telemetry.toolOutputTextOnly'), /text-only/);
+  preferences.setLocale('ko');
+  assert.equal(preferences.t('telemetry.toolOutputsMeasured'), '측정된 텍스트 출력');
+  assert.equal(preferences.t('telemetry.toolOutputsUnmeasured'), '미측정/미지원 출력');
 });
 
 test('language and theme toggles update accessible UI and persist across instances', () => {

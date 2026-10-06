@@ -102,6 +102,29 @@ test('telemetry panel keeps unsupported optional counters and empty sections abs
   panel.destroy();
 });
 
+test('tool-output coverage is shown near byte rankings even when no output bytes were measurable', async () => {
+  const { host, panel } = telemetryPanel([telemetryFixture({ largest_tool_outputs: [], coverage: { threads: 1, observed_threads: 1, tool_calls: 2, tool_outputs_measured: 0, tool_outputs_unmeasured: 2 } })]);
+  await panel.refresh();
+  assert.match(host.textContent, /telemetry.largestToolOutputs/);
+  assert.match(host.textContent, /telemetry.toolOutputTextOnly/);
+  assert.match(host.textContent, /telemetry.toolOutputsMeasured: 0/);
+  assert.match(host.textContent, /telemetry.toolOutputsUnmeasured: 2/);
+  assert.doesNotMatch(host.textContent, /telemetry.totalBytes/);
+  panel.setTask('task-a');
+  assert.doesNotMatch(host.textContent, /telemetry.toolOutputsMeasured/);
+  panel.destroy();
+});
+
+test('output coverage remains visible when token status is missing without fabricating byte rows', async () => {
+  const { host, panel } = telemetryPanel([telemetryFixture({ status: 'missing', largest_tool_outputs: [], coverage: { threads: 1, tool_calls: 1, tool_outputs_measured: 0, tool_outputs_unmeasured: 1 } })]);
+  await panel.refresh();
+  assert.match(host.textContent, /telemetry.status.missing/);
+  assert.match(host.textContent, /telemetry.toolOutputsUnmeasured: 1/);
+  assert.doesNotMatch(host.textContent, /telemetry.totalBytes/);
+  assert.equal(find(host, 'telemetry-value', 'processed').textContent, 'Unknown');
+  panel.destroy();
+});
+
 test('telemetry panel distinguishes missing, partial and unsupported from observed zero', async () => {
   const { host, panel } = telemetryPanel([
     { schema_version: 1, project_id: 'example', status: 'missing' },

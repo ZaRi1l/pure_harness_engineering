@@ -259,6 +259,33 @@ test('current rollout exec and wait tool names are recognized, unknown names rem
   assert.deepEqual(result.largest_tool_outputs.map(row => [row.tool, row.total_bytes]), [['exec', 3], ['wait', 2], ['other', 1]]);
 });
 
+test('bounded native message and user-input aliases retain exact names only', async () => {
+  const result = await aggregate([[meta('thread-1'), cumulative(2, 1),
+    tool('function_call', 'message', { name: 'send_message' }), tool('function_call_output', 'message', { output: 'a' }),
+    tool('function_call', 'input', { name: 'request_user_input' }), tool('function_call_output', 'input', { output: 'bb' }),
+    tool('function_call', 'unknown', { name: 'send_message_extra' }), tool('function_call_output', 'unknown', { output: 'ccc' })]]);
+  assert.deepEqual(result.largest_tool_outputs.map(row => row.tool), ['other', 'request_user_input', 'send_message']);
+});
+
+test('tool-output coverage counts matched measured and unmeasured calls separately from token status', async () => {
+  const observed = await aggregate([[meta('thread-1'), cumulative(2, 1),
+    tool('function_call', 'measured', { name: 'exec' }), tool('function_call_output', 'measured', { output: [{ type: 'input_text', text: 'é' }] }),
+    tool('function_call', 'missing', { name: 'exec' }),
+    tool('function_call', 'nontext', { name: 'exec' }), tool('function_call_output', 'nontext', { output: [{ type: 'input_image', image_url: 'SECRET_IMAGE' }] }),
+    tool('function_call_output', 'orphan', { output: 'SECRET_ORPHAN' })]]);
+  assert.equal(observed.status, 'observed');
+  assert.equal(observed.coverage.tool_calls, 3);
+  assert.equal(observed.coverage.tool_outputs_measured, 1);
+  assert.equal(observed.coverage.tool_outputs_unmeasured, 2);
+  assert.deepEqual(observed.largest_tool_outputs.map(row => [row.count, row.total_bytes]), [[1, 2]]);
+  assert.doesNotMatch(JSON.stringify(observed), /SECRET_IMAGE|SECRET_ORPHAN/);
+  const missing = await aggregate([[meta('thread-2'), tool('function_call', 'no-output', { name: 'exec' })]]);
+  assert.equal(missing.status, 'missing');
+  assert.equal(missing.coverage.tool_outputs_measured, 0);
+  assert.equal(missing.coverage.tool_outputs_unmeasured, 1);
+  assert.deepEqual(missing.largest_tool_outputs, []);
+});
+
 test('array tool outputs sum UTF-8 text blocks without retaining bodies or inventing bytes for unknown blocks', async () => {
   const result = await aggregate([[meta('thread-1'), cumulative(2, 1),
     tool('function_call', 'array', { name: 'exec' }),

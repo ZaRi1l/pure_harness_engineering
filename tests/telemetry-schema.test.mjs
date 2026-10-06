@@ -48,6 +48,18 @@ test('median accepts safe half-byte midpoint while byte counts stay integral', (
   for (const field of ['count', 'total_bytes', 'p95_bytes', 'max_bytes']) assert.throws(() => normalizeTelemetry({ ...input, largest_tool_outputs: [{ ...input.largest_tool_outputs[0], [field]: 1.5 }] }, 'alpha'));
 });
 
+test('tool-output coverage survives normalization only as consistent nonnegative counts', () => {
+  const input = base();
+  input.coverage = { ...input.coverage, tool_calls: 3, tool_outputs_measured: 1, tool_outputs_unmeasured: 2 };
+  assert.equal(normalizeTelemetry(input, 'alpha').coverage.tool_outputs_unmeasured, 2);
+  for (const coverage of [
+    { ...input.coverage, tool_outputs_unmeasured: -1 },
+    { ...input.coverage, tool_outputs_measured: 1.5 },
+    { ...input.coverage, tool_outputs_unmeasured: 1 },
+    { ...input.coverage, tool_outputs_unmeasured: undefined }
+  ]) assert.throws(() => normalizeTelemetry({ ...input, coverage }, 'alpha'));
+});
+
 test('missing and unsupported status cannot serialize measured token zeros or rates', () => {
   for (const status of ['missing', 'unsupported']) {
     assert.throws(() => normalizeTelemetry({ ...base(), status }, 'alpha'));
