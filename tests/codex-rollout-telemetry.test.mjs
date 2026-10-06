@@ -149,6 +149,25 @@ test('cumulative final snapshot wins over per-response records without double co
   assert.equal(result.elapsed_ms, 3000);
 });
 
+test('current rollout counters validate without double counting response and cumulative usage', async () => {
+  const current = (input_tokens, output_tokens, cache_write_input_tokens) => ({ input_tokens, output_tokens, cached_input_tokens: 2, reasoning_output_tokens: 1, cache_write_input_tokens, total_tokens: input_tokens + output_tokens });
+  const result = await aggregate([[meta('thread-1'), record('token_usage_record', { response_id: 'r1', usage: current(8, 3, 4) }), record('token_usage_record', { response_id: 'r1', usage: current(8, 3, 4) }), record('event_msg', { type: 'token_count', info: { total_token_usage: current(8, 3, 4) } })]]);
+  assert.equal(result.status, 'observed');
+  assert.equal(result.totals.input, 8);
+  assert.equal(result.totals.output, 3);
+  assert.equal(result.totals.processed, 11);
+  assert.equal(result.totals.responses, 1);
+});
+
+test('current rollout extra counters reject invalid values and preserve unknown-field guard', async () => {
+  for (const extra of [{ cache_write_input_tokens: 9, total_tokens: 3 }, { cache_write_input_tokens: -1, total_tokens: 3 }, { cache_write_input_tokens: 1.5, total_tokens: 3 }, { cache_write_input_tokens: 1, total_tokens: 4 }, { cache_write_input_tokens: 1, total_tokens: Number.MAX_SAFE_INTEGER + 1 }]) {
+    const result = await aggregate([[meta('thread-1'), record('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 2, output_tokens: 1, ...extra } } })]]);
+    assert.equal(result.status, 'partial');
+  }
+  const unknown = await aggregate([[meta('thread-1'), record('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 2, output_tokens: 1, cache_write_input_tokens: 1, total_tokens: 3, surprise_tokens: 1 } } })]]);
+  assert.equal(unknown.status, 'unsupported');
+});
+
 test('counter reset invalidates one thread without turning the other into zero', async () => {
   const result = await aggregate([[meta('bad'), cumulative(10, 3), cumulative(9, 3, 0, 0, 1)], [meta('good'), cumulative(5, 2)]]);
   assert.equal(result.status, 'partial');
@@ -233,6 +252,11 @@ test('multibyte_even_median and nearest-rank p95 count only joined output bytes'
   assert.equal(result.largest_tool_outputs[1].tool, 'other');
   assert.equal(result.totals.tool_calls, 3);
   assert.deepEqual(toolOutputStats([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]), { count: 20, total_bytes: 210, median_bytes: 10.5, p95_bytes: 19, max_bytes: 20 });
+});
+
+test('current rollout exec and wait tool names are recognized, unknown names remain other', async () => {
+  const result = await aggregate([[meta('thread-1'), cumulative(2, 1), tool('function_call', 'c1', { name: 'exec' }), tool('function_call_output', 'c1', { output: 'abc' }), tool('function_call', 'c2', { name: 'wait' }), tool('function_call_output', 'c2', { output: 'xy' }), tool('function_call', 'c3', { name: 'exec_extra' }), tool('function_call_output', 'c3', { output: 'z' })]]);
+  assert.deepEqual(result.largest_tool_outputs.map(row => [row.tool, row.total_bytes]), [['exec', 3], ['wait', 2], ['other', 1]]);
 });
 
 test('explicit compaction only, observed interval, and source content excluded', async () => {

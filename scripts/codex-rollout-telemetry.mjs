@@ -2,8 +2,8 @@ import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { isOpaqueTaskId, normalizeTelemetry } from './telemetry-schema.mjs';
 
-const COUNTERS = ['input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_output_tokens'];
-const TOOL_NAMES = new Set(['exec_command', 'apply_patch', 'write_stdin', 'web.run', 'functions.exec', 'functions.wait', 'mcp__cua_repl.js', 'image_gen.imagegen', 'collaboration.spawn_agent', 'collaboration.send_message']);
+const COUNTERS = ['input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_output_tokens', 'cache_write_input_tokens', 'total_tokens'];
+const TOOL_NAMES = new Set(['exec_command', 'apply_patch', 'write_stdin', 'web.run', 'functions.exec', 'functions.wait', 'exec', 'wait', 'mcp__cua_repl.js', 'image_gen.imagegen', 'collaboration.spawn_agent', 'collaboration.send_message']);
 const COMPACTIONS = new Set(['context_compacted', 'compaction', 'compacted']);
 const UNKNOWN = { input: null, output: null, processed: null, cached_input: null, reasoning_output: null, responses: null, tool_calls: null };
 
@@ -26,7 +26,9 @@ function counters(value) {
   if (Object.keys(value).some(key => !COUNTERS.includes(key))) return { kind: 'unsupported' };
   if (!safeCount(value.input_tokens) || !safeCount(value.output_tokens)) return { kind: 'partial' };
   const cached = value.cached_input_tokens ?? null, reasoning = value.reasoning_output_tokens ?? null;
-  if ((cached !== null && (!safeCount(cached) || cached > value.input_tokens)) || (reasoning !== null && (!safeCount(reasoning) || reasoning > value.output_tokens)) || safeAdd(value.input_tokens, value.output_tokens) === null) return { kind: 'partial' };
+  const cacheWrite = value.cache_write_input_tokens ?? null, total = value.total_tokens ?? null;
+  const processed = safeAdd(value.input_tokens, value.output_tokens);
+  if ((cached !== null && (!safeCount(cached) || cached > value.input_tokens)) || (reasoning !== null && (!safeCount(reasoning) || reasoning > value.output_tokens)) || (cacheWrite !== null && (!safeCount(cacheWrite) || cacheWrite > value.input_tokens)) || (total !== null && (!safeCount(total) || total !== processed)) || processed === null) return { kind: 'partial' };
   return { kind: 'valid', value: [value.input_tokens, value.output_tokens, cached, reasoning] };
 }
 

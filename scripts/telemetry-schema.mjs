@@ -39,7 +39,7 @@ const MODELS = new Set(['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna',
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'other']);
 const SOURCES = new Set(['codex_rollout', 'other']);
 const STATUSES = new Set(['observed', 'partial', 'missing', 'unsupported']);
-const TOOLS = new Set(['exec_command', 'apply_patch', 'write_stdin', 'web.run', 'functions.exec', 'functions.wait', 'mcp__cua_repl.js', 'image_gen.imagegen', 'collaboration.spawn_agent', 'collaboration.send_message', 'other']);
+const TOOLS = new Set(['exec_command', 'apply_patch', 'write_stdin', 'web.run', 'functions.exec', 'functions.wait', 'exec', 'wait', 'mcp__cua_repl.js', 'image_gen.imagegen', 'collaboration.spawn_agent', 'collaboration.send_message', 'other']);
 
 export function normalizeTotals(input) {
   const value = object(input, 'totals');
