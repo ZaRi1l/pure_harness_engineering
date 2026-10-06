@@ -397,7 +397,9 @@ test('telemetry import requires explicit context and regular absolute files', as
   const context = ['--project', 'alpha', '--checkout', f.alpha, '--binding', f.bindingPath];
   assert.notEqual(run([...context]).status, 0);
   assert.notEqual(run(['--file', file]).status, 0);
-  assert.notEqual(run([...context, '--file', path.relative(process.cwd(), file)]).status, 0);
+  const relativeFile = run([...context, '--file', 'README.md']);
+  assert.notEqual(relativeFile.status, 0);
+  assert.match(relativeFile.stderr, /invalid_arguments/);
   assert.notEqual(run([...context, '--file', f.root]).status, 0);
   assert.equal(run([...context, '--file', file]).status, 0);
 });
