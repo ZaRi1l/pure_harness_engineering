@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { RuntimeStore, findRoot } from './runtime-state.mjs';
+import { RuntimeStore, contextFromArgs } from './runtime-state.mjs';
 import { pathToFileURL } from 'node:url';
 
 export function hookDispatchDiagnostic(snapshot) {
@@ -29,7 +29,8 @@ export function inspectRuntime(snapshot, { staleMs = Number(process.env.PURE_HAR
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const store = new RuntimeStore(findRoot()), snapshot = await store.readSnapshot(), warnings = inspectRuntime(snapshot);
+  const { context } = await contextFromArgs(process.argv.slice(2));
+  const store = new RuntimeStore(context), snapshot = await store.readSnapshot(), warnings = inspectRuntime(snapshot);
   await store.setWarnings(warnings);
   if (process.argv.includes('--json')) console.log(JSON.stringify({ warnings }, null, 2));
   else console.log(warnings.length ? warnings.map(warning => 'WARN ' + warning.message).join('\n') : 'OK no watchdog warnings');

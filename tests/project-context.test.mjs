@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { diagnoseProjectContext, loadProjectContext } from '../scripts/project-context.mjs';
+import { getGoalAdapter, UNSUPPORTED } from '../scripts/goal-adapters.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
 const manifest = id => ({ schemaVersion: 1, id, displayName: id, paths: { tasks: `projects/${id}/tasks`, memory: `projects/${id}/memory`, runtime: `projects/${id}/runtime` }, adapters: {} });
@@ -60,6 +61,17 @@ test('freezes nested adapter data in the returned context', async () => {
   assert.equal(Object.isFrozen(context.adapters.sample.options), true);
   assert.equal(Object.isFrozen(context.adapters.sample.options.labels), true);
   assert.throws(() => context.adapters.sample.options.labels.push('second'), TypeError);
+});
+
+test('a declared __proto__ adapter cannot enable an undeclared GOAL adapter', async () => {
+  const f = await fixture();
+  const declaration = manifest('alpha');
+  declaration.adapters = JSON.parse('{"__proto__":{"type":"metadata","goal":{"type":"enabled"}}}');
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(declaration));
+  const context = await loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' });
+  assert.equal(context.adapters['__proto__'].type, 'metadata');
+  assert.equal(Object.hasOwn(context.adapters, 'goal'), false);
+  assert.equal(getGoalAdapter(context, { enabled: () => { throw new Error('undeclared adapter invoked'); } }), UNSUPPORTED);
 });
 
 test('rejects absent binding without writes', async () => {
@@ -174,7 +186,7 @@ test('rejects primary checkout with unrelated empty Git directory', async () => 
 test('rejects empty adapter type', async () => {
   const f = await fixture();
   const invalid = manifest('alpha');
-  invalid.adapters.sample = { type: '' };
+  invalid.adapters.goal = { type: '' };
   await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(invalid));
   await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /adapter/i);
 });
@@ -191,6 +203,16 @@ test('rejects undeclared management path fields', async () => {
   declaration.paths.backup = 'projects/alpha/backup';
   await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(declaration));
   await assert.rejects(loadProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' }), /manifest.paths/i);
+});
+
+test('rejects array-shaped management paths', async () => {
+  const f = await fixture();
+  const declaration = manifest('alpha');
+  declaration.paths = ['projects/alpha/tasks', 'projects/alpha/memory', 'projects/alpha/runtime'];
+  await writeFile(path.join(f.primary, 'harness-adapter', 'project.json'), JSON.stringify(declaration));
+  const diagnostic = await diagnoseProjectContext({ checkoutRoot: f.primary, bindingPath: f.bindingPath, projectId: 'alpha' });
+  assert.equal(diagnostic.code, 'INVALID_MANIFEST');
+  assert.match(diagnostic.message, /manifest.paths/i);
 });
 
 test('rejects invalid manifest version', async () => {

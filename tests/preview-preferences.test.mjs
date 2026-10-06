@@ -127,3 +127,73 @@ test('declarative snapshot labels are retranslated when the language changes', (
   assert.equal(title.textContent, '목표');
   assert.equal(generated.textContent, '정적 snapshot 생성 시각: 2026-09-27T00:00:00Z');
 });
+
+test('reported-running and age-bucket copy never implies a live liveness check in either locale', () => {
+  const { api, document, storage } = fixture();
+  const preferences = api.create(document, { storage });
+  assert.match(preferences.t('dashboard.reportedRunning'), /reported running/i);
+  assert.match(preferences.t('dashboard.startedRecent'), /liveness unconfirmed/i);
+  assert.match(preferences.t('dashboard.startedOutside'), /liveness unconfirmed/i);
+  assert.match(preferences.t('dashboard.agentCount', { reported: 4, recent: 2, outside: 2 }), /Reported running: 4.*past hour: 2.*unknown start: 2.*No live liveness check/i);
+  assert.match(preferences.t('network.reportedRunning'), /liveness unconfirmed/i);
+  assert.match(preferences.t('network.observed', { agents: 4, time: '2026-09-25T12:00:00Z' }), /Runtime records report 4 as running.*No live liveness check.*2026-09-25T12:00:00Z/i);
+  preferences.setLocale('ko');
+  assert.match(preferences.t('dashboard.reportedRunning'), /실행 중으로 기록됨/);
+  assert.match(preferences.t('dashboard.startedRecent'), /생존 여부 미확인/);
+  assert.match(preferences.t('dashboard.startedOutside'), /생존 여부 미확인/);
+  assert.match(preferences.t('dashboard.agentCount', { reported: 4, recent: 2, outside: 2 }), /4명.*2명.*2명.*실시간 생존 확인 기능은 없습니다/);
+  assert.match(preferences.t('network.reportedRunning'), /생존 여부 미확인/);
+  assert.match(preferences.t('network.observed', { agents: 4, time: '2026-09-25T12:00:00Z' }), /런타임 기록.*4명.*생존 여부 미확인.*2026-09-25T12:00:00Z/);
+});
+
+test('dashboard heading and network guide describe reported records, not confirmed runners', () => {
+  const { api, document, storage } = fixture();
+  const preferences = api.create(document, { storage });
+  assert.equal(preferences.t('section.activeAgents'), 'Reported Running Agents');
+  assert.match(preferences.t('guide.networkBody'), /Reported Running Agents.*reported-running records.*Reported running only\/Full history/s);
+  assert.doesNotMatch(preferences.t('guide.networkBody'), /current runners|Live\/History/i);
+  assert.equal(preferences.t('dashboard.futureStart'), 'future start');
+  preferences.setLocale('ko');
+  assert.equal(preferences.t('section.activeAgents'), '실행 중 기록 에이전트');
+  assert.match(preferences.t('guide.networkBody'), /실행 중 기록 에이전트.*생존 여부.*실행 중 기록만\/전체 기록/s);
+  assert.doesNotMatch(preferences.t('guide.networkBody'), /현재 실행자|실시간\/기록/);
+  assert.equal(preferences.t('dashboard.futureStart'), '미래 시작 시각');
+});
+
+test('guide keeps project state intact and directs setup to a staged installation in both locales', () => {
+  const { api, document, storage } = fixture();
+  const preferences = api.create(document, { storage });
+  const english = preferences.t('guide.body');
+  assert.match(english, /staged local installation/i);
+  assert.match(english, /selected project.*management paths/i);
+  assert.match(english, /preserve existing.*runtime/i);
+  assert.doesNotMatch(english, /Remove-Item|Get-ChildItem|\.ai\/tasks\/\*\.md/i);
+
+  preferences.setLocale('ko');
+  const korean = preferences.t('guide.body');
+  assert.match(korean, /별도.*설치/);
+  assert.match(korean, /선택.*프로젝트.*관리 경로/);
+  assert.match(korean, /기존.*runtime.*보존/);
+  assert.doesNotMatch(korean, /Remove-Item|Get-ChildItem|\.ai\/tasks\/\*\.md/i);
+});
+
+test('both guide locales distinguish read-only generator inspection from gated writes and show selected-project preview context', () => {
+  const { api, document, storage } = fixture();
+  const preferences = api.create(document, { storage });
+  for (const locale of ['en', 'ko']) {
+    preferences.setLocale(locale);
+    const body = preferences.t('guide.body');
+    const network = preferences.t('guide.networkBody');
+    for (const command of [
+      'node scripts/detect-targets.mjs --json',
+      'node scripts/validate.mjs --targets codex --profile core --json',
+      'node scripts/sync.mjs --targets codex --profile core --dry-run',
+      'node scripts/sync.mjs --targets codex --profile core --check'
+    ]) assert.ok(body.includes(command), `${locale} guide omits ${command}`);
+    assert.match(body, /native smoke/i);
+    assert.match(body, /preview\/index\.html.*#guide/s);
+    assert.match(body, /npm run preview:live -- --project .* --checkout .* --binding /);
+    assert.match(network, /npm run preview:live -- --project .* --checkout .* --binding /);
+    assert.doesNotMatch(network, /(?:^|\n)(?:Real runtime|실제 runtime): npm run preview:live(?:\n|<)/);
+  }
+});

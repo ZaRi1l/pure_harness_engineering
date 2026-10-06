@@ -3,6 +3,7 @@ import { cp, lstat, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createPreviewServer } from './preview-server.mjs';
+import { legacyCatalogFixture } from './catalog.mjs';
 import { findRoot } from './runtime-state.mjs';
 
 const fixtureRuntime = fileURLToPath(new URL('../tests/fixtures/agent-network-demo/.ai/runtime/', import.meta.url));
@@ -36,7 +37,7 @@ export async function prepareDemo(root, fixture = fixtureRuntime, target = demoR
 
 export async function runDemo(root, host = '127.0.0.1', port = Number(process.env.PURE_HARNESS_DEMO_PORT || 8766)) {
   const target = await prepareDemo(root);
-  const server = await createPreviewServer(root, host, { runtimeDir: target });
+  const server = await createPreviewServer(legacyCatalogFixture(root), host, { runtimeDir: target });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => { server.off('error', reject); resolve(); });

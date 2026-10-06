@@ -1,4 +1,6 @@
 import { renderArtifactTabs } from '/preview/artifact-tabs.js';
+import { createTaskEditor } from '/preview/task-editor.js';
+import { createTelemetryPanel } from '/preview/telemetry-panel.js';
 
 const app = document.querySelector('#app');
 const preferences = globalThis.PreviewPreferences.create(document);
@@ -17,6 +19,11 @@ let artifactRenderKey = '';
 let networkController;
 let networkHost;
 let renderedLocale = preferences.locale;
+let taskEditor;
+let telemetryPanel;
+let taskPollGeneration = 0;
+let snapshotPollGeneration = 0;
+let taskFetchError;
 
 const fallbackPolicy = (model, reasoning) => /^gpt-6-(sol|luna)$/.test(model || '')
   ? `${model.replace('gpt-6-', 'gpt-5.6-')} · ${q(reasoning || t('common.inherited'))}`
@@ -50,16 +57,33 @@ function head(title, detail) {
 }
 
 async function dashboard() {
+  if (document.querySelector('#goal')) { paint(); return; }
   app.replaceChildren(head(t('dashboard.title'), t('dashboard.detail')));
   const grid = el('section', 'grid');
   grid.innerHTML = `<section class="card wide"><h2>${t('section.goal')}</h2><div id="goal"></div><div id="progress"></div></section><section class="card"><h2>${t('section.phase')}</h2><div id="phase"></div></section><section class="card wide"><h2>${t('section.activeAgents')}</h2><div id="agents"></div></section><section class="card"><h2>${t('section.verification')}</h2><div id="verification"></div></section><section class="card"><h2>${t('section.tasks')}</h2><div id="tasks"></div></section><section class="card"><h2>${t('section.claims')}</h2><div id="claims"></div></section><section class="card"><h2>${t('section.warnings')}</h2><div id="warnings"></div></section><section class="card"><h2>${t('section.blockers')}</h2><div id="blockers"></div></section><section class="card wide"><h2>${t('section.signals')}</h2><div id="signals"></div></section><section class="card full"><h2>${t('section.network')}</h2><div id="agent-network"></div></section><section class="card wide"><h2>${t('section.events')}</h2><div id="events"></div></section><section class="card"><h2>${t('section.artifacts')}</h2><div id="artifacts"></div></section>`;
+  const telemetryCard = el('section', 'card full');
+  telemetryCard.append(el('h2', '', t('section.telemetry')));
+  const telemetryHost = el('div');
+  telemetryHost.id = 'telemetry';
+  telemetryCard.append(telemetryHost);
+  grid.append(telemetryCard);
   app.append(grid);
+  taskEditor = createTaskEditor(document.querySelector('#tasks'), { fetchImpl: fetch, translate: t });
+  telemetryPanel = createTelemetryPanel(telemetryHost, { fetchImpl: fetch, translate: t });
+  taskFetchError = undefined;
   paint();
 }
 
-function elapsed(at) {
+function elapsed(at, observedAt) {
   const parsed = Date.parse(at || '');
-  return Number.isFinite(parsed) ? `${Math.max(0, Math.floor((Date.now() - parsed) / 60000))}m` : t('common.unknown');
+  if (!Number.isFinite(parsed)) return t('common.unknown');
+  if (parsed > observedAt) return t('dashboard.futureStart');
+  return `${Math.floor((observedAt - parsed) / 60000)}m`;
+}
+
+function startedWithinPastHour(agent, observedAt) {
+  const started = Date.parse(agent.started_at || '');
+  return Number.isFinite(started) && started <= observedAt && observedAt - started <= 3600000;
 }
 
 function updateNetwork(snapshot) {
@@ -74,10 +98,32 @@ function updateNetwork(snapshot) {
   networkController.update(snapshot, catalog);
 }
 
+async function paintTasks() {
+  const requestGeneration = ++taskPollGeneration;
+  try {
+    const taskDocument = await fetch('/runtime/tasks', { cache: 'no-store' }).then(response => {
+      if (response.ok === false) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    });
+    if (requestGeneration !== taskPollGeneration || !document.querySelector('#tasks')) return;
+    taskEditor.update(taskDocument.tasks, taskDocument.write_token ?? null);
+    taskFetchError?.remove?.();
+    taskFetchError = undefined;
+  } catch (error) {
+    if (requestGeneration !== taskPollGeneration || !document.querySelector('#tasks')) return;
+    if (!taskFetchError) { taskFetchError = el('p', 'bad'); document.querySelector('#tasks').append(taskFetchError); }
+    taskFetchError.textContent = `${t('section.tasks')}: ${error.message}`;
+  }
+}
+
 async function paint() {
   if (!document.querySelector('#goal')) return;
+  paintTasks();
+  telemetryPanel?.refresh();
+  const requestGeneration = ++snapshotPollGeneration;
   try {
     const snapshot = await fetch('/runtime/snapshot', { cache: 'no-store' }).then(response => response.json());
+    if (requestGeneration !== snapshotPollGeneration || !document.querySelector('#goal')) return;
     const status = snapshot.status;
     const fill = (selector, items, render) => {
       const host = document.querySelector(selector);
@@ -94,12 +140,17 @@ async function paint() {
       bar.value = status.progress.completed;
       progress.append(bar);
     }
-    fill('#agents', status.active_agents, (li, agent) => { li.textContent = `${q(agent.role)} — ${q(agent.current_task || t('dashboard.noTask'))} (${elapsed(agent.started_at)})`; });
-    fill('#tasks', snapshot.tasks.tasks, (li, task) => { li.textContent = `${q(task.status)} — ${q(task.title)} — ${q(task.owner || t('dashboard.unassigned'))}`; });
+    const reportedAgents = status.active_agents || [];
+    const observedAt = Date.now();
+    fill('#agents', reportedAgents, (li, agent) => {
+      li.textContent = `${q(agent.role)} — ${q(agent.current_task || t('dashboard.noTask'))} (${elapsed(agent.started_at, observedAt)}) — ${t('dashboard.reportedRunning')} · ${t(startedWithinPastHour(agent, observedAt) ? 'dashboard.startedRecent' : 'dashboard.startedOutside')}`;
+    });
+    const recentCount = reportedAgents.filter(agent => startedWithinPastHour(agent, observedAt)).length;
+    document.querySelector('#agents').append(el('p', 'muted', t('dashboard.agentCount', { reported: reportedAgents.length, recent: recentCount, outside: reportedAgents.length - recentCount })));
     fill('#claims', snapshot.claims.claims, (li, claim) => { li.textContent = `${q(claim.agent_id)} — ${claim.scopes.join(', ')}`; });
     fill('#warnings', status.warnings, (li, warning) => { li.className = 'bad'; li.textContent = q(warning.message); });
     fill('#blockers', status.blockers, (li, blocker) => { li.textContent = q(blocker.message); });
-    fill('#signals', status.signals?.slice(-10).reverse(), (li, signal) => { li.textContent = `${q(signal.from)} → ${q(signal.to)} — ${q(signal.kind)} — ${q(signal.summary)}`; });
+    fill('#signals', status.signals?.slice(-10).reverse(), (li, signal) => { li.textContent = `${signal.time ? `${q(signal.time)} — ` : ''}${q(signal.from)} → ${q(signal.to)} — ${q(signal.kind)} — ${q(signal.summary)}`; });
     fill('#events', snapshot.events?.slice(-10).reverse(), (li, event) => { li.textContent = `${q(event.time)} — ${q(event.message)}`; });
     fill('#artifacts', status.artifact_preview_links, (li, artifact) => { const link = el('a', '', q(artifact.label)); link.href = q(artifact.href); li.append(link); });
     const verification = document.querySelector('#verification');
@@ -108,6 +159,7 @@ async function paint() {
     updateNetwork(snapshot);
     document.querySelector('#dashboard-error')?.remove();
   } catch (error) {
+    if (requestGeneration !== snapshotPollGeneration || !document.querySelector('#goal')) return;
     let message = document.querySelector('#dashboard-error');
     if (!message) { message = el('p', 'bad'); message.id = 'dashboard-error'; app.append(message); }
     message.textContent = t('dashboard.unavailable', { message: error.message });
@@ -194,6 +246,17 @@ function route() {
     networkController = undefined;
     networkHost = undefined;
   }
+  if (view !== dashboard && taskEditor) {
+    taskPollGeneration++;
+    snapshotPollGeneration++;
+    taskEditor.destroy();
+    taskEditor = undefined;
+    taskFetchError = undefined;
+  }
+  if (view !== dashboard && telemetryPanel) {
+    telemetryPanel.destroy();
+    telemetryPanel = undefined;
+  }
   document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === viewName));
   view();
 }
@@ -204,6 +267,7 @@ preferences.mount(document.querySelector('#preview-preferences'));
 preferences.subscribe(({ locale }) => {
   if (locale === renderedLocale) return;
   renderedLocale = locale;
+  telemetryPanel?.rerender();
   artifactRenderKey = '';
   localizeShell();
   route();

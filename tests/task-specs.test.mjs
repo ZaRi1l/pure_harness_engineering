@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { discoverTaskSpecs } from '../scripts/catalog.mjs';
+import { discoverTaskSpecs, legacyCatalogFixture } from '../scripts/catalog.mjs';
 
 test('discovers only top-level markdown Task Specs with safe repository-relative metadata', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-task-specs-'));
@@ -13,7 +13,7 @@ test('discovers only top-level markdown Task Specs with safe repository-relative
   await writeFile(path.join(tasks, 'example.md'), '# Example plan\n\nAcceptance criteria.');
   await writeFile(path.join(tasks, 'ignored.txt'), 'not a spec');
   await writeFile(path.join(tasks, 'nested', 'hidden.md'), '# Hidden');
-  const specs = discoverTaskSpecs(root);
+  const specs = discoverTaskSpecs(legacyCatalogFixture(root));
   assert.equal(specs.length, 1);
   assert.deepEqual(Object.keys(specs[0]).sort(), ['content', 'modifiedAt', 'name', 'path', 'title']);
   assert.equal(specs[0].name, 'example');
@@ -25,5 +25,5 @@ test('discovers only top-level markdown Task Specs with safe repository-relative
 
 test('returns no Task Specs when the approved directory is absent', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-task-specs-empty-'));
-  assert.deepEqual(discoverTaskSpecs(root), []);
+  assert.deepEqual(discoverTaskSpecs(legacyCatalogFixture(root)), []);
 });

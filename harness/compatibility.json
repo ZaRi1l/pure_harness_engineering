@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "accessDate": "2026-10-01",
+  "inventory": {
+    "codexConfig": ".codex/config.toml",
+    "registeredRoleIds": ["planner", "worker", "reviewer", "supervisor", "context-curator", "preview-manager", "verifier", "impact-analyzer", "integrator", "environment-doctor", "researcher", "security-auditor", "performance-analyzer", "release-manager"],
+    "roleFiles": ".codex/agents/<id>.toml (14 hand-owned files; canonical goal-manager pending registration)",
+    "skillIds": ["context-curation", "failure-recovery", "model-routing", "task-routing", "task-spec", "testing", "token-efficiency", "token-optimization"],
+    "hooks": ".codex/hooks.json: SessionStart, SessionEnd, SubagentStart, SubagentStop, Stop; hand-owned",
+    "localTargets": {".claude": "absent", ".opencode": "absent", ".agents/agents": "absent"}
+  },
+  "targets": {
+    "codex": {
+      "testedCliVersion": "codex-cli 0.153.4", "nativeSmoke": "unverified",
+      "renderedFields": ["name", "description", "model", "model_reasoning_effort", "sandbox_mode", "developer_instructions"],
+      "renderedSyntax": "TOML string assignments in .codex/agents/<id>.toml; config registration remains separate migration",
+      "agentDocs": "https://developers.openai.com/codex/multi-agent/",
+      "supportedFields": ["config [agents.<id>] description", "config_file", "agent TOML name", "description", "model", "model_reasoning_effort", "sandbox_mode", "developer_instructions"],
+      "skillDocs": "https://developers.openai.com/codex/skills/",
+      "skillDiscovery": "Documented repository .agents/skills directory for pinned CLI; native smoke unverified.",
+      "skillDiscoveryEvidence": {"status": "documented-native", "version": "codex-cli 0.153.4", "directory": ".agents/skills", "source": "https://developers.openai.com/codex/skills/"},
+      "caveat": "Prompt wording alone does not enforce read-only behavior; current config and hooks remain hand-owned."
+    },
+    "claude": {
+      "testedCliVersion": "Claude Code 2.1.280", "nativeSmoke": "unverified",
+      "renderedFields": ["name", "description", "model", "tools", "disallowedTools"],
+      "renderedSyntax": "YAML frontmatter in .claude/agents/<id>.md",
+      "agentDocs": "https://code.claude.com/docs/en/sub-agents",
+      "supportedFields": ["name", "description", "model: inherit", "tools", "disallowedTools", "permissionMode", "skills"],
+      "skillDocs": "https://code.claude.com/docs/en/skills",
+      "skillDiscovery": "Repository .agents/skills discovery not verified for installed version.",
+      "caveat": "Effective permissions and skill discovery remain unverified."
+    },
+    "opencode": {
+      "testedCliVersion": null, "nativeSmoke": "unverified",
+      "renderedFields": ["description", "mode", "model", "permission"],
+      "renderedSyntax": "YAML frontmatter in .opencode/agents/<id>.md",
+      "agentDocs": "https://opencode.ai/docs/agents",
+      "supportedFields": ["description", "mode", "model (provider/model-id)", "permission"],
+      "skillDocs": "https://opencode.ai/docs/skills",
+      "skillDiscovery": "Documentation lists project .agents/skills/<name>/SKILL.md; no local CLI smoke.",
+      "modelInheritance": "Omit model field to inherit the invoking primary agent model.",
+      "caveat": "No executable found locally; native loading and tool behavior unverified."
+    },
+    "antigravity": {
+      "testedCliVersion": null, "nativeSmoke": "unverified",
+      "renderedFields": ["name", "description", "subagent", "mainAgent", "model", "tools"],
+      "renderedSyntax": "YAML frontmatter in .agents/agents/<id>/agent.md",
+      "agentDocs": "https://www.antigravity.google/docs/subagents/",
+      "supportedFields": ["name", "description", "tools", "subagent", "mainAgent", "model: inherit|flash|pro", "commandExecutionPolicy", "skills"],
+      "skillDocs": "https://www.antigravity.google/docs/skills/",
+      "skillDiscovery": "Documentation lists workspace .agents/skills/<skill-folder>/; no local CLI smoke.",
+      "caveat": "No executable found locally; native loading and tool behavior unverified."
+    }
+  }
+}

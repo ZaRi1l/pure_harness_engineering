@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { RuntimeStore, findRoot } from './runtime-state.mjs';
+import { RuntimeStore, contextFromArgs } from './runtime-state.mjs';
 import { pathToFileURL } from 'node:url';
 
 export function renderStatus(snapshot) {
@@ -24,7 +24,8 @@ export function renderStatus(snapshot) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const root = findRoot(), store = new RuntimeStore(root), snapshot = await store.readSnapshot();
+  const { context } = await contextFromArgs(process.argv.slice(2));
+  const store = new RuntimeStore(context), snapshot = await store.readSnapshot();
   if (process.argv.includes('--json')) console.log(JSON.stringify(snapshot, null, 2));
   else process.stdout.write(renderStatus(snapshot));
 }
