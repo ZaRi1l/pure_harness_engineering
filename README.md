@@ -44,6 +44,7 @@ New-Item -ItemType Directory -Path (Join-Path $ProjectRoot 'harness-adapter') | 
 
 ```powershell
 $Manifest = Join-Path $ProjectRoot 'harness-adapter/project.json'
+if (Test-Path -LiteralPath $Manifest) { throw '프로젝트 manifest가 이미 있습니다. 기존 파일을 보존하고 내용을 검토하세요.' }
 @{
   schemaVersion = 1
   id = $ProjectId
@@ -65,6 +66,7 @@ if ($LASTEXITCODE -ne 0) { throw '프로젝트 manifest Git 추가 실패' }
 Set-Location $HarnessRoot
 New-Item -ItemType Directory -Path (Join-Path $HarnessRoot 'harness-adapter') -Force | Out-Null
 $Binding = Join-Path $HarnessRoot 'harness-adapter/binding.local.json'
+if (Test-Path -LiteralPath $Binding) { throw '로컬 binding이 이미 있습니다. 덮어쓰지 말고 기존 등록을 검토하세요.' }
 @{
   schemaVersion = 1
   registrations = @(@{
