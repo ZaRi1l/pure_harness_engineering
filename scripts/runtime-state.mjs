@@ -428,14 +428,15 @@ export class RuntimeStore {
 
 export function findRoot(start = process.cwd()) { let current = path.resolve(start), instructionRoot = null; while (true) { if (existsSync(path.join(current, '.git'))) return current; if (!instructionRoot && existsSync(path.join(current, 'AGENTS.md'))) instructionRoot = current; const parent = path.dirname(current); if (parent === current) break; current = parent; } return instructionRoot || path.resolve(start); }
 function option(args, name, fallback = null) { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : fallback; }
+const isSelectionFlag = arg => /^(--project|--checkout|--binding|--root|--core)(?:=|$)/.test(arg);
 export async function contextFromArgs(argv, { harnessRoot = getScriptHarnessRoot(import.meta.url), cwd = process.cwd(), requireSetup = true } = {}) {
-  if (argv.some(arg => /^(--project|--checkout|--binding|--root|--core)(?:=|$)/.test(arg))) throw new Error('project selection flags are not supported');
+  if (argv.some(isSelectionFlag)) throw new Error('project selection flags are not supported');
   return { context: await loadFixedProjectContext({ harnessRoot, cwd, requireSetup }), args: [...argv] };
 }
 export async function runCli(argv = process.argv.slice(2), { legacyFixtureRoot, coreEngineRoot, harnessRoot, cwd } = {}) {
   const copy = [...argv];
   if (copy[0] === '--core') {
-    if (legacyFixtureRoot || copy.some(arg => ['--project', '--checkout', '--binding', '--root'].includes(arg))) {
+    if (legacyFixtureRoot || copy.slice(1).some(isSelectionFlag)) {
       throw new Error('core claim cannot mix with project or fixture arguments');
     }
     const [command, agentId, ...scopes] = copy.slice(1);

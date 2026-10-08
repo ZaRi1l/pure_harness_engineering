@@ -47,6 +47,22 @@ test('core CLI rejects project arguments, non-claim commands, and project-manage
   assert.equal(existsSync(path.join(engineRoot, '.ai', 'core-runtime')), false);
 });
 
+test('core CLI rejects legacy selector tokens in every position before runtime mutation', async () => {
+  const engineRoot = await temporaryRoot();
+  const options = { coreEngineRoot: engineRoot };
+  for (const argv of [
+    ['--core', 'claim', '--project=old', 'README.md'],
+    ['--core', 'claim', '--checkout=old', 'README.md'],
+    ['--core', 'claim', '--binding=old', 'README.md'],
+    ['--core', 'claim', '--root=old', 'README.md'],
+    ['--core', 'claim', 'worker', '--project=old'],
+    ['--core', 'release-claim', '--root=old'],
+  ]) {
+    await assert.rejects(runCli(argv, options), /core|project|fixture|selection/i);
+    assert.equal(existsSync(path.join(engineRoot, '.ai', 'core-runtime')), false);
+  }
+});
+
 test('fixed CLI initializes only installation runtime with fixed project identity', async () => {
   const f = await fixedFixture();
   const options = { harnessRoot: f.harnessRoot, cwd: f.harnessRoot };
