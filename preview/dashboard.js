@@ -72,6 +72,8 @@ async function dashboard() {
   rail.setAttribute?.('role', 'tablist');
   rail.setAttribute?.('aria-label', t('nav.dashboard'));
   rail.innerHTML = dashboardTabs.map((name, index) => `<button id="dashboard-tab-${name}" class="dashboard-tab" type="button" role="tab" aria-controls="dashboard-pane-${name}"><small>${String(index + 1).padStart(2, '0')}</small><span data-dashboard-label="dashboard.tabs.${name}">${t(`dashboard.tabs.${name}`)}</span></button>`).join('');
+  layout.append(rail);
+  app.append(layout);
   for (const name of dashboardTabs) {
     const button = document.querySelector(`#dashboard-tab-${name}`);
     button.onclick = () => selectDashboardTab(name);
@@ -99,8 +101,7 @@ async function dashboard() {
   telemetryPane.setAttribute?.('aria-labelledby', 'dashboard-tab-telemetry');
   telemetryPane.append(telemetryCard);
   grid.append(telemetryPane);
-  layout.append(rail, grid);
-  app.append(layout);
+  layout.append(grid);
   selectDashboardTab(selectedDashboardTab);
   taskEditor = createTaskEditor(document.querySelector('#tasks'), { fetchImpl: fetch, translate: t });
   telemetryPanel = createTelemetryPanel(telemetryHost, { fetchImpl: fetch, translate: t });
