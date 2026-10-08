@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "setup": "node scripts/setup.mjs",
     "init": "node scripts/runtime-state.mjs init",
     "test": "node tests/all.test.mjs",
     "self-check": "node scripts/self-check.mjs",

@@ -32,3 +32,5 @@ import './harness-export.test.mjs';
 import './harness-install.test.mjs';
 import './source-inventory.test.mjs';
 import './native-bridge.test.mjs';
+import './project-setup.test.mjs';
+import './setup-cli.test.mjs';
