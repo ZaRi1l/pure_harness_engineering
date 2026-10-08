@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { cp, mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, writeFile, rm, symlink, readdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +20,7 @@ async function fixture(t) {
   await cp(path.join(source, 'harness/compatibility.json'), path.join(harnessRoot, 'harness/compatibility.json'));
   const projectRoot = path.join(harnessRoot, 'project');
   await mkdir(projectRoot);
+  execFileSync('git', ['init', '--initial-branch=main', projectRoot], { stdio: 'ignore' });
   return { harnessRoot, projectRoot, setupId: randomUUID() };
 }
 
@@ -174,4 +176,106 @@ test('edited owned hook entry blocks update as conflict', async t => {
   await writeFile(file, JSON.stringify(document));
   const update = await planBridgeUpdate({ ...f, target: 'codex' });
   assert.equal(update.actions.find(item => item.path === '.codex/hooks.json').action, 'conflict');
+});
+
+test('serialized plan contains hashes and actions but no user file bodies or secrets', async t => {
+  const f = await fixture(t);
+  await mkdir(path.join(f.projectRoot, '.codex'));
+  await writeFile(path.join(f.projectRoot, '.codex/config.toml'), '# private-user-token-7823\n[other]\nvalue = "keep"\n');
+  await writeFile(path.join(f.projectRoot, 'AGENTS.md'), 'private-product-instruction-8392\n');
+  const plan = await buildBridgePlan({ ...f, target: 'codex' });
+  const serialized = JSON.stringify(plan);
+  assert.doesNotMatch(serialized, /private-user-token-7823|private-product-instruction-8392/);
+  assert.ok(plan.actions.every(action => !('afterBase64' in action)));
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: JSON.parse(serialized) });
+  assert.match(await readFile(path.join(f.projectRoot, 'AGENTS.md'), 'utf8'), /private-product-instruction-8392/);
+});
+
+test('Apply requires already published independent project Git before management writes', async t => {
+  const f = await fixture(t);
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  await rm(path.join(f.projectRoot, '.git'), { recursive: true });
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan }), /independent|Git|published/i);
+  await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapter.lock')));
+  await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapters/claude.json')));
+});
+
+test('duplicate user hook is never mistaken for appended owned hook on update', async t => {
+  const f = await fixture(t);
+  const script = path.join(f.harnessRoot, 'scripts/hook-runtime.mjs');
+  const entry = { hooks: [{ type: 'command', command: `node '${script}'`, commandWindows: `powershell -NoProfile -Command "& node '${script}'"`, timeout: 5, statusMessage: 'Pure Harness lifecycle (candidate; native dispatch unverified)' }] };
+  await mkdir(path.join(f.projectRoot, '.codex'));
+  const anotherUserHook = { hooks: [{ type: 'command', command: 'echo user-other' }] };
+  await writeFile(path.join(f.projectRoot, '.codex/hooks.json'), JSON.stringify({ hooks: { Stop: [entry, anotherUserHook] } }));
+  const plan = await buildBridgePlan({ ...f, target: 'codex' });
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  const before = await readFile(path.join(f.projectRoot, '.codex/hooks.json'));
+  const update = await planBridgeUpdate({ ...f, target: 'codex' });
+  assert.equal(update.actions.find(item => item.path === '.codex/hooks.json').action, 'unchanged');
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: update });
+  assert.deepEqual(await readFile(path.join(f.projectRoot, '.codex/hooks.json')), before);
+});
+
+test('management path symlink is rejected before lock, manifest, or backup writes', async t => {
+  const f = await fixture(t);
+  const elsewhere = await mkdtemp(path.join(os.tmpdir(), 'bridge-elsewhere-'));
+  t.after(() => rm(elsewhere, { recursive: true, force: true }));
+  await symlink(elsewhere, path.join(f.harnessRoot, '.harness'), 'junction');
+  await assert.rejects(buildBridgePlan({ ...f, target: 'claude' }), /symlink|junction/);
+  assert.deepEqual(await readFile(path.join(elsewhere, 'sentinel')).catch(() => null), null);
+});
+
+test('nested adapter and backup symlinks cannot redirect bridge state writes', async t => {
+  const adapters = await fixture(t);
+  const external = await mkdtemp(path.join(os.tmpdir(), 'bridge-redirect-'));
+  t.after(() => rm(external, { recursive: true, force: true }));
+  await mkdir(path.join(adapters.harnessRoot, '.harness'));
+  await symlink(external, path.join(adapters.harnessRoot, '.harness/adapters'), 'junction');
+  await assert.rejects(buildBridgePlan({ ...adapters, target: 'claude' }), /symlink/);
+
+  const backups = await fixture(t);
+  await mkdir(path.join(backups.harnessRoot, '.harness'));
+  await symlink(external, path.join(backups.harnessRoot, '.harness/backups'), 'junction');
+  await writeFile(path.join(backups.projectRoot, 'AGENTS.md'), '# user product notes\n');
+  const plan = await buildBridgePlan({ ...backups, target: 'claude' });
+  await assert.rejects(applyBridgePlan({ harnessRoot: backups.harnessRoot, plan }), /symlink/);
+  assert.deepEqual(await readdir(external), []);
+});
+
+test('Apply rechecks a destination changed immediately before its write', async t => {
+  const f = await fixture(t);
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  const file = path.join(f.projectRoot, 'AGENTS.md');
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan }, { beforeWrite: async relative => {
+    if (relative === 'AGENTS.md') await writeFile(file, 'outside writer bytes\n');
+  } }), /changed|drift/i);
+  assert.equal(await readFile(file, 'utf8'), 'outside writer bytes\n');
+});
+
+test('interrupted rollback retains journal and resumes without clobbering outside drift', async t => {
+  const f = await fixture(t);
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  let count = 0;
+  await assert.rejects(rollbackNativeBridge({ ...f, target: 'claude' }, { beforeWrite: () => {
+    if (++count === 2) throw new Error('rollback interrupted');
+  } }), /interrupted/);
+  assert.ok(await readFile(path.join(f.harnessRoot, '.harness/adapters/claude.rollback-journal.json')));
+  await rollbackNativeBridge({ ...f, target: 'claude' });
+  await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapters/claude.json')));
+});
+
+test('rollback retry refuses an outside edit to an already-restored path', async t => {
+  const f = await fixture(t);
+  const plan = await buildBridgePlan({ ...f, target: 'opencode' });
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  let count = 0, firstPath;
+  await assert.rejects(rollbackNativeBridge({ ...f, target: 'opencode' }, { beforeWrite: relative => {
+    if (++count === 1) firstPath = relative;
+    if (count === 2) throw new Error('stop rollback');
+  } }), /stop rollback/);
+  const changed = path.join(f.projectRoot, firstPath);
+  await writeFile(changed, 'outside user edit\n');
+  await assert.rejects(rollbackNativeBridge({ ...f, target: 'opencode' }), /drift/);
+  assert.equal(await readFile(changed, 'utf8'), 'outside user edit\n');
 });

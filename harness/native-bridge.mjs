@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { lstat, mkdir, open, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { listSkills, loadRoles } from './inventory.mjs';
@@ -16,6 +17,7 @@ const slash = value => value.split(path.sep).join('/');
 const manifestPath = target => `.harness/adapters/${target}.json`;
 const lockPath = '.harness/adapter.lock';
 const safeId = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+const planBodies = new WeakMap();
 
 async function meta(file) {
   try { return await lstat(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
@@ -42,6 +44,9 @@ function allowed(relative, target) {
 }
 async function safePath(root, relative, target) {
   if (!allowed(relative, target)) throw new Error(`bridge path not allowlisted: ${relative}`);
+  return checkedPath(root, relative);
+}
+async function checkedPath(root, relative) {
   let current = path.resolve(root);
   if ((await meta(current))?.isSymbolicLink()) throw new Error('symlink bridge root');
   for (const part of relative.split('/')) {
@@ -55,6 +60,20 @@ async function safePath(root, relative, target) {
     if ((await meta(current))?.isSymbolicLink()) throw new Error(`symlink bridge path: ${relative}`);
   }
   return current;
+}
+async function safeStatePath(harnessRoot, relative) {
+  if (!/^\.harness\/(?:adapter\.lock|adapters\/(?:codex|claude|opencode|antigravity)(?:\.(?:json|journal\.json|rollback-journal\.json))|backups\/[0-9a-f-]{36}\/(?:codex|claude|opencode|antigravity)\/[a-f0-9]{64})$/.test(relative))
+    throw new Error(`bridge management path not allowlisted: ${relative}`);
+  return checkedPath(harnessRoot, relative);
+}
+async function assertPublishedChild(projectRoot) {
+  const root = await meta(projectRoot), dotGit = await meta(path.join(projectRoot, '.git'));
+  if (!root?.isDirectory() || root.isSymbolicLink() || !dotGit?.isDirectory() || dotGit.isSymbolicLink())
+    throw new Error('bridge Apply requires an already-published independent child Git');
+  let discovered;
+  try { discovered = execFileSync('git', ['-C', projectRoot, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+  catch { throw new Error('bridge Apply requires an independent child Git'); }
+  if (path.resolve(discovered).toLowerCase() !== path.join(path.resolve(projectRoot), '.git').toLowerCase()) throw new Error('bridge child Git root mismatch');
 }
 async function collectSkill(root, id, add, sourceHashes, target) {
   const base = path.join(root, '.agents/skills', id);
@@ -133,9 +152,9 @@ function stripOwnedHooks(prior, harnessRoot) {
     const owned = JSON.stringify(hookEntry(harnessRoot));
     for (const event of events) {
       if (!Array.isArray(data.hooks?.[event])) return null;
-      const index = data.hooks[event].findIndex(item => JSON.stringify(item) === owned);
-      if (index < 0) return null;
-      data.hooks[event].splice(index, 1);
+      const last = data.hooks[event].length - 1;
+      if (last < 0 || JSON.stringify(data.hooks[event][last]) !== owned) return null;
+      data.hooks[event].pop();
     }
     return JSON.stringify(data);
   } catch { return null; }
@@ -157,7 +176,7 @@ function stripOwnedAgents(prior) {
 }
 function planDigest(plan) { const { planSha256, ...body } = plan; return sha(JSON.stringify(body)); }
 async function manifest(harnessRoot, target) {
-  const data = await bytes(path.join(harnessRoot, manifestPath(target)));
+  const data = await bytes(await safeStatePath(harnessRoot, manifestPath(target)));
   if (!data) return null;
   try { return JSON.parse(data); } catch { throw new Error('invalid bridge manifest'); }
 }
@@ -208,10 +227,11 @@ export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = pr
       : ['registry', 'hooks', 'instructions'].includes(item.kind) && !owned ? 'append-managed-block' : 'conflict';
     if (owned && owned.afterSha256 !== beforeSha256) action = 'conflict';
     actions.push({ path: item.path, kind: item.kind, sourcePath: item.sourcePath ?? null, action, beforeSha256,
-      afterSha256: action === 'conflict' ? null : sha(item.body), afterBase64: action === 'conflict' ? null : item.body.toString('base64') });
+      afterSha256: action === 'conflict' ? null : sha(item.body) });
   }
   const plan = { schemaVersion: 1, harnessRoot: path.resolve(harnessRoot), projectRoot: path.resolve(projectRoot), inputRoot: path.resolve(inputRoot), target, setupId, profile, actions, sourceHashes, nativeSmoke: 'unverified' };
   plan.planSha256 = planDigest(plan);
+  planBodies.set(plan, new Map([...desired.values()].map(item => [item.path, item.body])));
   return plan;
 }
 
@@ -222,13 +242,13 @@ async function atomicWrite(file, content) {
   finally { await rm(temp, { force: true }); }
 }
 async function withLock(harnessRoot, run) {
-  const file = path.join(harnessRoot, lockPath);
+  const file = await safeStatePath(harnessRoot, lockPath);
   await mkdir(path.dirname(file), { recursive: true });
   const handle = await open(file, 'wx').catch(error => { if (error.code === 'EEXIST') throw new Error('bridge adapter lock exists'); throw error; });
   try { return await run(); } finally { await handle.close(); await unlink(file); }
 }
-function backupPath(harnessRoot, setupId, target, relative) {
-  return path.join(harnessRoot, '.harness/backups', setupId, target, sha(relative));
+async function backupPath(harnessRoot, setupId, target, relative) {
+  return safeStatePath(harnessRoot, `.harness/backups/${setupId}/${target}/${sha(relative)}`);
 }
 function bridgeResult(plan, changedPaths) {
   return { setupId: plan.setupId, target: plan.target, projectRoot: plan.projectRoot, changedPaths, manifestPath: path.join(plan.harnessRoot, manifestPath(plan.target)), nativeSmoke: 'unverified' };
@@ -237,14 +257,17 @@ function bridgeResult(plan, changedPaths) {
 export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite } = {}) {
   if (!plan || plan.schemaVersion !== 1 || plan.planSha256 !== planDigest(plan) || plan.harnessRoot !== path.resolve(harnessRoot)) throw new Error('invalid or modified bridge plan');
   assertRoots(harnessRoot, plan.projectRoot, plan.target, plan.setupId);
+  await assertPublishedChild(plan.projectRoot);
   const outputRoot = plan.projectRoot;
   return withLock(harnessRoot, async () => {
+    const journalFile = await safeStatePath(harnessRoot, `.harness/adapters/${plan.target}.journal.json`);
+    if (await meta(journalFile)) throw new Error('pending bridge Apply journal requires manual recovery');
     const replay = await buildBridgePlan({ harnessRoot, projectRoot: plan.projectRoot, inputRoot: plan.inputRoot, target: plan.target, setupId: plan.setupId, profile: plan.profile });
     if (replay.planSha256 !== plan.planSha256) throw new Error('bridge source or input changed since planning');
+    const desired = planBodies.get(replay);
     if (plan.actions.some(item => item.action === 'conflict')) throw new Error('bridge plan contains review conflict');
     const priorManifest = await manifest(harnessRoot, plan.target);
     const journal = { schemaVersion: 1, setupId: plan.setupId, target: plan.target, priorManifest, actions: [] };
-    const journalFile = path.join(harnessRoot, `.harness/adapters/${plan.target}.journal.json`);
     for (const item of plan.actions) {
       if (!allowed(item.path, plan.target)) throw new Error('bridge path not allowlisted');
       const actual = await bytes(await safePath(outputRoot, item.path, plan.target));
@@ -257,14 +280,16 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
         const destination = await safePath(outputRoot, item.path, plan.target);
         const before = await bytes(destination);
         const previousOwnership = priorManifest?.actions.find(owned => owned.path === item.path);
-        const backup = before && !previousOwnership ? backupPath(harnessRoot, plan.setupId, plan.target, item.path) : null;
+        const backup = before && !previousOwnership ? await backupPath(harnessRoot, plan.setupId, plan.target, item.path) : null;
         const entry = { path: item.path, kind: item.kind, beforeSha256: previousOwnership ? previousOwnership.beforeSha256 : item.beforeSha256,
           afterSha256: item.afterSha256, backupSha256: previousOwnership ? previousOwnership.backupSha256 : before ? sha(before) : null, ownership: 'harness-managed' };
         journal.actions.push({ ...entry, currentBeforeBase64: before?.toString('base64') ?? null, backupCreated: !!backup });
         await atomicWrite(journalFile, JSON.stringify(journal));
         if (backup) await atomicWrite(backup, before);
         await beforeWrite?.(item.path);
-        await atomicWrite(destination, Buffer.from(item.afterBase64, 'base64'));
+        const latest = await bytes(await safePath(outputRoot, item.path, plan.target));
+        if ((latest ? sha(latest) : null) !== item.beforeSha256) throw new Error(`bridge destination changed before write: ${item.path}`);
+        await atomicWrite(destination, desired.get(item.path));
         if (sha(await readFile(destination)) !== item.afterSha256) throw new Error(`bridge post-write mismatch: ${item.path}`);
         changedPaths.push(item.path);
       }
@@ -275,7 +300,7 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
       }
       const record = { schemaVersion: 1, setupId: plan.setupId, target: plan.target, projectRoot: plan.projectRoot,
         actions: [...retained.values()].sort((a, b) => a.path.localeCompare(b.path)) };
-      await atomicWrite(path.join(harnessRoot, manifestPath(plan.target)), JSON.stringify(record, null, 2) + '\n');
+      await atomicWrite(await safeStatePath(harnessRoot, manifestPath(plan.target)), JSON.stringify(record, null, 2) + '\n');
       await rm(journalFile, { force: true });
       return bridgeResult(plan, changedPaths);
     } catch (error) {
@@ -291,8 +316,8 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
         else await unlink(destination);
       }
       if (!drift) {
-        for (const item of journal.actions) if (item.backupCreated) await rm(backupPath(harnessRoot, plan.setupId, plan.target, item.path), { force: true });
-        const file = path.join(harnessRoot, manifestPath(plan.target));
+        for (const item of journal.actions) if (item.backupCreated) await rm(await backupPath(harnessRoot, plan.setupId, plan.target, item.path), { force: true });
+        const file = await safeStatePath(harnessRoot, manifestPath(plan.target));
         if (priorManifest) await atomicWrite(file, JSON.stringify(priorManifest, null, 2) + '\n');
         else await rm(file, { force: true });
         await rm(journalFile, { force: true });
@@ -316,27 +341,44 @@ export async function checkNativeBridge({ harnessRoot, projectRoot, target } = {
 
 export async function planBridgeUpdate(options = {}) { return buildBridgePlan(options); }
 
-export async function rollbackNativeBridge({ harnessRoot, projectRoot, target, setupId } = {}) {
+export async function rollbackNativeBridge({ harnessRoot, projectRoot, target, setupId } = {}, { beforeWrite } = {}) {
   assertRoots(harnessRoot, projectRoot, target, setupId);
+  await assertPublishedChild(projectRoot);
   return withLock(harnessRoot, async () => {
-    const record = await manifest(harnessRoot, target);
+    const journalFile = await safeStatePath(harnessRoot, `.harness/adapters/${target}.rollback-journal.json`);
+    const pending = await bytes(journalFile);
+    let journal;
+    if (pending) {
+      try { journal = JSON.parse(pending); } catch { throw new Error('invalid bridge rollback journal'); }
+      if (journal.schemaVersion !== 1 || journal.setupId !== setupId || journal.target !== target || journal.projectRoot !== path.resolve(projectRoot)
+          || !Array.isArray(journal.actions)) throw new Error('mismatched bridge rollback journal');
+    }
+    const record = journal ?? await manifest(harnessRoot, target);
     if (!record || record.setupId !== setupId || record.projectRoot !== path.resolve(projectRoot)) throw new Error('no matching bridge ownership');
     for (const item of record.actions) {
       const current = await bytes(await safePath(projectRoot, item.path, target));
-      if (!current || sha(current) !== item.afterSha256) throw new Error(`owned file drift: ${item.path}`);
+      const currentHash = current ? sha(current) : null;
+      if (currentHash !== item.afterSha256 && (!journal || currentHash !== item.beforeSha256)) throw new Error(`owned file drift: ${item.path}`);
       if (item.backupSha256) {
-        const backup = await bytes(backupPath(harnessRoot, setupId, target, item.path));
+        const backup = await bytes(await backupPath(harnessRoot, setupId, target, item.path));
         if (!backup || sha(backup) !== item.backupSha256) throw new Error(`bridge backup drift: ${item.path}`);
       }
     }
+    if (!journal) await atomicWrite(journalFile, JSON.stringify(record));
     const changedPaths = [];
     for (const item of [...record.actions].reverse()) {
       const destination = await safePath(projectRoot, item.path, target);
-      if (item.backupSha256) await atomicWrite(destination, await readFile(backupPath(harnessRoot, setupId, target, item.path)));
+      const prior = await bytes(destination);
+      if ((prior ? sha(prior) : null) === item.beforeSha256) continue;
+      await beforeWrite?.(item.path);
+      const latest = await bytes(await safePath(projectRoot, item.path, target));
+      if (!latest || sha(latest) !== item.afterSha256) throw new Error(`owned file drift before rollback write: ${item.path}`);
+      if (item.backupSha256) await atomicWrite(destination, await readFile(await backupPath(harnessRoot, setupId, target, item.path)));
       else await unlink(destination);
       changedPaths.push(item.path);
     }
-    await rm(path.join(harnessRoot, manifestPath(target)));
+    await rm(await safeStatePath(harnessRoot, manifestPath(target)), { force: true });
+    await rm(journalFile, { force: true });
     return bridgeResult({ harnessRoot, projectRoot, target, setupId }, changedPaths);
   });
 }
