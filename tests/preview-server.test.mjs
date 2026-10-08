@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, copyFile, readFile, rename, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, copyFile, cp, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
@@ -9,8 +9,9 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
 import { createPreviewServer } from '../scripts/preview-server.mjs';
 import { RuntimeStore } from '../scripts/runtime-state.mjs';
-import { discoverCatalog, legacyCatalogFixture } from '../scripts/catalog.mjs';
-import { loadProjectContext } from '../scripts/project-context.mjs';
+import { discoverCatalog, discoverTaskSpecs, legacyCatalogFixture } from '../scripts/catalog.mjs';
+import { loadProjectContext, loadFixedProjectContext } from '../scripts/project-context.mjs';
+import { fixedFixture } from './support/fixed-project-fixture.mjs';
 
 async function projectPreviewFixture() {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-project-preview-'));
@@ -39,6 +40,54 @@ async function listening(t, context, options) {
   t.after(() => new Promise(resolve => server.close(resolve)));
   return `http://127.0.0.1:${server.address().port}`;
 }
+
+async function fixedCliFixture() {
+  const f = await fixedFixture();
+  await cp(path.resolve('scripts'), path.join(f.harnessRoot, 'scripts'), { recursive: true });
+  await cp(path.resolve('preview'), path.join(f.harnessRoot, 'preview'), { recursive: true });
+  const context = await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot });
+  const run = (name, ...args) => spawnSync(process.execPath, [path.join(f.harnessRoot, 'scripts', name), ...args], { cwd: f.projectRoot, encoding: 'utf8' });
+  return { ...f, context, run };
+}
+
+test('flagless preview CLI serves fixed child state and engine catalog without private assets', async t => {
+  const f = await fixedFixture();
+  await cp(path.resolve('scripts'), path.join(f.harnessRoot, 'scripts'), { recursive: true });
+  await cp(path.resolve('preview'), path.join(f.harnessRoot, 'preview'), { recursive: true });
+  await mkdir(path.join(f.harnessRoot, '.codex', 'agents'), { recursive: true });
+  await mkdir(path.join(f.harnessRoot, '.agents', 'skills', 'safe'), { recursive: true });
+  await writeFile(path.join(f.harnessRoot, '.codex', 'config.toml'), '[agents.safe]\nconfig_file = "./agents/safe.toml"\n');
+  await writeFile(path.join(f.harnessRoot, '.codex', 'agents', 'safe.toml'), 'name = "Engine role"\n');
+  await writeFile(path.join(f.harnessRoot, '.agents', 'skills', 'safe', 'SKILL.md'), '---\nname: safe\ndescription: Engine skill\n---\nSAFE_ENGINE_SKILL');
+  const context = await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot });
+  await new RuntimeStore(context).setGoal('CHILD_ONLY_GOAL');
+  await mkdir(context.paths.tasks, { recursive: true });
+  await writeFile(path.join(context.paths.tasks, 'example.md'), '# Child task');
+  await writeFile(path.join(f.harnessRoot, 'private.txt'), 'PRIVATE_ENGINE_BYTES');
+  assert.deepEqual(discoverTaskSpecs(context).map(spec => spec.path), ['.harness/tasks/example.md']);
+  const child = spawn(process.execPath, [path.join(f.harnessRoot, 'scripts', 'preview-server.mjs')], { cwd: f.projectRoot, env: { ...process.env, PURE_HARNESS_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  const base = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('fixed preview CLI did not listen')), 10000);
+    child.stdout.on('data', chunk => { const match = String(chunk).match(/http:\/\/127\.0\.0\.1:\d+\//); if (match) { clearTimeout(timeout); resolve(match[0]); } });
+    child.once('error', error => { clearTimeout(timeout); reject(error); });
+    child.once('exit', code => { clearTimeout(timeout); reject(new Error(`fixed preview CLI exited: ${code}`)); });
+  });
+  const snapshot = await (await fetch(`${base}runtime/snapshot`)).json();
+  const catalog = await (await fetch(`${base}runtime/catalog`)).json();
+  const specs = await (await fetch(`${base}runtime/task-specs`)).json();
+  const telemetry = await (await fetch(`${base}runtime/telemetry`)).json();
+  assert.equal(snapshot.status.project_id, 'project');
+  assert.equal(snapshot.status.current_goal, 'CHILD_ONLY_GOAL');
+  assert.equal(catalog.agents.find(agent => agent.id === 'safe').name, 'Engine role');
+  assert.match(catalog.skills.find(skill => skill.id === 'safe').source, /SAFE_ENGINE_SKILL/);
+  assert.deepEqual(specs.taskSpecs.map(spec => spec.path), ['.harness/tasks/example.md']);
+  assert.equal(telemetry.project_id, 'project');
+  assert.equal(telemetry.status, 'missing');
+  assert.equal((await fetch(`${base}private.txt`)).status, 403);
+  assert.notEqual((await fetch(`${base}preview/%2e%2e/private.txt`)).status, 200);
+  assert.notEqual(spawnSync(process.execPath, [path.join(f.harnessRoot, 'scripts', 'preview-server.mjs'), '--project', 'other'], { cwd: f.projectRoot, encoding: 'utf8' }).status, 0);
+});
 
 test('serves dashboard, task specs, and runtime JSON while rejecting traversal', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-preview-'));
@@ -420,28 +469,26 @@ test('dashboard reads selected project', async t => {
   assert.match(page, /Preview Lab/);
 });
 
-test('telemetry import requires explicit context and regular absolute files', async () => {
-  const f = await projectPreviewFixture();
-  const file = path.join(f.root, 'private-rollout.jsonl');
+test('telemetry import requires fixed context and regular absolute files', async () => {
+  const f = await fixedCliFixture();
+  const file = path.join(f.harnessRoot, 'private-rollout.jsonl');
   await writeFile(file, '');
-  const run = args => spawnSync(process.execPath, ['scripts/import-telemetry.mjs', ...args], { cwd: path.resolve('.'), encoding: 'utf8' });
-  const context = ['--project', 'alpha', '--checkout', f.alpha, '--binding', f.bindingPath];
-  assert.notEqual(run([...context]).status, 0);
-  assert.notEqual(run(['--file', file]).status, 0);
-  const relativeFile = run([...context, '--file', 'README.md']);
+  const run = (...args) => f.run('import-telemetry.mjs', ...args);
+  assert.notEqual(run('--project', 'alpha', '--file', file).status, 0);
+  assert.notEqual(run().status, 0);
+  const relativeFile = run('--file', 'README.md');
   assert.notEqual(relativeFile.status, 0);
   assert.match(relativeFile.stderr, /invalid_arguments/);
-  assert.notEqual(run([...context, '--file', f.root]).status, 0);
-  assert.equal(run([...context, '--file', file]).status, 0);
+  assert.notEqual(run('--file', f.harnessRoot).status, 0);
+  assert.equal(run('--file', file).status, 0);
 });
 
-test('telemetry import is atomic, idempotent, missing on empty, and project isolated', async t => {
-  const f = await projectPreviewFixture();
-  const alpha = await f.context('alpha'), beta = await f.context('beta');
-  const file = path.join(f.root, 'PRIVATE_SOURCE_PATH.jsonl');
-  const secondFile = path.join(f.root, 'PRIVATE_SECOND_PATH.jsonl');
-  const bad = path.join(f.root, 'bad.jsonl');
-  const empty = path.join(f.root, 'empty.jsonl');
+test('fixed child telemetry import is atomic, idempotent, and missing on empty', async t => {
+  const f = await fixedCliFixture();
+  const file = path.join(f.harnessRoot, 'PRIVATE_SOURCE_PATH.jsonl');
+  const secondFile = path.join(f.harnessRoot, 'PRIVATE_SECOND_PATH.jsonl');
+  const bad = path.join(f.harnessRoot, 'bad.jsonl');
+  const empty = path.join(f.harnessRoot, 'empty.jsonl');
   const sentinel = 'PRIVATE_TOOL_BODY_SENTINEL';
   const promptSentinel = 'PRIVATE_PROMPT_SENTINEL';
   const line = (type, payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type, payload });
@@ -449,22 +496,21 @@ test('telemetry import is atomic, idempotent, missing on empty, and project isol
   await writeFile(secondFile, [line('session_meta', { id: 'thread-2' }), line('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 1, output_tokens: 1, cached_input_tokens: 0, reasoning_output_tokens: 0 } } })].join('\n'));
   await writeFile(bad, `${line('session_meta', { id: 'thread-1' })}\n{${sentinel}`);
   await writeFile(empty, '');
-  const run = (id, ...sources) => spawnSync(process.execPath, ['scripts/import-telemetry.mjs', '--project', id, '--checkout', f[id], '--binding', f.bindingPath, ...sources.flatMap(source => ['--file', source])], { cwd: path.resolve('.'), encoding: 'utf8' });
-  assert.equal(run('alpha', file, secondFile).status, 0);
-  const store = new RuntimeStore(alpha);
-  const telemetryPath = path.join(alpha.paths.runtime, 'telemetry.json');
+  const run = (...sources) => f.run('import-telemetry.mjs', ...sources.flatMap(source => ['--file', source]));
+  assert.equal(run(file, secondFile).status, 0);
+  const store = new RuntimeStore(f.context);
+  const telemetryPath = path.join(f.context.paths.runtime, 'telemetry.json');
   const first = await readFile(telemetryPath);
   assert.equal((await store.readTelemetry()).totals.processed, 8);
   assert.deepEqual((await store.readTelemetry()).largest_tool_outputs.map(row => [row.tool, row.count, row.total_bytes]), [['exec_command', 1, 26]]);
-  assert.equal(run('alpha', file, secondFile).status, 0);
+  assert.equal(run(file, secondFile).status, 0);
   assert.deepEqual(await readFile(telemetryPath), first);
-  const failed = run('alpha', bad);
+  const failed = run(bad);
   assert.notEqual(failed.status, 0);
   assert.match(failed.stderr, /line 2/i);
   assert.doesNotMatch(failed.stderr, /PRIVATE|bad\.jsonl|\{PRIVATE/);
   assert.deepEqual(await readFile(telemetryPath), first);
-  assert.equal((await new RuntimeStore(beta).readTelemetry()).status, 'missing');
-  const base = await listening(t, alpha);
+  const base = await listening(t, f.context);
   const response = await fetch(`${base}/runtime/telemetry`);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('cache-control'), 'no-store');
@@ -477,39 +523,37 @@ test('telemetry import is atomic, idempotent, missing on empty, and project isol
   assert.equal((await fetch(`${base}/runtime/telemetry`, { method: 'POST', body: sentinel })).status, 405);
   assert.equal((await fetch(`${base}/runtime/telemetry`, { method: 'PUT', body: sentinel })).status, 405);
   assert.doesNotMatch((await readFile(telemetryPath, 'utf8')) + JSON.stringify(await store.readEvents()), /PRIVATE_SOURCE_PATH|PRIVATE_SECOND_PATH|PRIVATE_TOOL_BODY_SENTINEL|PRIVATE_PROMPT_SENTINEL/);
-  assert.equal(run('alpha', empty).status, 0);
+  assert.equal(run(empty).status, 0);
   assert.equal((await store.readTelemetry()).status, 'missing');
-  assert.equal((await new RuntimeStore(beta).readTelemetry()).status, 'missing');
+  assert.equal((await store.readTelemetry()).project_id, 'project');
 });
 
 test('telemetry import rejects another project stamp without replacing its bytes', async () => {
-  const f = await projectPreviewFixture();
-  const alpha = await f.context('alpha'), beta = await f.context('beta');
-  const file = path.join(f.root, 'source.jsonl');
+  const f = await fixedCliFixture();
+  const file = path.join(f.harnessRoot, 'source.jsonl');
   await writeFile(file, `${JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type: 'session_meta', payload: { id: 'thread-1' } })}\n`);
-  const wrongStamp = Buffer.from(JSON.stringify({ schema_version: 1, project_id: 'alpha', status: 'missing' }));
-  await mkdir(beta.paths.runtime, { recursive: true });
-  const telemetryPath = path.join(beta.paths.runtime, 'telemetry.json');
+  const wrongStamp = Buffer.from(JSON.stringify({ schema_version: 1, project_id: 'foreign', status: 'missing' }));
+  await mkdir(f.context.paths.runtime, { recursive: true });
+  const telemetryPath = path.join(f.context.paths.runtime, 'telemetry.json');
   await writeFile(telemetryPath, wrongStamp);
-  const run = spawnSync(process.execPath, ['scripts/import-telemetry.mjs', '--project', 'beta', '--checkout', f.beta, '--binding', f.bindingPath, '--file', file], { cwd: path.resolve('.'), encoding: 'utf8' });
+  const run = f.run('import-telemetry.mjs', '--file', file);
   assert.notEqual(run.status, 0);
   assert.equal(run.stderr.trim(), 'invalid_telemetry');
   assert.deepEqual(await readFile(telemetryPath), wrongStamp);
-  assert.equal((await new RuntimeStore(alpha).readTelemetry()).status, 'missing');
-  await assert.rejects(createPreviewServer(alpha, '0.0.0.0'), /localhost/);
+  await assert.rejects(createPreviewServer(f.context, '0.0.0.0'), /localhost/);
 });
 
 test('telemetry CLI imports an exact legacy task ID through stored link and safe HTTP response', async t => {
-  const f = await projectPreviewFixture();
-  const context = await f.context('alpha');
+  const f = await fixedCliFixture();
+  const context = f.context;
   const store = new RuntimeStore(context);
   const taskId = '한글/작업 1';
   await store.upsertTask(taskId, 'Legacy task', 'pending');
-  await store.recordChildLink({ project_id: 'alpha', acknowledgement: 'success', task_id: taskId, root_turn_id: 'root-1', parent_agent_id: 'parent-1', child_agent_id: 'child-1', role: 'worker', short_task_name: null, fork_turns: 'all', model: null, reasoning_effort: null, spawned_at: '2026-10-01T00:00:00.000Z', completed_at: null, prompt: 'PROMPT_SENTINEL' });
+  await store.recordChildLink({ project_id: 'project', acknowledgement: 'success', task_id: taskId, root_turn_id: 'root-1', parent_agent_id: 'parent-1', child_agent_id: 'child-1', role: 'worker', short_task_name: null, fork_turns: 'all', model: null, reasoning_effort: null, spawned_at: '2026-10-01T00:00:00.000Z', completed_at: null, prompt: 'PROMPT_SENTINEL' });
   const line = (type, payload) => JSON.stringify({ timestamp: '2026-10-01T00:00:00.000Z', type, payload });
-  const file = path.join(f.root, 'private-rollout.jsonl');
+  const file = path.join(f.harnessRoot, 'private-rollout.jsonl');
   await writeFile(file, [line('session_meta', { id: 'child-1', parent_thread_id: 'parent-1' }), line('turn_context', { root_turn_id: 'root-1', task_id: taskId, task: 'PROMPT_SENTINEL' }), line('event_msg', { type: 'token_count', info: { total_token_usage: { input_tokens: 4, output_tokens: 2 } } })].join('\n'));
-  const run = spawnSync(process.execPath, ['scripts/import-telemetry.mjs', '--project', 'alpha', '--checkout', f.alpha, '--binding', f.bindingPath, '--file', file], { cwd: path.resolve('.'), encoding: 'utf8' });
+  const run = f.run('import-telemetry.mjs', '--file', file);
   assert.equal(run.status, 0, run.stderr);
   const telemetry = await store.readTelemetry();
   assert.deepEqual(telemetry.tasks.map(row => [row.task_id, row.totals.processed]), [[taskId, 6]]);
@@ -531,11 +575,12 @@ test('omitted asset root serves module-owned preview instead of malicious instal
   assert.doesNotMatch(page + script, /MALICIOUS_INSTALLATION_/);
 });
 
-test('preview CLI serves module-owned preview instead of malicious installation bytes', async t => {
-  const f = await projectPreviewFixture();
-  await writeFile(path.join(f.installation, 'preview', 'index.html'), 'MALICIOUS_INSTALLATION_PAGE');
-  const child = spawn(process.execPath, [path.resolve('scripts/preview-server.mjs'), '--project', 'alpha', '--checkout', f.alpha, '--binding', f.bindingPath], {
-    cwd: path.resolve('.'), env: { ...process.env, PURE_HARNESS_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe']
+test('preview CLI serves module-owned preview instead of malicious product bytes', async t => {
+  const f = await fixedCliFixture();
+  await mkdir(path.join(f.projectRoot, 'preview'), { recursive: true });
+  await writeFile(path.join(f.projectRoot, 'preview', 'index.html'), 'MALICIOUS_PRODUCT_PAGE');
+  const child = spawn(process.execPath, [path.join(f.harnessRoot, 'scripts/preview-server.mjs')], {
+    cwd: f.projectRoot, env: { ...process.env, PURE_HARNESS_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe']
   });
   t.after(() => { if (child.exitCode === null) child.kill(); });
   const base = await new Promise((resolve, reject) => {
@@ -549,7 +594,7 @@ test('preview CLI serves module-owned preview instead of malicious installation 
   });
   const page = await (await fetch(base)).text();
   assert.match(page, /Preview Lab/);
-  assert.doesNotMatch(page, /MALICIOUS_INSTALLATION_PAGE/);
+  assert.doesNotMatch(page, /MALICIOUS_PRODUCT_PAGE/);
 });
 
 test('explicit asset root serves trusted preview bytes instead of installation bytes', async t => {

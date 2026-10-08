@@ -4,6 +4,26 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { aggregateCodexRollouts, attributeThreads, toolOutputStats } from '../scripts/codex-rollout-telemetry.mjs';
+import { importTelemetry } from '../scripts/import-telemetry.mjs';
+import { fixedFixture } from './support/fixed-project-fixture.mjs';
+import { loadFixedProjectContext } from '../scripts/project-context.mjs';
+import { RuntimeStore } from '../scripts/runtime-state.mjs';
+
+test('explicit rollout import writes fixed child telemetry without private source data', async () => {
+  const f = await fixedFixture();
+  const context = await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot });
+  const store = new RuntimeStore(context);
+  assert.equal((await store.readTelemetry()).status, 'missing');
+  await fixture([[meta('child-1'), record('turn_context', { task: 'PRIVATE_PROMPT_SENTINEL' }), cumulative(4, 2)]], async ([rolloutFile]) => {
+    await importTelemetry(['--file', rolloutFile], { harnessRoot: f.harnessRoot, cwd: f.projectRoot });
+    const document = await store.readTelemetry();
+    assert.equal(document.project_id, 'project');
+    assert.equal(document.totals.processed, 6);
+    assert.doesNotMatch(JSON.stringify(document), /PRIVATE_PROMPT_SENTINEL|private-0\.jsonl|rollout-fixture/);
+  });
+  await assert.rejects(importTelemetry(['--project', 'other', '--file', path.join(f.harnessRoot, 'anything')], { harnessRoot: f.harnessRoot, cwd: f.projectRoot }), /invalid_context/);
+  assert.equal((await store.readTelemetry()).totals.processed, 6);
+});
 
 const at = offset => new Date(Date.UTC(2026, 9, 1, 0, 0, offset)).toISOString();
 const record = (type, payload, offset = 0) => ({ timestamp: at(offset), type, payload });

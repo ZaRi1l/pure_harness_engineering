@@ -7,9 +7,9 @@ import { RuntimeStore, contextFromArgs } from './runtime-state.mjs';
 
 const fail = category => { throw Object.assign(new Error(category), { category }); };
 
-export async function importTelemetry(argv) {
+export async function importTelemetry(argv, contextOptions = {}) {
   let context, args;
-  try { ({ context, args } = await contextFromArgs(argv)); }
+  try { ({ context, args } = await contextFromArgs(argv, contextOptions)); }
   catch { fail('invalid_context'); }
   const files = [];
   for (let index = 0; index < args.length; index += 2) {

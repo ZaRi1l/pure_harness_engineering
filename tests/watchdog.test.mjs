@@ -1,6 +1,28 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { cp } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
 import { inspectRuntime } from '../scripts/watchdog.mjs';
+import { fixedFixture } from './support/fixed-project-fixture.mjs';
+import { loadFixedProjectContext } from '../scripts/project-context.mjs';
+import { RuntimeStore } from '../scripts/runtime-state.mjs';
+
+test('flagless watchdog inspects fixed child and rejects legacy selector before write', async () => {
+  const f = await fixedFixture();
+  await cp(path.resolve('scripts'), path.join(f.harnessRoot, 'scripts'), { recursive: true });
+  const context = await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot });
+  const store = new RuntimeStore(context);
+  await store.setGoal('child only');
+  const run = (...args) => spawnSync(process.execPath, [path.join(f.harnessRoot, 'scripts/watchdog.mjs'), ...args], { cwd: f.projectRoot, encoding: 'utf8' });
+  const good = run('--json');
+  assert.equal(good.status, 0, good.stderr);
+  assert.deepEqual(JSON.parse(good.stdout), { warnings: [] });
+  const before = await store.readStatus();
+  const rejected = run('--project', 'other', '--json');
+  assert.notEqual(rejected.status, 0);
+  assert.deepEqual(await store.readStatus(), before);
+});
 
 const base = () => ({ status: { agents: [], active_agents: [], verification: { status: 'not_run' } }, tasks: { tasks: [] }, claims: { claims: [] }, events: [] });
 test('watchdog reports orphaned owners and missing verification', () => {

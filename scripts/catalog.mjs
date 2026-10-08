@@ -4,7 +4,7 @@ import { isValidatedProjectContext } from './project-context.mjs';
 import { isCoreContext } from './runtime-state.mjs';
 
 function roots(context) {
-  if (isValidatedProjectContext(context)) return { catalogRoot: context.harnessRoot, taskRoot: context.paths.tasks, taskPrefix: `projects/${context.projectId}/tasks` };
+  if (isValidatedProjectContext(context)) return { catalogRoot: context.harnessRoot, taskRoot: context.paths.tasks, taskPrefix: path.relative(context.harnessRoot, context.paths.tasks).split(path.sep).join('/') };
   if (isCoreContext(context)) return { catalogRoot: context.checkoutRoot, taskRoot: path.join(context.checkoutRoot, '.ai', 'tasks'), taskPrefix: '.ai/tasks' };
   if (context?.kind === 'legacy-fixture' && typeof context.root === 'string') return { catalogRoot: context.root, taskRoot: path.join(context.root, '.ai', 'tasks'), taskPrefix: '.ai/tasks' };
   throw new Error('validated project context required');

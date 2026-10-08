@@ -6,10 +6,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { loadProjectContext } from '../scripts/project-context.mjs';
+import { loadProjectContext, loadFixedProjectContext } from '../scripts/project-context.mjs';
 import { RuntimeStore, runCli } from '../scripts/runtime-state.mjs';
 import { discoverCatalog, discoverTaskSpecs } from '../scripts/catalog.mjs';
 import { handleHook } from '../scripts/hook-runtime.mjs';
+import { fixedFixture } from './support/fixed-project-fixture.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
 const manifest = id => ({ schemaVersion: 1, id, displayName: id, paths: { tasks: `projects/${id}/tasks`, memory: `projects/${id}/memory`, runtime: `projects/${id}/runtime` }, adapters: {} });
@@ -153,28 +154,27 @@ test('runtime refuses to recreate a validated management root removed after vali
 });
 
 test('installation claim stays within selected management space', async () => {
-  const f = await fixture(), store = new RuntimeStore(await f.context('alpha'));
-  await store.claim('worker-1', ['installation:projects/alpha/tasks']);
+  const f = await fixedFixture(), store = new RuntimeStore(await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot }));
+  await store.claim('worker-1', ['installation:.harness/tasks']);
   assert.equal((await store.readClaims()).claims[0].scope_kind, 'installation');
-  await assert.rejects(store.claim('worker-2', ['installation:projects/beta/tasks']), /scope|project/i);
-  await assert.rejects(store.claim('worker-2', ['src', 'installation:projects/alpha/memory']), /mixed|root/i);
+  await assert.rejects(store.claim('worker-2', ['installation:projects/beta/tasks']), /management|scope|project/i);
+  await assert.rejects(store.claim('worker-2', ['src', 'installation:.harness/memory']), /mixed|root/i);
   assert.equal((await store.readClaims()).claims.length, 1);
 });
 
 test('linked worktrees still conflict on shared installation files', async () => {
-  const f = await fixture(), linked = path.join(f.root, 'alpha-linked');
-  git(path.join(f.root, 'alpha'), 'worktree', 'add', '-qb', 'linked-fixture', linked);
-  const primary = new RuntimeStore(await f.context('alpha'));
-  const secondary = new RuntimeStore(await f.context('alpha', linked));
-  await primary.claim('worker-1', ['installation:projects/alpha/tasks']);
-  await assert.rejects(secondary.claim('worker-2', ['installation:projects/alpha/tasks']), /claim conflict/);
+  const f = await fixedFixture();
+  const primary = new RuntimeStore(await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot }));
+  const secondary = new RuntimeStore(await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.linkedRoot }));
+  await primary.claim('worker-1', ['installation:.harness/tasks']);
+  await assert.rejects(secondary.claim('worker-2', ['installation:.harness/tasks']), /claim conflict/);
   assert.equal((await primary.readClaims()).claims.length, 1);
 });
 
-test('missing binding writes nothing', async () => {
-  const f = await fixture(), before = await readdir(f.installation);
-  await assert.rejects(runCli(['init', '--project', 'alpha', '--checkout', path.join(f.root, 'alpha'), '--binding', path.join(f.root, 'missing.json')]), /binding/i);
-  assert.deepEqual(await readdir(f.installation), before);
+test('legacy project selector writes nothing in a fixed installation', async () => {
+  const f = await fixedFixture(), before = await readdir(path.join(f.harnessRoot, '.harness'));
+  await assert.rejects(runCli(['init', '--project', 'alpha', '--checkout', f.projectRoot, '--binding', path.join(f.harnessRoot, 'missing.json')], { harnessRoot: f.harnessRoot, cwd: f.projectRoot }), /selection flags/i);
+  assert.deepEqual(await readdir(path.join(f.harnessRoot, '.harness')), before);
 });
 
 test('malformed runtime surfaces error', async () => {

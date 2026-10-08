@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
+import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { renderStatus } from '../scripts/status.mjs';
 import { renderStaticPreview } from '../scripts/generate-preview.mjs';
+import { fixedFixture } from './support/fixed-project-fixture.mjs';
+import { loadFixedProjectContext } from '../scripts/project-context.mjs';
+import { RuntimeStore } from '../scripts/runtime-state.mjs';
 import { createTaskEditor, sortTasks } from '../preview/task-editor.js';
 import { createTelemetryPanel } from '../preview/telemetry-panel.js';
 
@@ -455,6 +461,30 @@ function executeStatic(html) {
   return { host: document.host, preferencesHost: document.preferencesHost, document, context };
 }
 test('status CLI renders claims and watchdog warnings', () => { const text = renderStatus(snapshot); assert.match(text, /src\/backend/); assert.match(text, /Needs review/); });
+test('flagless status and static preview read only fixed child runtime', async () => {
+  const f = await fixedFixture();
+  await cp(path.resolve('scripts'), path.join(f.harnessRoot, 'scripts'), { recursive: true });
+  await cp(path.resolve('preview'), path.join(f.harnessRoot, 'preview'), { recursive: true });
+  const context = await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot });
+  const store = new RuntimeStore(context);
+  await store.setGoal('CHILD_GOAL_ONLY');
+  await mkdir(context.paths.tasks, { recursive: true });
+  await writeFile(path.join(context.paths.tasks, 'example.md'), '# Fixed child task');
+  const run = (name, ...args) => spawnSync(process.execPath, [path.join(f.harnessRoot, 'scripts', name), ...args], { cwd: f.projectRoot, encoding: 'utf8' });
+  const status = run('status.mjs', '--json');
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(JSON.parse(status.stdout).status.project_id, 'project');
+  assert.equal(JSON.parse(status.stdout).status.current_goal, 'CHILD_GOAL_ONLY');
+  const generated = run('generate-preview.mjs');
+  assert.equal(generated.status, 0, generated.stderr);
+  assert.equal(generated.stdout.trim(), path.join(context.paths.runtime, 'preview.html'));
+  assert.match(await readFile(path.join(context.paths.runtime, 'preview.html'), 'utf8'), /\.harness\/tasks\/example\.md/);
+  for (const name of ['status.mjs', 'generate-preview.mjs']) {
+    const rejected = run(name, '--project', 'other');
+    assert.notEqual(rejected.status, 0);
+    assert.equal(existsSync(path.join(f.harnessRoot, 'projects')), false);
+  }
+});
 test('static preview renders snapshot and Task Specs safely', () => { const html = renderStaticPreview(snapshot, [{ title: 'Plan <safe>', path: '.ai/tasks/plan.md', content: '# Plan <safe>' }]); assert.match(html, /Ship &lt;safe&gt;/); assert.match(html, /Write Claims/); assert.match(html, /Plan \/ Task Specs/); assert.match(html, /Plan &lt;safe&gt;/); });
 
 test('static preview declares a device-width viewport', () => {
