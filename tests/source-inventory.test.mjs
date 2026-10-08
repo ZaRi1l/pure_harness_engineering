@@ -43,6 +43,8 @@ test('local inventory fingerprints Git and file metadata without exposing bodies
   await writeFile(path.join(source, '.gitignore'), 'ignored.txt\n');
   await writeFile(path.join(source, 'README.md'), 'first\n');
   await writeFile(path.join(source, '.agents', 'skills', 'generic.md'), 'Reusable agent testing instructions\n');
+  await mkdir(path.join(harnessRoot, '.agents', 'skills'), { recursive: true });
+  await writeFile(path.join(harnessRoot, '.agents', 'skills', 'generic.md'), 'Reusable agent testing instructions\n');
   await writeFile(path.join(source, '.ai', 'runtime', 'private.json'), 'SECRET_SENTINEL');
   git(source, 'add', '.');
   git(source, 'commit', '-qm', 'fixture');
@@ -70,25 +72,35 @@ test('local inventory fingerprints Git and file metadata without exposing bodies
 });
 
 test('remote inspection pins HEAD without fetching content or creating destination', async t => {
-  const { base, harnessRoot, source } = await fixture(t);
+  const { harnessRoot, source } = await fixture(t);
   await writeFile(path.join(source, 'README.md'), 'remote\n');
   git(source, 'add', '.'); git(source, 'commit', '-qm', 'fixture');
   const url = 'https://fixture.invalid/source.git';
   const sshUrl = 'ssh://git@fixture.invalid/source.git';
-  const configNames = ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_CONFIG_KEY_1', 'GIT_CONFIG_VALUE_1'];
-  const previous = Object.fromEntries(configNames.map(name => [name, process.env[name]]));
-  process.env.GIT_CONFIG_COUNT = '2';
-  process.env.GIT_CONFIG_KEY_0 = 'url.file:///' + source.replaceAll('\\', '/') + '.insteadOf'; process.env.GIT_CONFIG_VALUE_0 = url;
-  process.env.GIT_CONFIG_KEY_1 = process.env.GIT_CONFIG_KEY_0; process.env.GIT_CONFIG_VALUE_1 = sshUrl;
+  const head = git(source, 'rev-parse', 'HEAD');
+  const remoteLookup = async () => `ref: refs/heads/master\tHEAD\n${head}\tHEAD\n`;
+  const report = await inspectSetupSource({ harnessRoot, mode: 'existing', source: url }, { remoteLookup });
+  assert.equal(report.kind, 'remote');
+  assert.equal(report.git.head, head);
+  assert.deepEqual(report.files, []);
+  assert.ok(report.warnings.includes('remote-content-not-yet-inspected'));
+  const sshReport = await inspectSetupSource({ harnessRoot, mode: 'existing', source: sshUrl }, { remoteLookup });
+  assert.equal(sshReport.git.head, report.git.head);
+  await assert.rejects(() => import('node:fs/promises').then(fs => fs.stat(path.join(harnessRoot, 'project'))), /ENOENT/);
+});
+
+test('rejects Git URL rewrites to forbidden local transport before remote lookup', async t => {
+  const { harnessRoot, source } = await fixture(t);
+  const url = 'https://rewritten.invalid/repo.git';
+  const names = ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0'];
+  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  process.env.GIT_CONFIG_COUNT = '1';
+  process.env.GIT_CONFIG_KEY_0 = `url.file:///${source.replaceAll('\\', '/')}.insteadOf`;
+  process.env.GIT_CONFIG_VALUE_0 = url;
   try {
-    const report = await inspectSetupSource({ harnessRoot, mode: 'existing', source: url });
-    assert.equal(report.kind, 'remote');
-    assert.equal(report.git.head, git(source, 'rev-parse', 'HEAD'));
-    assert.deepEqual(report.files, []);
-    assert.ok(report.warnings.includes('remote-content-not-yet-inspected'));
-    const sshReport = await inspectSetupSource({ harnessRoot, mode: 'existing', source: sshUrl });
-    assert.equal(sshReport.git.head, report.git.head);
-    await assert.rejects(() => import('node:fs/promises').then(fs => fs.stat(path.join(harnessRoot, 'project'))), /ENOENT/);
+    await assert.rejects(inspectSetupSource({ harnessRoot, mode: 'existing', source: url }, {
+      remoteLookup: () => { throw new Error('lookup must not run'); }
+    }), /rewrite|transport/i);
   } finally {
     for (const [name, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
@@ -111,13 +123,45 @@ test('rejects unsafe source, destination, and ambiguous content', async t => {
 test('keeps secret-bearing and mixed configuration out of generic classification', async t => {
   const { harnessRoot, source } = await fixture(t);
   await mkdir(path.join(source, '.codex'));
-  await writeFile(path.join(source, '.codex', 'config.toml'), 'api_key = "SECRET_SENTINEL"\n');
+  await writeFile(path.join(source, '.codex', 'config.toml'), '"api_key" = "SECRET_SENTINEL"\n');
+  await writeFile(path.join(source, '.codex', 'settings.json'), '{"access_token":"SECRET_SENTINEL"}\n');
   await writeFile(path.join(source, '.codex', 'AGENTS.md'), 'Agent skill instructions for the customer project\n');
+  await writeFile(path.join(source, '.codex', 'workflow.md'), 'Acme deployment workflow\n');
   const report = await inspectSetupSource({ harnessRoot, mode: 'existing', source });
   const byPath = Object.fromEntries(report.files.map(file => [file.path, file]));
   assert.equal(byPath['.codex/config.toml'].classification, 'private-runtime');
+  assert.equal(byPath['.codex/settings.json'].classification, 'private-runtime');
   assert.equal(byPath['.codex/AGENTS.md'].classification, 'mixed');
+  assert.notEqual(byPath['.codex/workflow.md'].classification, 'generic');
   assert.equal(JSON.stringify(report).includes('SECRET_SENTINEL'), false);
+});
+
+test('a Git-dir-relative core.worktree inside the checkout is valid, external is not', async t => {
+  const { harnessRoot, source } = await fixture(t);
+  await writeFile(path.join(source, 'README.md'), 'source\n');
+  git(source, 'add', '.'); git(source, 'commit', '-qm', 'fixture');
+  git(source, 'config', '--local', 'core.worktree', '..');
+  const before = await snapshotTree(source);
+  const report = await inspectSetupSource({ harnessRoot, mode: 'existing', source });
+  assert.equal(report.kind, 'local');
+  assert.deepEqual(await snapshotTree(source), before);
+  git(source, 'config', '--local', 'core.worktree', '../..');
+  await assert.rejects(inspectSetupSource({ harnessRoot, mode: 'existing', source }), /core.worktree|Git root/i);
+});
+
+test('ref object IDs contribute to the local fingerprint', async t => {
+  const { harnessRoot, source } = await fixture(t);
+  await writeFile(path.join(source, 'README.md'), 'source\n');
+  git(source, 'add', '.'); git(source, 'commit', '-qm', 'fixture');
+  const older = git(source, 'rev-parse', 'HEAD');
+  await writeFile(path.join(source, 'README.md'), 'updated\n');
+  git(source, 'add', '.'); git(source, 'commit', '-qm', 'updated');
+  git(source, 'branch', 'review', older);
+  const first = await inspectSetupSource({ harnessRoot, mode: 'existing', source });
+  git(source, 'branch', '-f', 'review');
+  const second = await inspectSetupSource({ harnessRoot, mode: 'existing', source });
+  assert.ok(second.git.refs.some(ref => ref.name === 'refs/heads/review' && ref.oid === git(source, 'rev-parse', 'review')));
+  assert.notEqual(first.fingerprint, second.fingerprint);
 });
 
 test('rejects case-colliding destination and external source links', async t => {

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
@@ -13,9 +14,15 @@ const inside = (root, target) => {
 };
 const overlaps = (a, b) => inside(a, b) || inside(b, a);
 
-function git(cwd, args, { allowFailure = false } = {}) {
-  const result = spawnSync('git', args, { cwd, encoding: 'buffer', windowsHide: true, maxBuffer: 32 * 1024 * 1024,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' } });
+function git(cwd, args, { allowFailure = false, isolatedRemote = false } = {}) {
+  const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' };
+  for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_NAMESPACE']) delete env[name];
+  if (isolatedRemote) {
+    for (const name of Object.keys(env)) if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM|NOSYSTEM)$/.test(name)) delete env[name];
+    env.GIT_CONFIG_GLOBAL = process.platform === 'win32' ? 'NUL' : '/dev/null';
+    env.GIT_CONFIG_NOSYSTEM = '1';
+  }
+  const result = spawnSync('git', args, { cwd, encoding: 'buffer', windowsHide: true, maxBuffer: 32 * 1024 * 1024, env });
   if (result.error || (result.status !== 0 && !allowFailure)) throw new Error(`Git inspection failed: ${args[0]}`);
   return result.status === 0 ? result.stdout : Buffer.alloc(0);
 }
@@ -53,19 +60,27 @@ async function regularTree(root) {
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-function classify(relative, body) {
+async function canonicalMatch(harnessRoot, relative, body) {
+  const candidate = path.join(harnessRoot, ...relative.split('/'));
+  try {
+    if (!same(await realpath(candidate), candidate) || !(await lstat(candidate)).isFile()) return false;
+    return sha256(await readFile(candidate)) === sha256(body);
+  } catch { return false; }
+}
+
+async function classify(harnessRoot, relative, body) {
   const lower = relative.toLowerCase();
   if (!/^\.(ai|agents|codex)(\/|$)/.test(lower)) return ['not-applicable', 'source-user', 'outside-configuration'];
   if (/(^|\/)(runtime|logs?|cache|secrets?|credentials?|tokens?|\.env)(\/|\.|$)/i.test(lower)) return ['private-runtime', 'source-user', 'private-path'];
-  if (lower.startsWith('.ai/') && !/\/(skills|agents|templates)\//.test(lower)) return ['needs-review', 'source-user', 'unclassified-ai-material'];
   const sample = body.toString('utf8');
+  if (/(?:["']?(?:api[_-]?key|access[_-]?token|secret|password|private[_-]?key)["']?)\s*[:=]/i.test(sample)) return ['private-runtime', 'source-user', 'credential-clues'];
   if (sample.includes('\ufffd') || body.includes(0)) return ['needs-review', 'source-user', 'binary-or-unknown-content'];
-  if (/(?:api[_-]?key|access[_-]?token|secret|password|private[_-]?key)\s*[:=]/i.test(sample)) return ['private-runtime', 'source-user', 'credential-clues'];
+  if (lower.startsWith('.ai/') && !/\/(skills|agents|templates)\//.test(lower)) return ['needs-review', 'source-user', 'unclassified-ai-material'];
+  if (await canonicalMatch(harnessRoot, relative, body)) return ['generic', 'harness-generated', 'canonical-path-and-content-match'];
   const product = /\b(project|product|silo|customer|workspace|domain|business)\b/i.test(sample);
   const generic = /\b(agent|skill|workflow|test|review|instruction|tool|model|hook)\b/i.test(sample);
   if (product && generic) return ['mixed', 'source-user', 'generic-and-product-clues'];
   if (product) return ['product', 'source-user', 'product-clues'];
-  if (generic) return ['generic', 'source-user', 'generic-clues'];
   return ['needs-review', 'source-user', 'insufficient-evidence'];
 }
 
@@ -98,13 +113,17 @@ export async function assertSafeSetupDestination({ harnessRoot, destination }) {
   return { canonicalHarnessRoot, destinationState };
 }
 
-export async function inspectSetupSource({ harnessRoot, mode, source }) {
+export async function inspectSetupSource({ harnessRoot, mode, source }, { remoteLookup } = {}) {
   const canonicalHarnessRoot = await realpath(harnessRoot);
   if (mode !== 'existing') throw new Error('source inspection requires existing mode');
   if (typeof source !== 'string' || !source) throw new Error('source required');
   if (/^(https:\/\/|ssh:\/\/|git@)/i.test(source)) {
     const remote = remoteInfo(source);
-    const response = git(canonicalHarnessRoot, ['ls-remote', '--symref', source, 'HEAD']);
+    const effective = lines(git(canonicalHarnessRoot, ['ls-remote', '--get-url', source]))[0];
+    if (effective !== source) throw new Error('remote URL rewrite or transport forbidden');
+    const response = remoteLookup
+      ? Buffer.from(await remoteLookup(source))
+      : git(os.tmpdir(), ['-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', '-c', 'protocol.ssh.allow=always', 'ls-remote', '--symref', source, 'HEAD'], { isolatedRemote: true });
     const output = lines(response);
     const head = output.find(line => /^[a-f0-9]{40,64}\s+HEAD$/.test(line))?.split(/\s+/)[0];
     if (!head) throw new Error('remote HEAD unavailable');
@@ -120,7 +139,7 @@ export async function inspectSetupSource({ harnessRoot, mode, source }) {
   const gitStat = await lstat(dotGit).catch(() => null);
   if (!gitStat?.isDirectory() || gitStat.isSymbolicLink()) throw new Error('primary checkout required; linked worktree .git pointer forbidden');
   const configuredWorktree = lines(git(canonicalSource, ['config', '--local', '--get', 'core.worktree'], { allowFailure: true }))[0];
-  if (configuredWorktree && !same(path.resolve(canonicalSource, configuredWorktree), canonicalSource)) throw new Error('external core.worktree forbidden');
+  if (configuredWorktree && !same(path.resolve(dotGit, configuredWorktree), canonicalSource)) throw new Error('external core.worktree forbidden');
   const [top, gitDir] = lines(git(canonicalSource, ['rev-parse', '--show-toplevel', '--absolute-git-dir']));
   if (!same(await realpath(top), canonicalSource) || !same(await realpath(gitDir), dotGit)) throw new Error('source must own its Git repository');
   const head = lines(git(canonicalSource, ['rev-parse', 'HEAD'], { allowFailure: true }))[0] ?? null;
@@ -128,7 +147,10 @@ export async function inspectSetupSource({ harnessRoot, mode, source }) {
   const modified = new Set(nulPaths(git(canonicalSource, ['diff', 'HEAD', '--name-only', '-z'], { allowFailure: true })));
   const ignored = new Set(nulPaths(git(canonicalSource, ['ls-files', '-z', '--others', '--ignored', '--exclude-standard'])));
   const dirty = git(canonicalSource, ['status', '--porcelain=v1', '-z', '--untracked-files=all']).length > 0;
-  const refs = lines(git(canonicalSource, ['for-each-ref', '--format=%(refname) %(objectname)'])).map(line => line.split(' ')[0]);
+  const refs = lines(git(canonicalSource, ['for-each-ref', '--format=%(refname) %(objectname)'])).map(line => {
+    const [name, oid] = line.split(' ');
+    return { name, oid };
+  });
   const remoteNames = lines(git(canonicalSource, ['remote']));
   const remotes = remoteNames.map(name => {
     const url = lines(git(canonicalSource, ['remote', 'get-url', name]))[0];
@@ -142,7 +164,7 @@ export async function inspectSetupSource({ harnessRoot, mode, source }) {
   const files = [];
   for (const item of tree) {
     const gitClass = item.path === '.git' || item.path.startsWith('.git/') ? 'git-metadata' : ignored.has(item.path) ? 'ignored' : modified.has(item.path) ? 'modified' : tracked.has(item.path) ? 'tracked' : 'untracked';
-    const classification = gitClass === 'git-metadata' ? ['not-applicable', 'source-user', 'git-metadata'] : classify(item.path, await readFile(item.absolute));
+    const classification = gitClass === 'git-metadata' ? ['not-applicable', 'source-user', 'git-metadata'] : await classify(canonicalHarnessRoot, item.path, await readFile(item.absolute));
     files.push({ path: item.path, sha256: await hashFile(item.absolute), size: item.size, gitClass, classification: classification[0], ownership: classification[1], reason: classification[2] });
   }
   const gitInfo = { head, gitDirKind: 'directory', remotes, refs, dirty };
