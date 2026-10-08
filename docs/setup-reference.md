@@ -19,7 +19,7 @@ npm run setup
 
 설정은 새 프로젝트/기존 프로젝트, 기존 프로젝트라면 원본 경로 또는 Git 원격, 그리고 AI 도구(Codex, Claude Code, OpenCode, Antigravity)를 묻습니다. 기본 도구는 Codex입니다. 읽기 전용 계획을 먼저 보여 주며, 파일 변경·충돌·백업·검증 한계를 확인한 뒤 `apply <계획 해시 앞 12자리>`를 정확히 입력해야 적용합니다. 일반 실행에 프로젝트 ID, checkout, binding 인자는 없습니다.
 
-새 프로젝트는 비어 있거나 아직 없는 `project/`에 독립 Git 저장소를 만듭니다. 기존 로컬 프로젝트는 원본을 변경하지 않고 Git 기록, 커밋되지 않은 변경, 추적되지 않은 파일과 무시된 파일을 계획에 따라 복사합니다. 원격 프로젝트는 계획 시 파일 목록이 아직 확인되지 않으므로 적용 단계에서 pinned HEAD와 실제 충돌을 재검증합니다. 원본 파일은 이동되지 않습니다. 연결된 worktree, 목적지 충돌, 변경된 계획 또는 원본은 조용히 덮어쓰지 않고 중단합니다.
+새 프로젝트는 비어 있거나 아직 없는 `project/`에 독립 Git 저장소를 만듭니다. 기존 로컬 프로젝트는 원본을 변경하지 않고 Git 기록, 커밋되지 않은 변경, 추적되지 않은 파일과 무시된 파일을 계획에 따라 복사합니다. 원격 프로젝트는 계획 시 HEAD만 고정하고 파일 목록·파일별 충돌은 확인할 수 없습니다. 복제 후 새 충돌이 드러나면 `project/` 게시 전에 중단하며, 검토 가능한 로컬 checkout에서 새 계획을 만들어야 합니다. 원본 파일은 이동되지 않습니다. 연결된 worktree, 목적지 충돌, 변경된 계획 또는 원본은 조용히 덮어쓰지 않고 중단합니다.
 
 이미 설정된 설치에서 다른 도구를 선택하면 같은 `project/`의 업데이트 계획이 됩니다. 이전 도구의 파일을 몰래 삭제하지 않습니다. 충돌·사용자 수정 파일은 자동 덮어쓰지 않고 검토가 필요합니다.
 
@@ -61,11 +61,18 @@ Main의 모델은 사용자가 선택하거나 현재 설정을 상속합니다.
 
 ## AI 도구 파일과 검증 범위
 
-정본 역할·Skill은 Harness의 `harness/agents/`와 `.agents/skills/`에 있습니다. 설정·업데이트 계획은 선택한 도구의 관리 대상 파일만 `project/`에 배치합니다. Codex는 `.codex/`, Claude Code는 `.claude/`, OpenCode는 `.opencode/`, Antigravity는 `.agents/agents/` 경로를 사용합니다. 기존 사용자 파일은 소유권·해시·충돌 검사를 통과해야 하며, 관리 대상 밖의 파일은 변경하지 않습니다.
+정본 역할·Skill은 Harness의 `harness/agents/`와 `.agents/skills/`에 있습니다. 설정·업데이트 계획은 선택한 도구의 관리 대상 파일만 `project/`에 배치합니다. Codex는 `.codex/agents/*.toml`, `.codex/config.toml`, 선택적 `.codex/hooks.json`, `.agents/skills/*`를 사용합니다. Claude Code는 `.claude/agents/*.md`와 `.claude/skills/*`, OpenCode는 `.opencode/agents/*.md`와 `.agents/skills/*`, Antigravity는 `.agents/agents/*/agent.md`와 `.agents/skills/*`를 사용합니다. 기존 사용자 파일은 소유권·해시·충돌 검사를 통과해야 하며, 관리 대상 밖의 파일은 변경하지 않습니다.
 
 파일 생성 성공은 도구의 네이티브 역할 탐색, Skill 탐색, 권한, 훅 발송을 증명하지 않습니다. 설치 결과의 native smoke는 실제 새 세션에서 검증되기 전까지 미검증으로 표시합니다. Codex의 실제 검증 절차는 [네이티브 스모크 절차](native-smoke-worksheet.md)를 참고하세요. Claude Code, OpenCode, Antigravity도 생성 파일만으로 완료 지원이라고 주장하지 않습니다.
 
 기존 `scripts/export-target.mjs` 후보 묶음과 `scripts/sync.mjs` 일반 쓰기는 별도 실험 경로입니다. 새 설정 브리지가 파일을 적용할 수 있다는 사실이 기존 후보 설치·일반 sync의 네이티브 게이트를 해제하지 않습니다. 과거 절차가 필요하면 [상세 첫 사용 절차](advanced-first-use.md)와 [생성기 설명](cross-tool-generator.md)을 참조하세요. 이 고정 프로젝트의 일상 명령에 과거 selector 인자를 붙이지 마세요.
+
+## 문제 해결
+
+- `setup` 계획이 충돌을 보고하면 적용하지 말고 대상 파일과 소유권을 확인하세요. 원격 복제 뒤 처음 발견된 충돌은 게시 전에 중단되므로 로컬 checkout에서 파일 목록을 검토하고 새 계획을 만드세요. 원본 또는 `project/`를 삭제·reset해 충돌을 없애지 마세요.
+- `init`이 실패하면 먼저 설정이 적용되었는지, `project/.git`이 독립 Git 디렉터리인지 확인하세요. 이미 있는 runtime에 강제 초기화를 실행하지 말고 오류 내용을 보존하세요.
+- `status`가 설정을 찾지 못하거나 `preview:live`가 열리지 않으면 Harness 폴더에서 실행 중인지 확인하고 서버가 실제로 출력한 localhost 주소를 사용하세요. 브라우저에서 `file://`로 열지 마세요. 포트 오류가 나면 해당 서버 실행 상태를 확인하고 오류를 기록하세요.
+- 적용 실패 뒤 `.harness/`에 백업 또는 `journal`이 남았다면 복구 근거입니다. 임의로 지우거나 다른 설정 적용으로 덮지 말고, 소유된 파일과 현재 해시를 확인한 명시적 복구·검토 후 재시도하세요. 자동 복구 명령은 아직 안내하지 않습니다.
 
 ## 점검과 보존
 

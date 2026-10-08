@@ -402,6 +402,8 @@ test('guide safety copy preserves the source and uses only fixed-project command
     const existingCommands = preferences.t('guide.existing.commands');
     const connectedCommands = preferences.t('guide.connected.commands');
     assert.match(existing, locale === 'en' ? /original project.*untouched/ : /원본 프로젝트.*보존/);
+    assert.match(existing, locale === 'en' ? /remote.*not inspected/i : /원격.*미확인/);
+    assert.match(existing, locale === 'en' ? /local checkout.*review/i : /로컬 checkout.*검토/);
     assert.doesNotMatch(existing, /Remove-Item|Get-ChildItem/i);
     for (const command of [newCommands, existingCommands, connectedCommands]) {
       assert.doesNotMatch(command, /--project|--checkout|--binding/);
@@ -430,6 +432,9 @@ test('start documents link to current preservation and safe preview guidance', a
   assert.match(firstUse, /기존 파일은 검토 없이 덮어쓰지 않/);
   assert.match(setupReference, /원본 저장소와 기존 runtime[\s\S]{0,80}삭제하거나 초기화하지 마세요/);
   assert.match(setupReference, /file:\/\/[\s\S]{0,80}지원되는 가이드 열람 경로가 아닙니다/);
+  assert.match(readme, /원격[\s\S]{0,140}파일 목록.*확인되지 않/);
+  assert.match(setupReference, /Codex[\s\S]{0,120}\.agents\/skills\/[\s\S]{0,100}OpenCode[\s\S]{0,120}\.agents\/skills\/[\s\S]{0,100}Antigravity[\s\S]{0,120}\.agents\/skills\//);
+  assert.match(setupReference, /## 문제 해결[\s\S]*setup[\s\S]*init[\s\S]*preview:live[\s\S]*journal/);
 });
 
 test('rejects preview links that resolve outside preview root', async t => {
