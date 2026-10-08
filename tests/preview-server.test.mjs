@@ -338,18 +338,23 @@ test('staged setup guide advertises backed commands with selected-project contex
   assert.doesNotMatch(guide, /Remove-Item|Get-ChildItem|\.ai\/tasks\/\*\.md/i);
 });
 
-test('staged setup preserves existing project state and requires explicit context', async () => {
-  const messages = await readFile(path.resolve('preview/preferences.js'), 'utf8');
-  const readme = await readFile(path.resolve('README.md'), 'utf8');
-  assert.match(messages, /Preserve existing runtime, Task Specs, memory, claims, and sessions/);
-  assert.match(readme, /기존 프로젝트 runtime, 작업 명세, 메모리, 점유, 열린 세션을 보존하세요/);
-  for (const guide of [messages, readme]) {
-    assert.match(guide, /--project/);
-    assert.match(guide, /--checkout/);
-    assert.match(guide, /--binding/);
-    assert.doesNotMatch(guide, /Remove-Item/);
+test('guide safety copy preserves existing project state and requires explicit context', async () => {
+  const context = { globalThis: {}, document: { documentElement: { dataset: {}, setAttribute() {} } } };
+  runInNewContext(await readFile(path.resolve('preview/preferences.js'), 'utf8'), context);
+  const preferences = context.globalThis.PreviewPreferences.create(context.document, { storage: null });
+  for (const locale of ['en', 'ko']) {
+    preferences.setLocale(locale);
+    const existing = preferences.t('guide.existing.body');
+    const newCommands = preferences.t('guide.new.commands');
+    const connectedCommands = preferences.t('guide.connected.commands');
+    assert.match(existing, locale === 'en' ? /original project and runtime untouched/ : /원본 프로젝트와 runtime을 그대로 보존/);
+    assert.doesNotMatch(existing, /Remove-Item|Get-ChildItem/i);
+    for (const command of [newCommands, connectedCommands]) {
+      assert.match(command, /--project/);
+      assert.match(command, /--checkout/);
+      assert.match(command, /--binding/);
+    }
   }
-  assert.match(readme, /preview\/index\.html.*file:\/\//);
 });
 
 test('rejects preview links that resolve outside preview root', async t => {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
+import { createGuidePanel } from '../preview/guide-panel.js';
 
 class Element {
   constructor(tagName, ownerDocument) {
@@ -202,4 +203,23 @@ test('both guide locales distinguish read-only generator inspection from gated w
     assert.match(network, /npm run preview:live -- --project .* --checkout .* --binding /);
     assert.doesNotMatch(network, /(?:^|\n)(?:Real runtime|실제 runtime): npm run preview:live(?:\n|<)/);
   }
+});
+
+test('guide panel uses live preferences for both locale paths and selected-project commands', () => {
+  const { api, document, storage } = fixture();
+  const preferences = api.create(document, { storage });
+  const english = createGuidePanel({ document, translate: preferences.t });
+  const choices = english.children[1].children;
+  assert.equal(choices[0].textContent, 'Start a new project');
+  assert.equal(choices[2].textContent, 'Open an already connected project');
+  choices[2].click();
+  assert.match(english.children[3].children[1].textContent, /^npm run preview:live -- --project/);
+  assert.doesNotMatch(english.children[3].children[1].textContent, /npm run init/);
+
+  preferences.setLocale('ko');
+  const korean = createGuidePanel({ document, translate: preferences.t });
+  assert.equal(korean.children[1].children[0].textContent, '새 프로젝트 시작');
+  korean.children[1].children[1].click();
+  assert.match(korean.children[3].children[0].textContent, /원본 프로젝트와 runtime을 그대로 보존/);
+  assert.equal(korean.children[3].children.length, 1);
 });
