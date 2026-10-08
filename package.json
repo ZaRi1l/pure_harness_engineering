@@ -6,7 +6,7 @@
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "init": "node scripts/runtime-state.mjs init",
-    "test": "node tests/all.test.mjs",
+    "test": "node --test tests/all.test.mjs",
     "self-check": "node scripts/self-check.mjs",
     "status": "node scripts/status.mjs",
     "watchdog": "node scripts/watchdog.mjs",

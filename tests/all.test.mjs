@@ -34,3 +34,4 @@ import './source-inventory.test.mjs';
 import './native-bridge.test.mjs';
 import './project-setup.test.mjs';
 import './setup-cli.test.mjs';
+import './offline-gallery.test.mjs';
