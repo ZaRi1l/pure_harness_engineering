@@ -267,6 +267,44 @@ test('task editor relocalizes an open form in place without losing draft or focu
   editor.destroy();
 });
 
+test('task editor relocalizes persistent validation, conflict, save, and network messages without losing drafts', async () => {
+  for (const scenario of ['validation', 'conflict', 'save', 'network']) {
+    const { host, document } = taskDOM();
+    document.documentElement = { dataset: {}, setAttribute() {}, style: { setProperty() {} } };
+    const context = { document, globalThis: {} };
+    runInNewContext(preferencesSource, context);
+    const preferences = context.globalThis.PreviewPreferences.create(document, { storage: null });
+    const current = task('a', { title: 'Server version', revision: 'rev-2' });
+    const fetchImpl = async () => scenario === 'network' ? Promise.reject(Error('PRIVATE_PATH'))
+      : scenario === 'conflict' ? { ok: false, status: 409, json: async () => ({ current }) }
+        : { ok: false, status: 500, json: async () => ({}) };
+    const editor = createTaskEditor(host, { fetchImpl, translate: key => preferences.t(key) });
+    editor.update(scenario === 'conflict' ? [task()] : [], 'write-token');
+    action(host, scenario === 'conflict' ? 'edit-a' : 'add').click();
+    const title = field(host, 'title');
+    title.value = scenario === 'validation' ? '' : 'My preserved draft';
+    title.focus(); title.scrollTop = 17;
+    action(host, 'save').click();
+    await new Promise(resolve => setImmediate(resolve));
+    const kind = scenario === 'validation' ? 'validation' : scenario === 'conflict' ? 'conflict' : 'error';
+    const key = { validation: 'task.invalidTitle', conflict: 'task.conflict', save: 'task.saveFailed', network: 'task.networkError' }[scenario];
+    const message = find(host, 'task-message', kind);
+    assert.ok(message, `${scenario} message is visible`);
+    assert.ok(message.textContent.startsWith(preferences.t(key)));
+    preferences.setLocale('ko'); editor.relocalize();
+    assert.equal(find(host, 'task-message', kind), message);
+    assert.ok(message.textContent.startsWith(preferences.t(key)));
+    assert.equal(title.value, scenario === 'validation' ? '' : 'My preserved draft');
+    assert.equal(document.activeElement, title);
+    assert.equal(title.scrollTop, 17);
+    if (scenario === 'conflict') assert.match(message.textContent, /대기.*Server version/);
+    assert.doesNotMatch(message.textContent, /PRIVATE_PATH/);
+    preferences.setLocale('en'); editor.relocalize();
+    assert.ok(message.textContent.startsWith(preferences.t(key)));
+    editor.destroy();
+  }
+});
+
 test('task editor keeps edit revision and draft on conflict until explicit reload', async () => {
   const { host, document } = taskDOM();
   let request;

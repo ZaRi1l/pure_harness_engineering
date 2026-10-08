@@ -133,6 +133,17 @@ function localizeDashboard() {
   document.querySelectorAll('[data-dashboard-label]').forEach(node => { node.textContent = t(node.getAttribute('data-dashboard-label')); });
 }
 
+function localizeErrors() {
+  for (const [selector, key] of [
+    ['#tasks [data-dashboard-error="tasks"]', 'task.fetchFailed'],
+    ['#dashboard-error', 'dashboard.unavailable'],
+    ['#preview-error', 'preview.unavailable']
+  ]) {
+    const message = document.querySelector(selector);
+    if (message) message.textContent = t(key);
+  }
+}
+
 function elapsed(at, observedAt) {
   const parsed = Date.parse(at || '');
   if (!Number.isFinite(parsed)) return t('common.unknown');
@@ -168,10 +179,10 @@ async function paintTasks() {
     taskEditor.update(taskDocument.tasks, taskDocument.write_token ?? null);
     taskFetchError?.remove?.();
     taskFetchError = undefined;
-  } catch (error) {
+  } catch {
     if (requestGeneration !== taskPollGeneration || !document.querySelector('#tasks')) return;
-    if (!taskFetchError) { taskFetchError = el('p', 'bad'); document.querySelector('#tasks').append(taskFetchError); }
-    taskFetchError.textContent = `${t('section.tasks')}: ${error.message}`;
+    if (!taskFetchError) { taskFetchError = el('p', 'bad'); taskFetchError.setAttribute?.('data-dashboard-error', 'tasks'); document.querySelector('#tasks').append(taskFetchError); }
+    taskFetchError.textContent = t('task.fetchFailed');
   }
 }
 
@@ -225,11 +236,11 @@ async function paint() {
     verification.className = status.verification?.status === 'passed' ? 'ok' : 'bad';
     updateNetwork(snapshot);
     document.querySelector('#dashboard-error')?.remove();
-  } catch (error) {
+  } catch {
     if (requestGeneration !== snapshotPollGeneration || !document.querySelector('#goal')) return;
     let message = document.querySelector('#dashboard-error');
     if (!message) { message = el('p', 'bad'); message.id = 'dashboard-error'; app.append(message); }
-    message.textContent = t('dashboard.unavailable', { message: error.message });
+    message.textContent = t('dashboard.unavailable');
   }
 }
 
@@ -283,10 +294,10 @@ async function paintPreview() {
       artifactRenderKey = nextArtifactKey;
     }
     document.querySelector('#preview-error')?.remove();
-  } catch (error) {
+  } catch {
     let message = document.querySelector('#preview-error');
     if (!message) { message = el('p', 'bad'); message.id = 'preview-error'; app.append(message); }
-    message.textContent = t('preview.unavailable', { message: error.message });
+    message.textContent = t('preview.unavailable');
   }
 }
 
@@ -335,6 +346,7 @@ preferences.subscribe(({ locale }) => {
   networkController?.setTranslate?.(t);
   artifactRenderKey = '';
   localizeShell();
+  localizeErrors();
   route();
 });
 localizeShell();

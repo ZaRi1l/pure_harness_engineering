@@ -33,8 +33,13 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
   host.replaceChildren(toolbar, formHost, rows);
   let tasks = [], writeToken = null, active = null, oldestFirst = pageSortOldestFirst, generation = 0, destroyed = false;
   const adopted = new Map();
-  const showMessage = (kind, text) => {
+  const messageText = key => key === 'task.conflict' && active?.conflict
+    ? `${translate(key)}: ${translate(`task.status.${active.conflict.status}`)} — ${active.conflict.title} — ${active.conflict.branch || translate('common.none')}`
+    : translate(key);
+  const showMessage = (kind, key) => {
     if (!active) return;
+    active.messageKeys[kind] = key;
+    const text = messageText(key);
     let node = active.messages[kind];
     if (!node) {
       node = make('p', text, kind === 'validation' || kind === 'error' ? 'bad' : 'muted');
@@ -43,7 +48,7 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
       active.messageHost.append(node);
     } else node.textContent = text;
   };
-  const clearMessage = kind => { active?.messages[kind]?.remove(); if (active) delete active.messages[kind]; };
+  const clearMessage = kind => { active?.messages[kind]?.remove(); if (active) { delete active.messages[kind]; delete active.messageKeys[kind]; } };
   const renderRows = () => {
     rows.replaceChildren();
     const visible = new Map(tasks.map(task => [task.id, task]));
@@ -89,15 +94,15 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
     const messageHost = make('div'); form.append(messageHost);
     const saveButton = button('task.save', 'save', save), cancelButton = button('task.cancel', 'cancel', cancel);
     form.append(saveButton, cancelButton);
-    active = { mode, id: record?.id, originalRevision: record?.revision, requestId: mode === 'add' ? globalThis.crypto.randomUUID() : null, sentBody: null, fields: { title, status, branch }, formLabels, saveButton, cancelButton, messages: {}, messageHost, form, conflict: null };
+    active = { mode, id: record?.id, originalRevision: record?.revision, requestId: mode === 'add' ? globalThis.crypto.randomUUID() : null, sentBody: null, fields: { title, status, branch }, formLabels, saveButton, cancelButton, messages: {}, messageKeys: {}, messageHost, form, conflict: null };
     formHost.replaceChildren(form); renderToolbar(); renderRows(); title.focus?.();
   };
   async function save() {
     if (!active || !writeToken || active.conflict || active.saving) return;
     const draft = active;
     const title = draft.fields.title.value.trim(), branch = draft.fields.branch.value.trim();
-    if (!draft.sentBody && (!title || title.length > 300)) { showMessage('validation', translate('task.invalidTitle')); return; }
-    if (!draft.sentBody && (branch.length > 120 || (branch && /[\u0000-\u001f\u007f]/.test(branch)))) { showMessage('validation', translate('task.invalidBranch')); return; }
+    if (!draft.sentBody && (!title || title.length > 300)) { showMessage('validation', 'task.invalidTitle'); return; }
+    if (!draft.sentBody && (branch.length > 120 || (branch && /[\u0000-\u001f\u007f]/.test(branch)))) { showMessage('validation', 'task.invalidBranch'); return; }
     clearMessage('validation'); clearMessage('error');
     draft.saving = true;
     const requestId = ++generation;
@@ -113,17 +118,17 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
       if (destroyed || requestId !== generation || active !== draft) return;
       if (response.status === 409 && result.current) {
         draft.conflict = result.current;
-        showMessage('conflict', `${translate('task.conflict')}: ${translate(`task.status.${result.current.status}`)} — ${result.current.title} — ${result.current.branch || translate('common.none')}`);
+        showMessage('conflict', 'task.conflict');
         if (!draft.reloadButton) { draft.reloadButton = button('task.reload', 'reload', () => { const current = draft.conflict; cancel(); start('edit', current); }); draft.messageHost.append(draft.reloadButton); }
       } else if (!response.ok) {
         if (draft.mode === 'add') { draft.fields.title.readOnly = true; draft.fields.status.disabled = true; draft.fields.branch.readOnly = true; }
-        showMessage('error', translate('task.saveFailed'));
+        showMessage('error', 'task.saveFailed');
       }
       else { adopted.set(result.id, { task: result, priorRevision: draft.originalRevision ?? null }); cancel(); }
     } catch {
       if (destroyed || requestId !== generation || active !== draft) return;
       if (draft.mode === 'add') { draft.fields.title.readOnly = true; draft.fields.status.disabled = true; draft.fields.branch.readOnly = true; }
-      showMessage('error', translate('task.networkError'));
+      showMessage('error', 'task.networkError');
       if (!draft.retryButton) { draft.retryButton = button('task.retry', 'retry', save); draft.messageHost.append(draft.retryButton); }
     } finally { draft.saving = false; }
   }
@@ -139,6 +144,7 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
       active.cancelButton.textContent = translate('task.cancel');
       if (active.reloadButton) active.reloadButton.textContent = translate('task.reload');
       if (active.retryButton) active.retryButton.textContent = translate('task.retry');
+      for (const [kind, key] of Object.entries(active.messageKeys)) showMessage(kind, key);
     },
     destroy() { destroyed = true; generation++; active = null; host.replaceChildren(); }
   };

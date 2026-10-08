@@ -33,13 +33,13 @@ const tasks = (title = 'Current task', writeToken = 'fresh-token') => ({
 });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 
-async function mountIntegratedDashboard({ fetchImpl, hash = '#dashboard' }) {
+async function mountIntegratedDashboard({ fetchImpl, hash = '#dashboard', DateImpl = Date }) {
   const document = createDocument();
   const listeners = new Map();
   const location = { hash, origin: document.defaultView.location.origin };
   let interval;
   const context = {
-    document, location, URL, crypto: globalThis.crypto,
+    document, location, URL, Date: DateImpl, crypto: globalThis.crypto,
     fetch: fetchImpl,
     addEventListener: (name, listener) => listeners.set(name, listener),
     setInterval: listener => { interval = listener; },
@@ -186,4 +186,86 @@ test('dashboard-integrated-artifact-privacy', async () => {
   assert.match(host.textContent, /not supported|safety policy/i);
   assert.equal(host.querySelector('[data-action="open"]').getAttribute('aria-disabled'), 'true');
   assert.doesNotMatch(host.textContent, /SECRET_BODY|TOP_SECRET/);
+});
+
+test('dashboard failure notices stay generic and translate while a task draft remains open', async () => {
+  const failures = new Set();
+  const fetchImpl = async url => {
+    if (url === '/runtime/catalog') return response({ agents: [], skills: [] });
+    if (failures.has(url)) throw Error('SECRET_PRIVATE_PATH\\private-rollout.jsonl OUTPUT_SENTINEL');
+    if (url === '/runtime/tasks') return response(tasks());
+    if (url === '/runtime/telemetry') return response(telemetry());
+    if (url === '/runtime/task-specs') return response({ taskSpecs: [] });
+    return response(snapshot());
+  };
+  const ui = await mountIntegratedDashboard({ fetchImpl });
+  const { document } = ui;
+  document.querySelector('#tasks [data-task-action="add"]').click();
+  const draft = document.querySelector('#tasks [data-task-field="title"]');
+  draft.value = 'unsaved'; draft.focus(); draft.scrollTop = 19;
+  failures.add('/runtime/tasks');
+  await ui.tick();
+  assert.match(document.querySelector('#tasks [data-dashboard-error="tasks"]').textContent, /Tasks.*unavailable|Could not load tasks/i);
+  assert.equal(document.querySelector('#dashboard-error'), null);
+  assert.doesNotMatch(document.body.textContent, /SECRET_PRIVATE_PATH|private-rollout\.jsonl|OUTPUT_SENTINEL/);
+  ui.preferences.setLocale('ko'); await ui.settle();
+  assert.match(document.querySelector('#tasks [data-dashboard-error="tasks"]').textContent, /작업.*읽|작업.*불러/);
+  assert.equal(document.querySelector('#tasks [data-task-field="title"]'), draft);
+  assert.equal(draft.value, 'unsaved');
+  assert.equal(document.activeElement, draft);
+  assert.equal(draft.scrollTop, 19);
+  ui.preferences.setLocale('en'); await ui.settle();
+  assert.match(document.querySelector('#tasks [data-dashboard-error="tasks"]').textContent, /Tasks unavailable/);
+
+  failures.clear(); failures.add('/runtime/snapshot');
+  await ui.tick();
+  assert.equal(document.querySelector('#tasks [data-dashboard-error="tasks"]'), null);
+  assert.match(document.querySelector('#dashboard-error').textContent, /Dashboard unavailable/);
+  ui.preferences.setLocale('ko'); await ui.settle();
+  assert.match(document.querySelector('#dashboard-error').textContent, /대시보드/);
+  ui.preferences.setLocale('en'); await ui.settle();
+  assert.match(document.querySelector('#dashboard-error').textContent, /Dashboard unavailable/);
+
+  failures.clear(); failures.add('/runtime/telemetry');
+  await ui.tick();
+  assert.equal(document.querySelector('#dashboard-error'), null);
+  assert.ok(document.querySelector('[data-telemetry-state="stale"]'));
+  ui.preferences.setLocale('ko'); await ui.settle();
+  assert.match(document.querySelector('[data-telemetry-state="stale"]').textContent, /오래된 값/);
+  ui.preferences.setLocale('en'); await ui.settle();
+  assert.match(document.querySelector('[data-telemetry-state="stale"]').textContent, /Stale/);
+
+  failures.clear(); failures.add('/runtime/task-specs');
+  await ui.navigate('#preview');
+  assert.match(document.querySelector('#preview-error').textContent, /Preview Lab unavailable/);
+  ui.preferences.setLocale('ko'); await ui.settle();
+  assert.match(document.querySelector('#preview-error').textContent, /미리보기 랩/);
+  assert.doesNotMatch(document.body.textContent, /SECRET_PRIVATE_PATH|private-rollout\.jsonl|OUTPUT_SENTINEL/);
+  ui.preferences.setLocale('en'); await ui.settle();
+  assert.match(document.querySelector('#preview-error').textContent, /Preview Lab unavailable/);
+});
+
+test('reported-running age buckets never claim native liveness at a fixed one-hour boundary', async () => {
+  const at = '2026-09-25T12:00:00Z';
+  const FixedDate = class extends Date { static now() { return Date.parse(at); } };
+  const current = snapshot();
+  current.status.active_agents = [
+    { id: 'edge', role: 'worker', current_task: 'edge', started_at: '2026-09-25T11:00:00Z' },
+    { id: 'older', role: 'worker', current_task: 'older', started_at: '2026-09-25T10:59:59Z' },
+    { id: 'missing', role: 'worker', current_task: 'missing' },
+    { id: 'invalid', role: 'worker', current_task: 'invalid', started_at: 'not-a-date' },
+    { id: 'future', role: 'worker', current_task: 'future', started_at: '2026-09-25T12:00:01Z' }
+  ];
+  const fetchImpl = async url => response(url === '/runtime/catalog' ? { agents: [], skills: [] }
+    : url === '/runtime/tasks' ? tasks()
+      : url === '/runtime/telemetry' ? telemetry() : current);
+  const ui = await mountIntegratedDashboard({ fetchImpl, DateImpl: FixedDate });
+  const text = ui.document.querySelector('#agents').textContent;
+  assert.match(text, /edge.*60m.*reported running.*within past hour/s);
+  assert.match(text, /older.*60m.*not started\/resumed within past hour.*liveness unconfirmed/s);
+  assert.match(text, /missing.*unknown.*liveness unconfirmed/s);
+  assert.match(text, /invalid.*unknown.*liveness unconfirmed/s);
+  assert.match(text, /future.*future start.*liveness unconfirmed/s);
+  assert.match(text, /Reported running: 5.*within past hour: 1.*unknown start: 4.*No live liveness check/s);
+  assert.doesNotMatch(text, /0 live agents|confirmed live/i);
 });
