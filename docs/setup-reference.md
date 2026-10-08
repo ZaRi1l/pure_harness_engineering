@@ -35,7 +35,7 @@ npm run status
 npm run preview:live
 ```
 
-`preview:live`가 출력한 localhost URL에 `#guide`를 붙여 여세요. 서버는 `Ctrl+C`로 종료합니다. 가이드 소스는 [preview/index.html](../preview/index.html)이며 `file://` 직접 열기는 지원되는 가이드 열람 경로가 아닙니다. `npm run preview`는 정적 스냅샷을 한 번 저장하고 갱신하지 않습니다. `npm run watchdog`는 결정론적 이상 경고와 이벤트를 기록합니다.
+`preview:live`가 실제로 출력한 localhost URL에 `#guide`를 붙여 여세요. 서버는 `Ctrl+C`로 종료합니다. live 가이드 소스는 [preview/index.html](../preview/index.html)이며 이를 `file://`로 직접 열기는 지원되는 가이드 열람 경로가 아닙니다. 별도 [오프라인 갤러리](../offline-gallery/index.html)는 `file://`로 열 수 있고, 내장 예시가 차단되면 [독립 예시](../offline-gallery/tasks/example.html)를 따로 엽니다. 갤러리는 live runtime 대시보드가 아닙니다. `npm run preview`는 정적 스냅샷을 한 번 저장하고 갱신하지 않습니다. `npm run watchdog`는 결정론적 이상 경고와 이벤트를 기록합니다.
 
 Preview Lab은 기록된 작업 명세와 등록된 UI 아티팩트를 읽기 전용으로 보여 줍니다. 대시보드 기록은 실제 에이전트 생존이나 작업 완료를 자동으로 증명하지 않습니다. 작업 상태 변경은 검증된 근거에 따라 엔진 명령으로 수행하세요. 같은 checkout의 겹치는 파일 점유는 순차 처리하거나 별도 worktree로 격리합니다.
 
@@ -63,7 +63,9 @@ Main의 모델은 사용자가 선택하거나 현재 설정을 상속합니다.
 
 정본 역할·Skill은 Harness의 `harness/agents/`와 `.agents/skills/`에 있습니다. 설정·업데이트 계획은 선택한 도구의 관리 대상 파일만 `project/`에 배치합니다. Codex는 `.codex/agents/*.toml`, `.codex/config.toml`, 선택적 `.codex/hooks.json`, `.agents/skills/*`를 사용합니다. Claude Code는 `.claude/agents/*.md`와 `.claude/skills/*`, OpenCode는 `.opencode/agents/*.md`와 `.agents/skills/*`, Antigravity는 `.agents/agents/*/agent.md`와 `.agents/skills/*`를 사용합니다. 기존 사용자 파일은 소유권·해시·충돌 검사를 통과해야 하며, 관리 대상 밖의 파일은 변경하지 않습니다.
 
-파일 생성 성공은 도구의 네이티브 역할 탐색, Skill 탐색, 권한, 훅 발송을 증명하지 않습니다. 설치 결과의 native smoke는 실제 새 세션에서 검증되기 전까지 미검증으로 표시합니다. Codex의 실제 검증 절차는 [네이티브 스모크 절차](native-smoke-worksheet.md)를 참고하세요. Claude Code, OpenCode, Antigravity도 생성 파일만으로 완료 지원이라고 주장하지 않습니다.
+파일 배치와 기본 CLI 점검은 도구의 네이티브 역할 탐색, Skill 탐색, 권한, 훅 발송을 증명하지 않습니다. 2026-10-08 현재 새 Codex 세션의 native smoke는 아직 완료되지 않았습니다. 생성된 AGENTS의 점유 명령 수정이 검토 중이고 시험 환경의 Codex provider 연결도 사용할 수 없어, 실제 위임·훅 근거가 없습니다. Claude Code, OpenCode, Antigravity에도 실제 네이티브 성공을 주장하지 않습니다. [네이티브 스모크 절차](native-smoke-worksheet.md)는 검증 절차이지 통과 기록이 아닙니다.
+
+같은 날짜의 준비 검증에서는 원격이 없는 빈 프로젝트의 독립 복사본에서 대화형 `setup`, `init`, `status`, `self-check`가 각각 종료 코드 0이었고, 전체 코드 테스트는 611개 통과·5개 건너뜀·실패 0개였습니다. 이는 설정·CLI·테스트 근거이며 네이티브 실행 검증은 아닙니다.
 
 기존 `scripts/export-target.mjs` 후보 묶음과 `scripts/sync.mjs` 일반 쓰기는 별도 실험 경로입니다. 새 설정 브리지가 파일을 적용할 수 있다는 사실이 기존 후보 설치·일반 sync의 네이티브 게이트를 해제하지 않습니다. 과거 절차가 필요하면 [상세 첫 사용 절차](advanced-first-use.md)와 [생성기 설명](cross-tool-generator.md)을 참조하세요. 이 고정 프로젝트의 일상 명령에 과거 selector 인자를 붙이지 마세요.
 
