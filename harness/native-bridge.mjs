@@ -180,12 +180,30 @@ async function manifest(harnessRoot, target) {
   if (!data) return null;
   try { return JSON.parse(data); } catch { throw new Error('invalid bridge manifest'); }
 }
+async function otherSharedOwners(harnessRoot, projectRoot, setupId, selectedTarget) {
+  const shared = new Map();
+  for (const otherTarget of Object.keys(targets).filter(id => id !== selectedTarget)) {
+    const record = await manifest(harnessRoot, otherTarget);
+    if (!record) continue;
+    if (record.setupId !== setupId || record.projectRoot !== path.resolve(projectRoot) || !Array.isArray(record.actions))
+      throw new Error(`incompatible active bridge ownership: ${otherTarget}`);
+    for (const entry of record.actions) {
+      if (entry.path !== 'AGENTS.md' && !entry.path.startsWith('.agents/skills/')) continue;
+      const existing = shared.get(entry.path);
+      if (existing && (existing.entry.afterSha256 !== entry.afterSha256 || existing.entry.beforeSha256 !== entry.beforeSha256
+          || existing.entry.backupSha256 !== entry.backupSha256)) throw new Error(`conflicting shared bridge ownership: ${entry.path}`);
+      shared.set(entry.path, { entry, target: otherTarget });
+    }
+  }
+  return shared;
+}
 
 export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = projectRoot, target, setupId, profile = 'core' } = {}) {
   assertRoots(harnessRoot, projectRoot, target, setupId);
   if (!path.isAbsolute(inputRoot) || !['core', 'all'].includes(profile)) throw new Error('invalid bridge input/profile');
   const priorManifest = await manifest(harnessRoot, target);
   if (priorManifest && priorManifest.setupId !== setupId) throw new Error('bridge setupId mismatch');
+  const shared = await otherSharedOwners(harnessRoot, projectRoot, setupId, target);
   const compatibility = JSON.parse(await readFile(path.join(harnessRoot, 'harness/compatibility.json'), 'utf8'));
   const roles = await loadRoles(harnessRoot, profile), skills = await listSkills(harnessRoot, profile);
   const prior = new Map((priorManifest?.actions ?? []).map(item => [item.path.toLowerCase(), item]));
@@ -214,7 +232,7 @@ export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = pr
     add('.codex/hooks.json', hooks ?? '', hooks === null ? 'conflict' : 'hooks');
   }
   let agentsInput = (await bytes(await safePath(inputRoot, 'AGENTS.md', target)))?.toString('utf8') ?? '';
-  if (prior.has('agents.md')) agentsInput = stripOwnedAgents(agentsInput);
+  if (prior.has('agents.md') || shared.has('AGENTS.md')) agentsInput = stripOwnedAgents(agentsInput);
   const agents = mergeAgents(agentsInput, harnessRoot);
   add('AGENTS.md', agents ?? '', agents === null ? 'conflict' : 'instructions');
   const actions = [];
@@ -222,10 +240,12 @@ export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = pr
     const before = await bytes(await safePath(inputRoot, item.path, target));
     const beforeSha256 = before ? sha(before) : null;
     const owned = prior.get(item.path.toLowerCase());
+    const borrowed = shared.get(item.path)?.entry;
     let action = item.kind === 'conflict' ? 'conflict' : !before ? 'create' : before.equals(item.body) ? 'unchanged'
       : owned && owned.afterSha256 === beforeSha256 ? 'replace-owned'
       : ['registry', 'hooks', 'instructions'].includes(item.kind) && !owned ? 'append-managed-block' : 'conflict';
     if (owned && owned.afterSha256 !== beforeSha256) action = 'conflict';
+    if (borrowed && (borrowed.afterSha256 !== beforeSha256 || borrowed.afterSha256 !== sha(item.body))) action = 'conflict';
     actions.push({ path: item.path, kind: item.kind, sourcePath: item.sourcePath ?? null, action, beforeSha256,
       afterSha256: action === 'conflict' ? null : sha(item.body) });
   }
@@ -267,7 +287,8 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
     const desired = planBodies.get(replay);
     if (plan.actions.some(item => item.action === 'conflict')) throw new Error('bridge plan contains review conflict');
     const priorManifest = await manifest(harnessRoot, plan.target);
-    const journal = { schemaVersion: 1, setupId: plan.setupId, target: plan.target, priorManifest, actions: [] };
+    const shared = await otherSharedOwners(harnessRoot, plan.projectRoot, plan.setupId, plan.target);
+    const journal = { schemaVersion: 1, setupId: plan.setupId, target: plan.target, priorManifest, actions: [], borrowedBackups: [] };
     for (const item of plan.actions) {
       if (!allowed(item.path, plan.target)) throw new Error('bridge path not allowlisted');
       const actual = await bytes(await safePath(outputRoot, item.path, plan.target));
@@ -298,6 +319,25 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
         const { currentBeforeBase64, backupCreated, ...recordEntry } = item;
         retained.set(item.path.toLowerCase(), recordEntry);
       }
+      for (const item of plan.actions.filter(action => action.action === 'unchanged')) {
+        if (retained.has(item.path.toLowerCase())) continue;
+        const borrowed = shared.get(item.path);
+        if (!borrowed) continue;
+        if (borrowed.entry.afterSha256 !== item.afterSha256) throw new Error(`shared bridge bytes changed: ${item.path}`);
+        if (borrowed.entry.backupSha256) {
+          const sourceBackup = await bytes(await backupPath(harnessRoot, plan.setupId, borrowed.target, item.path));
+          if (!sourceBackup || sha(sourceBackup) !== borrowed.entry.backupSha256) throw new Error(`shared bridge backup drift: ${item.path}`);
+          const destinationBackup = await backupPath(harnessRoot, plan.setupId, plan.target, item.path);
+          const existingBackup = await bytes(destinationBackup);
+          if (existingBackup && sha(existingBackup) !== borrowed.entry.backupSha256) throw new Error(`shared bridge backup collision: ${item.path}`);
+          if (!existingBackup) {
+            journal.borrowedBackups.push(item.path);
+            await atomicWrite(journalFile, JSON.stringify(journal));
+            await atomicWrite(destinationBackup, sourceBackup);
+          }
+        }
+        retained.set(item.path.toLowerCase(), { ...borrowed.entry, ownership: 'harness-shared' });
+      }
       const record = { schemaVersion: 1, setupId: plan.setupId, target: plan.target, projectRoot: plan.projectRoot,
         actions: [...retained.values()].sort((a, b) => a.path.localeCompare(b.path)) };
       await atomicWrite(await safeStatePath(harnessRoot, manifestPath(plan.target)), JSON.stringify(record, null, 2) + '\n');
@@ -317,6 +357,7 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
       }
       if (!drift) {
         for (const item of journal.actions) if (item.backupCreated) await rm(await backupPath(harnessRoot, plan.setupId, plan.target, item.path), { force: true });
+        for (const relative of journal.borrowedBackups) await rm(await backupPath(harnessRoot, plan.setupId, plan.target, relative), { force: true });
         const file = await safeStatePath(harnessRoot, manifestPath(plan.target));
         if (priorManifest) await atomicWrite(file, JSON.stringify(priorManifest, null, 2) + '\n');
         else await rm(file, { force: true });
@@ -355,10 +396,13 @@ export async function rollbackNativeBridge({ harnessRoot, projectRoot, target, s
     }
     const record = journal ?? await manifest(harnessRoot, target);
     if (!record || record.setupId !== setupId || record.projectRoot !== path.resolve(projectRoot)) throw new Error('no matching bridge ownership');
+    const shared = await otherSharedOwners(harnessRoot, projectRoot, setupId, target);
     for (const item of record.actions) {
       const current = await bytes(await safePath(projectRoot, item.path, target));
       const currentHash = current ? sha(current) : null;
       if (currentHash !== item.afterSha256 && (!journal || currentHash !== item.beforeSha256)) throw new Error(`owned file drift: ${item.path}`);
+      if (shared.has(item.path) && shared.get(item.path).entry.afterSha256 !== item.afterSha256)
+        throw new Error(`shared bridge ownership drift: ${item.path}`);
       if (item.backupSha256) {
         const backup = await bytes(await backupPath(harnessRoot, setupId, target, item.path));
         if (!backup || sha(backup) !== item.backupSha256) throw new Error(`bridge backup drift: ${item.path}`);
@@ -367,6 +411,7 @@ export async function rollbackNativeBridge({ harnessRoot, projectRoot, target, s
     if (!journal) await atomicWrite(journalFile, JSON.stringify(record));
     const changedPaths = [];
     for (const item of [...record.actions].reverse()) {
+      if (shared.has(item.path)) continue;
       const destination = await safePath(projectRoot, item.path, target);
       const prior = await bytes(destination);
       if ((prior ? sha(prior) : null) === item.beforeSha256) continue;

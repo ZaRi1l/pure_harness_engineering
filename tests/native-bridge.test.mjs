@@ -279,3 +279,25 @@ test('rollback retry refuses an outside edit to an already-restored path', async
   await assert.rejects(rollbackNativeBridge({ ...f, target: 'opencode' }), /drift/);
   assert.equal(await readFile(changed, 'utf8'), 'outside user edit\n');
 });
+
+test('target switch shares AGENTS and common Skills without deleting the active target on either rollback order', async t => {
+  for (const [first, second] of [['codex', 'opencode'], ['opencode', 'codex'], ['claude', 'opencode']]) await t.test(`${first} to ${second}`, async t => {
+    const f = await fixture(t);
+    const originalAgents = '# Product-owned instructions\nKeep this text.\n';
+    await writeFile(path.join(f.projectRoot, 'AGENTS.md'), originalAgents);
+    await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: await buildBridgePlan({ ...f, target: first }) });
+    const secondPlan = await buildBridgePlan({ ...f, target: second });
+    assert.ok(secondPlan.actions.every(item => item.action !== 'conflict'));
+    await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: secondPlan });
+    const sharedAgents = await readFile(path.join(f.projectRoot, 'AGENTS.md'));
+    const sharedSkill = await readFile(path.join(f.projectRoot, '.agents/skills/testing/SKILL.md'));
+    assert.equal((await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: second })).ok, true);
+    await rollbackNativeBridge({ ...f, target: first });
+    assert.deepEqual(await readFile(path.join(f.projectRoot, 'AGENTS.md')), sharedAgents);
+    assert.deepEqual(await readFile(path.join(f.projectRoot, '.agents/skills/testing/SKILL.md')), sharedSkill);
+    assert.equal((await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: second })).ok, true);
+    await rollbackNativeBridge({ ...f, target: second });
+    assert.equal(await readFile(path.join(f.projectRoot, 'AGENTS.md'), 'utf8'), originalAgents);
+    await assert.rejects(readFile(path.join(f.projectRoot, '.agents/skills/testing/SKILL.md')));
+  });
+});
