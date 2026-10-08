@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { watch, writeFileSync } from 'node:fs';
 import { lstat, mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -53,6 +54,35 @@ test('candidate bundle needs explicit trial and installs only into disposable ch
   await installBundle({ bundleRoot: fx.bundle, projectRoot: fx.project, mode: 'rollback' });
   await assert.rejects(readFile(path.join(fx.project, '.codex/agents/worker.toml')), /ENOENT/);
   assert.equal(await readFile(path.join(fx.project, 'README.md'), 'utf8'), 'trial fixture\n');
+});
+
+test('self-asserted verified manifest cannot authorize any install', async t => {
+  const fx = await fixture(t);
+  fx.manifest.status = 'verified';
+  await writeFile(path.join(fx.bundle, 'bundle-manifest.json'), JSON.stringify(fx.manifest));
+  await assert.rejects(installBundle({ bundleRoot: fx.bundle, projectRoot: fx.project, mode: 'apply' }), /invalid bundle manifest|trial/);
+  await assert.rejects(installBundle({ bundleRoot: fx.bundle, projectRoot: fx.project, mode: 'apply', trial: true }), /invalid bundle manifest/);
+  await assert.rejects(lstat(path.join(fx.project, 'harness-adapter')), /ENOENT/);
+});
+
+test('apply installs the validated bytes if bundle source changes after validation', async t => {
+  const fx = await fixture(t);
+  const adapter = path.join(fx.project, 'harness-adapter');
+  await mkdir(adapter);
+  const source = path.join(fx.bundle, '.codex/agents/worker.toml');
+  let changed = false;
+  const watcher = watch(adapter, (_event, filename) => {
+    if (!changed && String(filename).includes('install-state.json.') && String(filename).endsWith('.tmp')) {
+      changed = true;
+      writeFileSync(source, 'name = "tampered"\n');
+    }
+  });
+  t.after(() => watcher.close());
+  await installBundle({ bundleRoot: fx.bundle, projectRoot: fx.project, mode: 'apply', trial: true });
+  assert.equal(changed, true, 'source mutation happened after validation');
+  assert.equal(await readFile(path.join(fx.project, '.codex/agents/worker.toml'), 'utf8'), 'name = "worker"\n');
+  const state = JSON.parse(await readFile(path.join(adapter, 'install-state.json'), 'utf8'));
+  assert.equal(state.phase, 'active');
 });
 
 test('modified installed bytes block check and rollback without removing unrelated files', async t => {

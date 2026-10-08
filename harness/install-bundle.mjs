@@ -74,25 +74,28 @@ async function loadBundle(bundleRoot) {
   await assertNoSymlinks(bundleRoot, 'bundle-manifest.json', true);
   const manifestBytes = await readFile(inside(bundleRoot, 'bundle-manifest.json'));
   const manifest = JSON.parse(manifestBytes.toString('utf8'));
-  if (manifest?.schemaVersion !== 1 || manifest.generator !== 'pure-harness-candidate-export' || !['unverified', 'verified'].includes(manifest.status)
+  if (manifest?.schemaVersion !== 1 || manifest.generator !== 'pure-harness-candidate-export' || manifest.status !== 'unverified'
       || !['core', 'all'].includes(manifest.profile) || !Array.isArray(manifest.targets) || !manifest.targets.length
       || manifest.targets.some(id => !TARGETS.has(id)) || new Set(manifest.targets).size !== manifest.targets.length
       || !Array.isArray(manifest.roleIds) || manifest.roleIds.some(id => !ID.test(id)) || new Set(manifest.roleIds).size !== manifest.roleIds.length
       || !Array.isArray(manifest.skillIds) || manifest.skillIds.some(id => !ID.test(id)) || new Set(manifest.skillIds).size !== manifest.skillIds.length
       || !Array.isArray(manifest.entries) || !manifest.entries.length) throw new Error('invalid bundle manifest');
   const keys = new Set();
+  const validatedBytes = new Map();
   for (const entry of manifest.entries) {
     validateEntry(entry, manifest);
     const key = entry.path.toLowerCase();
     if (keys.has(key)) throw new Error(`case collision: ${entry.path}`);
     keys.add(key);
     await assertNoSymlinks(bundleRoot, entry.path, true);
-    if (digest(await readFile(inside(bundleRoot, entry.path))) !== entry.sha256) throw new Error(`bundle hash mismatch: ${entry.path}`);
+    const bytes = await readFile(inside(bundleRoot, entry.path));
+    if (digest(bytes) !== entry.sha256) throw new Error(`bundle hash mismatch: ${entry.path}`);
+    validatedBytes.set(entry.path, bytes);
   }
   const found = await listFiles(bundleRoot);
   const expected = new Set(['bundle-manifest.json', ...manifest.entries.map(entry => entry.path)]);
   if (found.length !== expected.size || found.some(name => !expected.has(name))) throw new Error('bundle contains unlisted files');
-  return { manifest, manifestHash: digest(manifestBytes) };
+  return { manifest, manifestHash: digest(manifestBytes), validatedBytes };
 }
 async function assertGitRoot(projectRoot) {
   await assertRoot(projectRoot, 'project');
@@ -178,8 +181,8 @@ export async function installBundle({ bundleRoot, projectRoot, mode = 'plan', tr
   };
   const prepareApply = async state => {
     const actions = await preflight(projectRoot, bundle.manifest.entries, state);
-    if (bundle.manifest.status !== 'verified' && !trial) throw new Error('bundle unverified; apply refused without disposable --trial');
-    if (trial) await assertDisposable(projectRoot, state?.entries.map(entry => entry.path));
+    if (!trial) throw new Error('bundle unverified; apply refused without disposable --trial');
+    await assertDisposable(projectRoot, state?.entries.map(entry => entry.path));
     return actions;
   };
   const execute = async () => {
@@ -207,10 +210,10 @@ export async function installBundle({ bundleRoot, projectRoot, mode = 'plan', tr
       entries: bundle.manifest.entries.map(({ path, sha256 }) => ({ path, sha256 })) };
     await saveState(projectRoot, next);
     for (const relative of actions) {
-      const source = inside(bundleRoot, relative), target = inside(projectRoot, relative);
+      const target = inside(projectRoot, relative);
       await assertNoSymlinks(projectRoot, relative);
       await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, await readFile(source), { flag: 'wx' });
+      await writeFile(target, bundle.validatedBytes.get(relative), { flag: 'wx' });
     }
     await saveState(projectRoot, { ...next, phase: 'active' });
     return { ok: true, actions };
