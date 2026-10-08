@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -16,7 +16,8 @@ const overlaps = (a, b) => inside(a, b) || inside(b, a);
 
 function git(cwd, args, { allowFailure = false, isolatedRemote = false } = {}) {
   const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' };
-  for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_NAMESPACE']) delete env[name];
+  for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_NAMESPACE',
+    'GIT_SSH_COMMAND', 'GIT_SSH', 'GIT_PROXY_COMMAND', 'GIT_SSH_VARIANT', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_EXEC_PATH']) delete env[name];
   if (isolatedRemote) {
     for (const name of Object.keys(env)) if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM|NOSYSTEM)$/.test(name)) delete env[name];
     env.GIT_CONFIG_GLOBAL = process.platform === 'win32' ? 'NUL' : '/dev/null';
@@ -28,6 +29,21 @@ function git(cwd, args, { allowFailure = false, isolatedRemote = false } = {}) {
 }
 const lines = bytes => bytes.toString('utf8').trim().split(/\r?\n/).filter(Boolean);
 const nulPaths = bytes => bytes.toString('utf8').split('\0').filter(Boolean).map(value => value.replaceAll('\\', '/'));
+const remoteGitArgs = ['-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', '-c', 'protocol.ssh.allow=always'];
+
+async function inTemporaryNonGitDirectory(action) {
+  const temporaryParent = await realpath(os.tmpdir());
+  const temporary = await mkdtemp(path.join(temporaryParent, 'silo-inventory-remote-'));
+  try {
+    if (!same(await realpath(temporary), temporary) || !(await lstat(temporary)).isDirectory()) throw new Error('temporary directory link forbidden');
+    if (lines(git(temporary, ['rev-parse', '--show-toplevel'], { allowFailure: true, isolatedRemote: true })).length) throw new Error('temporary directory belongs to a Git repository');
+    return await action(temporary);
+  } finally {
+    const info = await lstat(temporary);
+    if (!inside(temporaryParent, temporary) || !same(await realpath(temporary), temporary) || info.isSymbolicLink() || !info.isDirectory()) throw new Error('temporary directory changed; cleanup refused');
+    await rm(temporary, { recursive: true });
+  }
+}
 
 async function hashFile(file) {
   const digest = createHash('sha256');
@@ -113,17 +129,22 @@ export async function assertSafeSetupDestination({ harnessRoot, destination }) {
   return { canonicalHarnessRoot, destinationState };
 }
 
-export async function inspectSetupSource({ harnessRoot, mode, source }, { remoteLookup } = {}) {
+export async function inspectSetupSource({ harnessRoot, mode, source }, { testOnlyRemoteLookup } = {}) {
   const canonicalHarnessRoot = await realpath(harnessRoot);
   if (mode !== 'existing') throw new Error('source inspection requires existing mode');
   if (typeof source !== 'string' || !source) throw new Error('source required');
   if (/^(https:\/\/|ssh:\/\/|git@)/i.test(source)) {
     const remote = remoteInfo(source);
-    const effective = lines(git(canonicalHarnessRoot, ['ls-remote', '--get-url', source]))[0];
-    if (effective !== source) throw new Error('remote URL rewrite or transport forbidden');
-    const response = remoteLookup
-      ? Buffer.from(await remoteLookup(source))
-      : git(os.tmpdir(), ['-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', '-c', 'protocol.ssh.allow=always', 'ls-remote', '--symref', source, 'HEAD'], { isolatedRemote: true });
+    if (testOnlyRemoteLookup && (!process.env.NODE_TEST_CONTEXT || typeof testOnlyRemoteLookup !== 'function')) throw new Error('test-only remote lookup unavailable');
+    const response = await inTemporaryNonGitDirectory(async temporary => {
+      const configured = lines(git(temporary, ['ls-remote', '--get-url', source]))[0];
+      if (configured !== source) throw new Error('remote URL rewrite or transport forbidden');
+      const isolated = lines(git(temporary, [...remoteGitArgs, 'ls-remote', '--get-url', source], { isolatedRemote: true }))[0];
+      if (isolated !== source) throw new Error('isolated remote URL mismatch');
+      return testOnlyRemoteLookup
+        ? Buffer.from(await testOnlyRemoteLookup(source))
+        : git(temporary, [...remoteGitArgs, 'ls-remote', '--symref', source, 'HEAD'], { isolatedRemote: true });
+    });
     const output = lines(response);
     const head = output.find(line => /^[a-f0-9]{40,64}\s+HEAD$/.test(line))?.split(/\s+/)[0];
     if (!head) throw new Error('remote HEAD unavailable');

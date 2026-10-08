@@ -78,13 +78,13 @@ test('remote inspection pins HEAD without fetching content or creating destinati
   const url = 'https://fixture.invalid/source.git';
   const sshUrl = 'ssh://git@fixture.invalid/source.git';
   const head = git(source, 'rev-parse', 'HEAD');
-  const remoteLookup = async () => `ref: refs/heads/master\tHEAD\n${head}\tHEAD\n`;
-  const report = await inspectSetupSource({ harnessRoot, mode: 'existing', source: url }, { remoteLookup });
+  const testOnlyRemoteLookup = async () => `ref: refs/heads/master\tHEAD\n${head}\tHEAD\n`;
+  const report = await inspectSetupSource({ harnessRoot, mode: 'existing', source: url }, { testOnlyRemoteLookup });
   assert.equal(report.kind, 'remote');
   assert.equal(report.git.head, head);
   assert.deepEqual(report.files, []);
   assert.ok(report.warnings.includes('remote-content-not-yet-inspected'));
-  const sshReport = await inspectSetupSource({ harnessRoot, mode: 'existing', source: sshUrl }, { remoteLookup });
+  const sshReport = await inspectSetupSource({ harnessRoot, mode: 'existing', source: sshUrl }, { testOnlyRemoteLookup });
   assert.equal(sshReport.git.head, report.git.head);
   await assert.rejects(() => import('node:fs/promises').then(fs => fs.stat(path.join(harnessRoot, 'project'))), /ENOENT/);
 });
@@ -99,12 +99,62 @@ test('rejects Git URL rewrites to forbidden local transport before remote lookup
   process.env.GIT_CONFIG_VALUE_0 = url;
   try {
     await assert.rejects(inspectSetupSource({ harnessRoot, mode: 'existing', source: url }, {
-      remoteLookup: () => { throw new Error('lookup must not run'); }
+      testOnlyRemoteLookup: () => { throw new Error('lookup must not run'); }
     }), /rewrite|transport/i);
   } finally {
     for (const [name, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
     }
+  }
+});
+
+test('actual SSH lookup ignores inherited executable direction', async t => {
+  const { base, harnessRoot } = await fixture(t);
+  const script = path.join(base, 'inherited-command.mjs');
+  const marker = path.join(base, 'inherited-command-ran');
+  await writeFile(script, 'import { writeFileSync } from "node:fs"; writeFileSync(process.env.SENTINEL_PATH, "ran"); process.exit(1);\n');
+  const previous = { GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND, SENTINEL_PATH: process.env.SENTINEL_PATH };
+  const quote = value => `"${value.replaceAll('\\', '/')}"`;
+  process.env.GIT_SSH_COMMAND = `${quote(process.execPath)} ${quote(script)}`;
+  process.env.SENTINEL_PATH = marker;
+  try {
+    await assert.rejects(inspectSetupSource({ harnessRoot, mode: 'existing', source: 'ssh://git@127.0.0.1:1/no.git' }), /Git inspection failed|remote/i);
+    await assert.rejects(() => import('node:fs/promises').then(fs => fs.stat(marker)), /ENOENT/);
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  }
+});
+
+test('remote lookup refuses a temporary directory under a Git checkout and cleans it', async t => {
+  const { harnessRoot, source } = await fixture(t);
+  const names = ['TMP', 'TEMP', 'TMPDIR'];
+  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  for (const name of names) process.env[name] = source;
+  const before = await snapshotTree(source);
+  try {
+    await assert.rejects(inspectSetupSource({ harnessRoot, mode: 'existing', source: 'https://fixture.invalid/repo.git' }, {
+      testOnlyRemoteLookup: () => 'not reached'
+    }), /temporary.*(Git|repository)|non-Git/i);
+    assert.deepEqual(await snapshotTree(source), before);
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  }
+});
+
+test('test-only remote response cannot be supplied outside the test context', async t => {
+  const { harnessRoot } = await fixture(t);
+  const previous = process.env.NODE_TEST_CONTEXT;
+  delete process.env.NODE_TEST_CONTEXT;
+  try {
+    await assert.rejects(inspectSetupSource({ harnessRoot, mode: 'existing', source: 'https://fixture.invalid/repo.git' }, {
+      testOnlyRemoteLookup: () => `${'0'.repeat(40)}\tHEAD\n`
+    }), /test-only remote lookup unavailable/i);
+  } finally {
+    if (previous === undefined) delete process.env.NODE_TEST_CONTEXT; else process.env.NODE_TEST_CONTEXT = previous;
   }
 });
 
