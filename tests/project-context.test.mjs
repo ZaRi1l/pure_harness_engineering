@@ -1,15 +1,124 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, realpath, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-import { diagnoseProjectContext, loadProjectContext } from '../scripts/project-context.mjs';
+import { diagnoseProjectContext, getScriptHarnessRoot, isValidatedProjectContext, loadFixedProjectContext, loadProjectContext } from '../scripts/project-context.mjs';
 import { getGoalAdapter, UNSUPPORTED } from '../scripts/goal-adapters.mjs';
+import { fixedFixture } from './support/fixed-project-fixture.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
 const manifest = id => ({ schemaVersion: 1, id, displayName: id, paths: { tasks: `projects/${id}/tasks`, memory: `projects/${id}/memory`, runtime: `projects/${id}/runtime` }, adapters: {} });
+
+test('fixed context anchors the child Git and frozen local paths', async () => {
+  const f = await fixedFixture();
+  const value = await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot });
+  const harness = await realpath(f.harnessRoot);
+  assert.equal(value.projectId, 'project');
+  assert.equal(value.root, await realpath(f.projectRoot));
+  assert.equal(value.projectRoot, value.root);
+  assert.equal(value.checkoutRoot, value.root);
+  assert.equal(value.harnessRoot, harness);
+  assert.deepEqual(value.paths, { tasks: path.join(harness, '.harness', 'tasks'), memory: path.join(harness, '.harness', 'memory'), runtime: path.join(harness, '.harness', 'runtime') });
+  assert.equal(isValidatedProjectContext(value), true);
+  assert.equal(Object.isFrozen(value), true);
+  assert.equal(Object.isFrozen(value.paths), true);
+  assert.equal(Object.isFrozen(value.adapters), true);
+  assert.deepEqual(Object.keys(value.adapters), []);
+  const scriptUrl = new URL('../scripts/project-context.mjs', import.meta.url);
+  const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  assert.equal(getScriptHarnessRoot(scriptUrl), repositoryRoot);
+  assert.equal(getScriptHarnessRoot(scriptUrl.href), repositoryRoot);
+});
+
+test('fixed loader accepts Harness cwd and a verified child worktree', async () => {
+  const f = await fixedFixture();
+  assert.equal((await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.harnessRoot })).checkoutRoot, await realpath(f.projectRoot));
+  assert.equal((await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.linkedRoot })).checkoutRoot, await realpath(f.linkedRoot));
+});
+
+test('unconfigured setup preview still requires independent child Git', async () => {
+  const f = await fixedFixture({ configured: false });
+  const before = await readdir(f.harnessRoot);
+  assert.equal((await loadFixedProjectContext({ harnessRoot: f.harnessRoot, requireSetup: false, cwd: f.projectRoot })).projectId, 'project');
+  await assert.rejects(loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot }), /config|setup/i);
+  assert.deepEqual(await readdir(f.harnessRoot), before);
+});
+
+test('fixed loader rejects unrelated and nested Git without writes', async () => {
+  const f = await fixedFixture();
+  const outsider = await mkdtemp(path.join(tmpdir(), 'foreign-checkout-'));
+  git(outsider, 'init', '-q');
+  const nested = path.join(f.harnessRoot, 'nested');
+  await mkdir(nested);
+  git(nested, 'init', '-q');
+  const configBefore = await readFile(f.configPath);
+  for (const cwd of [outsider, nested]) await assert.rejects(loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd }), /git|checkout|worktree/i);
+  assert.deepEqual(await readFile(f.configPath), configBefore);
+});
+
+test('fixed loader does not fall back to Harness Git when child .git is missing', async () => {
+  const f = await fixedFixture();
+  await rename(path.join(f.projectRoot, '.git'), path.join(f.projectRoot, 'saved-git'));
+  const before = await readFile(f.configPath);
+  await assert.rejects(loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot }), /git|project/i);
+  assert.deepEqual(await readFile(f.configPath), before);
+});
+
+test('fixed config rejects a stale project path and malformed metadata without repair', async () => {
+  const f = await fixedFixture();
+  const valid = JSON.parse(await readFile(f.configPath, 'utf8'));
+  for (const invalid of [{ ...valid, projectPath: '../other' }, { ...valid, setupId: 'not-a-uuid' }, { ...valid, createdAt: 'yesterday' }, { ...valid, surprise: true }]) {
+    const bytes = JSON.stringify(invalid);
+    await writeFile(f.configPath, bytes);
+    await assert.rejects(loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot }), /config/i);
+    assert.equal(await readFile(f.configPath, 'utf8'), bytes);
+  }
+});
+
+test('setup preview rejects an existing non-file config rather than treating it as absent', async () => {
+  const f = await fixedFixture();
+  await rename(f.configPath, `${f.configPath}-original`);
+  await mkdir(f.configPath);
+  const before = await readdir(path.dirname(f.configPath));
+  await assert.rejects(loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot, requireSetup: false }), /config/i);
+  assert.deepEqual(await readdir(path.dirname(f.configPath)), before);
+});
+
+test('fixed loader rejects a symlinked worktree Git pointer', async t => {
+  const f = await fixedFixture();
+  const pointer = path.join(f.linkedRoot, '.git');
+  const original = `${pointer}-original`;
+  await rename(pointer, original);
+  try { await symlink(original, pointer, 'file'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('symlink privilege unavailable'); return; } throw error; }
+  const before = await readFile(original);
+  await assert.rejects(loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.linkedRoot }), /git|worktree|path/i);
+  assert.deepEqual(await readFile(original), before);
+});
+
+test('fixed loader rejects linked project and management junctions without writes', async t => {
+  for (const name of ['project', '.harness', path.join('.harness', 'tasks')]) {
+    await t.test(name, async t => {
+      const f = await fixedFixture();
+      const target = path.join(path.dirname(f.harnessRoot), `outside-${name.replaceAll(/[\\/]/g, '-')}`);
+      const location = path.join(f.harnessRoot, name);
+      const original = `${location}-original`;
+      await mkdir(target);
+      if (name.endsWith('tasks')) await mkdir(path.dirname(location), { recursive: true });
+      else await rename(location, original);
+      try { await symlink(target, location, process.platform === 'win32' ? 'junction' : 'dir'); }
+      catch (error) { if (error.code === 'EPERM') { t.skip('symlink privilege unavailable'); return; } throw error; }
+      const before = await readdir(target);
+      await assert.rejects(loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.harnessRoot }), /path|project|harness|git/i);
+      assert.deepEqual(await readdir(target), before);
+      if (name === '.harness') assert.ok((await readFile(path.join(original, 'config.json'))).length > 0);
+    });
+  }
+});
 
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), 'harness-project-context-'));

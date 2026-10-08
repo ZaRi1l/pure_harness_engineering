@@ -1,6 +1,7 @@
 import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const MAX_MESSAGE = 160;
 const validatedContexts = new WeakSet();
@@ -105,6 +106,95 @@ async function verifyCheckout(projectRoot, checkoutRoot) {
   } catch { fail('INVALID_WORKTREE_BACKPOINTER', 'checkoutRoot'); }
   if (!same(backpointer, await realpath(pointer)) || !same(common, primaryGit)) fail('INVALID_WORKTREE_BACKPOINTER', 'checkoutRoot');
   await verifyGitIdentity(checkoutRoot, gitdir, 'checkoutRoot');
+}
+
+export function getScriptHarnessRoot(moduleUrl) {
+  const scriptPath = fileURLToPath(moduleUrl);
+  const scriptsRoot = path.dirname(scriptPath);
+  if (path.basename(scriptsRoot) !== 'scripts') fail('INVALID_PATH', 'moduleUrl');
+  return path.dirname(scriptsRoot);
+}
+
+async function rejectSymlinkComponents(target, field) {
+  const absolute = path.resolve(target);
+  const parsed = path.parse(absolute);
+  let current = parsed.root;
+  for (const segment of absolute.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try { if ((await lstat(current)).isSymbolicLink()) fail('PATH_ESCAPE', field); }
+    catch (error) { if (error instanceof ContextError) throw error; if (error.code === 'ENOENT') break; fail('UNAVAILABLE_PATH', field); }
+  }
+}
+
+async function gitIdentity(cwd, field) {
+  const result = spawnSync('git', ['rev-parse', '--path-format=absolute', '--show-toplevel', '--absolute-git-dir', '--git-common-dir', '--is-inside-work-tree'], { cwd, encoding: 'utf8', windowsHide: true });
+  if (result.status !== 0) fail('INVALID_GIT', field);
+  const [top, gitdir, common, inside] = result.stdout.trim().split(/\r?\n/);
+  if (inside !== 'true' || !top || !gitdir || !common) fail('INVALID_GIT', field);
+  try { return { top: await realpath(top), gitdir: await realpath(gitdir), common: await realpath(common) }; }
+  catch { fail('INVALID_GIT', field); }
+}
+
+function validateFixedConfig(config) {
+  const keys = ['version', 'layout', 'projectPath', 'target', 'setupId', 'createdAt', 'updatedAt'];
+  if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).length !== keys.length || keys.some(key => !Object.hasOwn(config, key))) fail('INVALID_CONFIG', 'config');
+  if (config.version !== 1 || config.layout !== 'single-project' || config.projectPath !== 'project' || !['codex', 'claude', 'opencode', 'antigravity'].includes(config.target)) fail('INVALID_CONFIG', 'config');
+  if (typeof config.setupId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(config.setupId)) fail('INVALID_CONFIG', 'config');
+  for (const name of ['createdAt', 'updatedAt']) {
+    if (typeof config[name] !== 'string' || Number.isNaN(Date.parse(config[name])) || new Date(config[name]).toISOString() !== config[name]) fail('INVALID_CONFIG', 'config');
+  }
+}
+
+export async function loadFixedProjectContext({ harnessRoot, cwd = process.cwd(), requireSetup = true } = {}) {
+  if (typeof harnessRoot !== 'string' || !path.isAbsolute(harnessRoot)) fail('INVALID_ROOT', 'harnessRoot');
+  if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) fail('INVALID_ROOT', 'cwd');
+  await rejectSymlinkComponents(harnessRoot, 'harnessRoot');
+  await rejectSymlinkComponents(cwd, 'cwd');
+  const harness = await rootPath(harnessRoot, 'harnessRoot');
+  const current = await rootPath(cwd, 'cwd');
+  const harnessGit = await gitIdentity(harness, 'harnessRoot');
+  if (!same(harnessGit.top, harness)) fail('INVALID_GIT', 'harnessRoot');
+  const childPath = path.join(harness, 'project');
+  await rejectSymlinkComponents(childPath, 'projectRoot');
+  const projectRoot = await rootPath(childPath, 'projectRoot');
+  if (!same(projectRoot, childPath)) fail('PATH_ESCAPE', 'projectRoot');
+  const dotGit = path.join(projectRoot, '.git');
+  await rejectSymlinkComponents(dotGit, 'projectRoot');
+  let gitStat;
+  try { gitStat = await lstat(dotGit); } catch { fail('INVALID_GIT', 'projectRoot'); }
+  if (!gitStat.isDirectory()) fail('INVALID_GIT', 'projectRoot');
+  const primary = await gitIdentity(projectRoot, 'projectRoot');
+  if (!same(primary.top, projectRoot) || !same(primary.gitdir, await realpath(dotGit)) || !same(primary.common, primary.gitdir)) fail('INVALID_GIT', 'projectRoot');
+
+  const management = path.join(harness, '.harness');
+  for (const name of ['', 'config.json', 'tasks', 'memory', 'runtime']) await rejectSymlinkComponents(path.join(management, name), `.harness/${name}`);
+  const configPath = path.join(management, 'config.json');
+  let configExists;
+  try { if (!(await lstat(configPath)).isFile()) fail('INVALID_CONFIG', 'config'); configExists = true; }
+  catch (error) { if (error instanceof ContextError) throw error; if (error.code === 'ENOENT') configExists = false; else fail('UNAVAILABLE_PATH', 'config'); }
+  if (configExists) validateFixedConfig(await jsonFile(configPath, 'config'));
+  else if (requireSetup) fail('MISSING_CONFIG', 'config');
+
+  const currentGit = await gitIdentity(current, 'cwd');
+  let checkoutRoot;
+  if (isInside(harness, current)) {
+    if (isInside(projectRoot, current)) {
+      if (!same(currentGit.top, projectRoot) || !same(currentGit.common, primary.common)) fail('INVALID_GIT', 'cwd');
+    } else if (!same(currentGit.top, harness) || !same(currentGit.common, harnessGit.common)) fail('INVALID_GIT', 'cwd');
+    checkoutRoot = projectRoot;
+  } else {
+    checkoutRoot = currentGit.top;
+    if (!isInside(checkoutRoot, current)) fail('INVALID_WORKTREE', 'cwd');
+    await rejectSymlinkComponents(checkoutRoot, 'checkoutRoot');
+    await rejectSymlinkComponents(path.join(checkoutRoot, '.git'), 'checkoutRoot');
+    await verifyCheckout(projectRoot, checkoutRoot);
+    if (!same(currentGit.common, primary.common)) fail('INVALID_WORKTREE', 'checkoutRoot');
+  }
+  const paths = Object.freeze({ tasks: path.join(management, 'tasks'), memory: path.join(management, 'memory'), runtime: path.join(management, 'runtime') });
+  const adapters = Object.freeze(Object.create(null));
+  const context = Object.freeze({ root: projectRoot, projectRoot, checkoutRoot, harnessRoot: harness, projectId: 'project', paths, adapters });
+  validatedContexts.add(context);
+  return context;
 }
 
 function validatedManifest(value, projectId) {
