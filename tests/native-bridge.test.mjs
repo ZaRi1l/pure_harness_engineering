@@ -49,6 +49,10 @@ test('each target plans and installs canonical role and skill bytes without engi
       const check = await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target });
       assert.equal(check.nativeSmoke, 'unverified');
       assert.equal(check.ok, true);
+      const guidance = await readFile(path.join(f.projectRoot, 'AGENTS.md'), 'utf8');
+      assert.match(guidance, /run from this project checkout and claim exact paths with: node '/);
+      assert.match(guidance, /Release with: node '[^\n]+' release-claim <agent-id>/);
+      assert.doesNotMatch(guidance, /--project|--checkout|--binding/);
       for (const forbidden of ['harness', 'scripts', '.ai']) await assert.rejects(readFile(path.join(f.projectRoot, forbidden, 'runtime-state.mjs')));
     });
   }
@@ -79,7 +83,8 @@ test('Codex preserves user TOML, hook ordering, and product AGENTS while adding 
   const agents = await readFile(path.join(f.projectRoot, 'AGENTS.md'), 'utf8');
   assert.ok(agents.startsWith('# Product rules\nKeep this.\n'));
   assert.match(agents, /\.harness\/runtime/);
-  assert.match(agents, /--project project/);
+  assert.match(agents, /claim <agent-id> <path>/);
+  assert.doesNotMatch(agents, /--project|--checkout|--binding/);
   assert.match(agents, /If Node is unavailable/);
   const update = await planBridgeUpdate({ ...f, target: 'codex' });
   assert.ok(update.actions.every(item => item.action === 'unchanged'));
@@ -325,4 +330,29 @@ test('rollback crash after manifest removal blocks new plan and Apply until jour
   await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapters/claude.rollback-journal.json')));
   await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
   assert.equal((await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: 'claude' })).ok, true);
+});
+
+test('generated project guidance claim command runs against the fixed child from its cwd', async t => {
+  const f = await fixture(t);
+  execFileSync('git', ['init', '--initial-branch=main', f.harnessRoot], { stdio: 'ignore' });
+  await mkdir(path.join(f.harnessRoot, 'scripts'));
+  for (const name of ['runtime-state.mjs', 'project-context.mjs', 'task-records.mjs', 'telemetry-schema.mjs'])
+    await cp(path.join(source, 'scripts', name), path.join(f.harnessRoot, 'scripts', name));
+  await mkdir(path.join(f.harnessRoot, '.harness'));
+  await writeFile(path.join(f.harnessRoot, '.harness/config.json'), JSON.stringify({ version: 1, layout: 'single-project', projectPath: 'project',
+    target: 'codex', setupId: f.setupId, createdAt: '2026-10-08T00:00:00.000Z', updatedAt: '2026-10-08T00:00:00.000Z' }));
+  await writeFile(path.join(f.projectRoot, 'README.md'), 'product file\n');
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: await buildBridgePlan({ ...f, target: 'codex' }) });
+  const guidance = await readFile(path.join(f.projectRoot, 'AGENTS.md'), 'utf8');
+  const claimTemplate = /claim exact paths with: (node '[^\n]+?' claim <agent-id> <path> \[\.\.\.\])\./.exec(guidance)?.[1];
+  assert.ok(claimTemplate, 'generated guidance has an executable claim command');
+  const claim = claimTemplate.replace('<agent-id>', 'bridge-worker').replace('<path> [...]', 'README.md');
+  execFileSync('powershell', ['-NoProfile', '-Command', claim], { cwd: f.projectRoot, stdio: 'pipe' });
+  const claims = JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/runtime/claims.json'), 'utf8'));
+  assert.deepEqual(claims.claims.map(item => item.agent_id), ['bridge-worker']);
+  const releaseTemplate = /Release with: (node '[^\n]+?' release-claim <agent-id>)\./.exec(guidance)?.[1];
+  assert.ok(releaseTemplate, 'generated guidance has an executable release command');
+  execFileSync('powershell', ['-NoProfile', '-Command', releaseTemplate.replace('<agent-id>', 'bridge-worker')], { cwd: f.projectRoot, stdio: 'pipe' });
+  const released = JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/runtime/claims.json'), 'utf8'));
+  assert.deepEqual(released.claims, []);
 });

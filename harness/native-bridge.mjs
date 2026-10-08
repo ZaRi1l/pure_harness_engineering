@@ -161,9 +161,7 @@ function stripOwnedHooks(prior, harnessRoot) {
 }
 function agentsBlock(harnessRoot) {
   const runtime = path.join(harnessRoot, 'scripts/runtime-state.mjs').replaceAll("'", "''");
-  const checkout = path.join(harnessRoot, 'project').replaceAll("'", "''");
-  const binding = path.join(harnessRoot, '.harness/config.json').replaceAll("'", "''");
-  return `<!-- BEGIN PURE HARNESS PROJECT SCOPE -->\nProduct instructions govern this project/ checkout. Parent engine core-maintenance and --core claim rules apply only to engine files, not product files.\nFor project writes when Node is available, claim exact paths with: node '${runtime}' --project project --checkout '${checkout}' --binding '${binding}' claim <agent-id> <path> [...]. Release the same claim after writing. Local task, memory, and runtime state live in the parent engine .harness/tasks, .harness/memory, and .harness/runtime directories. If Node is unavailable, use one cooperative writer per checkout and distinct worktrees for parallel writers; do not claim that coordination is automatically enforced.\n<!-- END PURE HARNESS PROJECT SCOPE -->\n`;
+  return `<!-- BEGIN PURE HARNESS PROJECT SCOPE -->\nProduct instructions govern this project/ checkout. Parent engine core-maintenance and --core claim rules apply only to engine files, not product files.\nFor project writes when Node is available, run from this project checkout and claim exact paths with: node '${runtime}' claim <agent-id> <path> [...]. Release with: node '${runtime}' release-claim <agent-id>. Local task, memory, and runtime state live in the parent engine .harness/tasks, .harness/memory, and .harness/runtime directories. If Node is unavailable, use one cooperative writer per checkout and distinct worktrees for parallel writers; do not claim that coordination is automatically enforced.\n<!-- END PURE HARNESS PROJECT SCOPE -->\n`;
 }
 function mergeAgents(prior, harnessRoot) {
   if (/BEGIN PURE HARNESS PROJECT SCOPE|END PURE HARNESS PROJECT SCOPE/.test(prior)) return null;
