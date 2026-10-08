@@ -1,4 +1,4 @@
-import { renderArtifactTabs } from '/preview/artifact-tabs.js';
+import { artifactUrlPolicy, renderArtifactTabs } from '/preview/artifact-tabs.js';
 import { createTaskEditor } from '/preview/task-editor.js';
 import { createTelemetryPanel } from '/preview/telemetry-panel.js';
 import { createGuidePanel } from './guide-panel.js';
@@ -212,7 +212,14 @@ async function paint() {
     fill('#blockers', status.blockers, (li, blocker) => { li.textContent = q(blocker.message); });
     fill('#signals', status.signals?.slice(-10).reverse(), (li, signal) => { li.textContent = `${signal.time ? `${q(signal.time)} — ` : ''}${q(signal.from)} → ${q(signal.to)} — ${q(signal.kind)} — ${q(signal.summary)}`; });
     fill('#events', snapshot.events?.slice(-10).reverse(), (li, event) => { li.textContent = `${q(event.time)} — ${q(event.message)}`; });
-    fill('#artifacts', status.artifact_preview_links, (li, artifact) => { const link = el('a', '', q(artifact.label)); link.href = q(artifact.href); li.append(link); });
+    fill('#artifacts', status.artifact_preview_links, (li, artifact) => {
+      const href = q(artifact.href);
+      const policy = artifactUrlPolicy(href, location.origin);
+      if (!policy.openable) { li.append(el('span', 'muted', t('artifacts.urlHidden'))); return; }
+      const link = el('a', '', q(artifact.label));
+      link.href = href;
+      li.append(link);
+    });
     const verification = document.querySelector('#verification');
     verification.textContent = q(status.verification?.status || 'not_run');
     verification.className = status.verification?.status === 'passed' ? 'ok' : 'bad';

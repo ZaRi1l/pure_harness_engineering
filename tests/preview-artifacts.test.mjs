@@ -169,6 +169,21 @@ test('does not make non-web schemes actionable through Open separately', () => {
   assert.match(descendants(host, node => /not supported/i.test(node.textContent))[0].textContent, /not supported/i);
 });
 
+test('credential-bearing and unsafe artifact URLs are neither exposed nor actionable', () => {
+  const { host } = fixture();
+  renderArtifactTabs(host, [
+    { href: 'https://user:TOP_SECRET@private.example/preview' },
+    { label: 'Scheme blocked', href: 'javascript:SECRET_BODY' }
+  ]);
+  const tabs = descendants(host, node => node.getAttribute('role') === 'tab');
+  for (const tab of tabs) {
+    tab.click();
+    assert.equal(byTag(host, 'iframe').length, 0);
+    assert.equal(byTag(host, 'a').length, 0);
+    assert.doesNotMatch(host.textContent + descendants(host, () => true).map(node => node.textContent).join(' '), /TOP_SECRET|SECRET_BODY|user:/);
+  }
+});
+
 test('renders artifact controls and safety messages through the shared translator', () => {
   const translations = {
     'artifacts.empty': '등록된 UI 아티팩트가 없습니다.',

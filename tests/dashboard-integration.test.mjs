@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { renderArtifactTabs } from '../preview/artifact-tabs.js';
+import { artifactUrlPolicy, renderArtifactTabs } from '../preview/artifact-tabs.js';
 import { createTaskEditor } from '../preview/task-editor.js';
 import { createTelemetryPanel } from '../preview/telemetry-panel.js';
 import { createGuidePanel } from '../preview/guide-panel.js';
@@ -43,7 +43,7 @@ async function mountIntegratedDashboard({ fetchImpl, hash = '#dashboard' }) {
     fetch: fetchImpl,
     addEventListener: (name, listener) => listeners.set(name, listener),
     setInterval: listener => { interval = listener; },
-    renderArtifactTabs, createTaskEditor, createTelemetryPanel, createGuidePanel
+    artifactUrlPolicy, renderArtifactTabs, createTaskEditor, createTelemetryPanel, createGuidePanel
   };
   runInNewContext(source('preferences.js'), context, { filename: 'preferences.js' });
   runInNewContext(source('agent-network.js'), context, { filename: 'agent-network.js' });
@@ -102,6 +102,18 @@ test('dashboard-integrated-navigation-keeps-real-widgets', async () => {
   document.querySelector('#tasks [data-task-action="add"]').click();
   const draft = document.querySelector('#tasks [data-task-field="title"]');
   draft.value = 'unsaved'; draft.focus(); draft.scrollTop = 17;
+  const agentsTab = document.querySelector('#dashboard-tab-agents');
+  agentsTab.focus(); agentsTab.click();
+  assert.equal(document.querySelector('#dashboard-pane-tasks').hidden, true);
+  assert.equal(document.activeElement, agentsTab);
+  const tasksTab = document.querySelector('#dashboard-tab-tasks');
+  tasksTab.focus(); tasksTab.click();
+  assert.equal(document.querySelector('#dashboard-pane-tasks').hidden, false);
+  assert.equal(document.activeElement, tasksTab);
+  assert.equal(document.querySelector('#tasks [data-task-field="title"]'), draft);
+  assert.equal(draft.value, 'unsaved');
+  assert.equal(draft.scrollTop, 17);
+  draft.focus();
   const selected = document.querySelector('#telemetry [data-telemetry-task="selector"]');
   selected.value = 'task-1'; selected.dispatch('change');
   const oldTasks = deferred(), oldSnapshot = deferred();
@@ -140,9 +152,10 @@ test('dashboard-integrated-navigation-keeps-real-widgets', async () => {
 
 test('dashboard-integrated-artifact-privacy', async () => {
   const artifacts = [
-    { label: 'Local sketch', href: '/preview/local.html' },
+    { label: 'Local sketch', href: '/preview/demo-ui.html' },
     { label: 'Foreign private', href: 'https://private.example/preview' },
-    { label: 'Blocked scheme', href: 'javascript:alert(1)' }
+    { label: 'Credentialed private', href: 'https://user:TOP_SECRET@private.example/preview' },
+    { label: 'Blocked scheme', href: 'javascript:SECRET_BODY' }
   ];
   const fetchImpl = async url => response(url === '/runtime/catalog' ? { agents: [], skills: [] }
     : url === '/runtime/task-specs' ? { taskSpecs: [] }
@@ -150,19 +163,27 @@ test('dashboard-integrated-artifact-privacy', async () => {
         : url === '/runtime/telemetry' ? telemetry()
           : snapshot('Current goal', 'fresh-agent', artifacts));
   const ui = await mountIntegratedDashboard({ fetchImpl });
+  const links = ui.document.querySelectorAll('#artifacts a');
+  assert.deepEqual(links.map(link => link.href), ['/preview/demo-ui.html', 'https://private.example/preview']);
+  assert.doesNotMatch(ui.document.querySelector('#artifacts').textContent, /TOP_SECRET|SECRET_BODY/);
   await ui.navigate('#preview');
   const { document } = ui;
   const host = document.querySelector('#preview-artifacts');
   const tabs = host.querySelectorAll('[role="tab"]');
-  assert.equal(tabs.length, 3);
+  assert.equal(tabs.length, 4);
   assert.equal(host.querySelectorAll('iframe').length, 1);
+  assert.equal(host.querySelector('iframe').src, '/preview/demo-ui.html');
   assert.equal(host.querySelector('iframe').getAttribute('sandbox'), 'allow-scripts');
   tabs[1].click();
   assert.equal(host.querySelectorAll('iframe').length, 0);
   assert.match(host.textContent, /not embedded|safety policy/i);
-  assert.doesNotMatch(host.textContent, /SECRET_BODY|private-rollout\.jsonl|PROMPT_SENTINEL|OUTPUT_SENTINEL|verified live app/i);
   tabs[2].click();
+  assert.equal(host.querySelectorAll('iframe').length, 0);
+  assert.equal(host.querySelector('[data-action="open"]').getAttribute('aria-disabled'), 'true');
+  assert.doesNotMatch(host.textContent, /TOP_SECRET|user:|private-rollout\.jsonl|verified live app/i);
+  tabs[3].click();
   assert.equal(host.querySelectorAll('iframe').length, 0);
   assert.match(host.textContent, /not supported|safety policy/i);
   assert.equal(host.querySelector('[data-action="open"]').getAttribute('aria-disabled'), 'true');
+  assert.doesNotMatch(host.textContent, /SECRET_BODY|TOP_SECRET/);
 });

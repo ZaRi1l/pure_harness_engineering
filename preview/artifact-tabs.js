@@ -1,19 +1,19 @@
-export function isEmbeddableArtifact(href, origin) {
+export function artifactUrlPolicy(href, origin) {
   try {
     const url = new URL(String(href), origin);
-    return url.origin === origin || (url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname));
+    const credentialed = Boolean(url.username || url.password);
+    const openable = !credentialed && ['http:', 'https:'].includes(url.protocol);
+    return {
+      openable,
+      credentialed,
+      embeddable: openable && (url.origin === origin || (url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname)))
+    };
   } catch {
-    return false;
+    return { openable: false, credentialed: false, embeddable: false };
   }
 }
 
-function isOpenableArtifact(href, origin) {
-  try {
-    return ['http:', 'https:'].includes(new URL(String(href), origin).protocol);
-  } catch {
-    return false;
-  }
-}
+export const isEmbeddableArtifact = (href, origin) => artifactUrlPolicy(href, origin).embeddable;
 
 function element(document, tagName, className = '', text = '') {
   const node = document.createElement(tagName);
@@ -33,11 +33,17 @@ export function renderArtifactTabs(host, artifacts, options = {}) {
     'artifacts.refresh': 'Refresh',
     'artifacts.open': 'Open separately',
     'artifacts.externalBlocked': 'This URL is not embedded by the Preview Lab safety policy. Use Open separately to inspect it.',
-    'artifacts.schemeBlocked': 'This URL scheme is not supported by the Preview Lab safety policy.'
+    'artifacts.schemeBlocked': 'This URL scheme is not supported by the Preview Lab safety policy.',
+    'artifacts.credentialsBlocked': 'URLs containing credentials cannot be opened by the Preview Lab.',
+    'artifacts.urlHidden': 'URL hidden for safety'
   };
   const t = key => options.translate?.(key) ?? fallback[key] ?? key;
   const records = (Array.isArray(artifacts) ? artifacts : [])
-    .map(artifact => ({ label: String(artifact?.label || artifact?.href || 'UI artifact'), href: String(artifact?.href || '') }))
+    .map(artifact => {
+      const href = String(artifact?.href || '');
+      const policy = artifactUrlPolicy(href, origin);
+      return { label: policy.openable ? String(artifact?.label || href || 'UI artifact') : t('artifacts.urlHidden'), href, ...policy };
+    })
     .filter(artifact => artifact.href);
 
   host.replaceChildren();
@@ -59,7 +65,7 @@ export function renderArtifactTabs(host, artifacts, options = {}) {
 
   function drawSelected() {
     const artifact = records[selectedIndex];
-    const safe = isEmbeddableArtifact(artifact.href, origin);
+    const safe = artifact.embeddable;
     tabButtons.forEach((button, index) => {
       const selected = index === selectedIndex;
       button.className = selected ? 'artifact-tab active' : 'artifact-tab';
@@ -70,13 +76,13 @@ export function renderArtifactTabs(host, artifacts, options = {}) {
 
     const toolbar = element(document, 'div', 'artifact-toolbar');
     const identity = element(document, 'div', 'artifact-identity');
-    identity.append(element(document, 'strong', '', artifact.label), element(document, 'span', 'muted artifact-url', artifact.href));
+    identity.append(element(document, 'strong', '', artifact.label), element(document, 'span', 'muted artifact-url', artifact.openable ? artifact.href : t('artifacts.urlHidden')));
     const actions = element(document, 'div', 'artifact-actions');
     const refresh = element(document, 'button', '', t('artifacts.refresh'));
     refresh.type = 'button';
     refresh.dataset.action = 'refresh';
     refresh.disabled = !safe;
-    const openable = isOpenableArtifact(artifact.href, origin);
+    const openable = artifact.openable;
     const open = element(document, openable ? 'a' : 'span', 'artifact-open', t('artifacts.open'));
     open.dataset.action = 'open';
     if (openable) {
@@ -98,9 +104,8 @@ export function renderArtifactTabs(host, artifacts, options = {}) {
       refresh.onclick = () => { frame.src = artifact.href; };
       viewport.append(frame);
     } else {
-      const message = openable
-        ? t('artifacts.externalBlocked')
-        : t('artifacts.schemeBlocked');
+      const message = artifact.credentialed ? t('artifacts.credentialsBlocked')
+        : openable ? t('artifacts.externalBlocked') : t('artifacts.schemeBlocked');
       viewport.append(element(document, 'p', 'artifact-blocked muted', message));
     }
     stage.replaceChildren(toolbar, viewport);

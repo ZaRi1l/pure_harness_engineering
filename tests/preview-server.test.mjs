@@ -44,6 +44,7 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   const root = await mkdtemp(path.join(tmpdir(), 'pure-preview-'));
   await mkdir(path.join(root, 'preview'));
   await copyFile(path.resolve('preview/index.html'), path.join(root, 'preview/index.html'));
+  await copyFile(path.resolve('preview/demo-ui.html'), path.join(root, 'preview/demo-ui.html'));
   await copyFile(path.resolve('preview/artifact-tabs.js'), path.join(root, 'preview/artifact-tabs.js'));
   await copyFile(path.resolve('preview/agent-network.js'), path.join(root, 'preview/agent-network.js'));
   await copyFile(path.resolve('preview/preferences.js'), path.join(root, 'preview/preferences.js'));
@@ -56,6 +57,7 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   t.after(() => new Promise(resolve => server.close(resolve)));
   const port = server.address().port;
   const html = await (await fetch(`http://127.0.0.1:${port}/`)).text();
+  const localArtifact = await fetch(`http://127.0.0.1:${port}/preview/demo-ui.html`);
   const artifactModuleResponse = await fetch(`http://127.0.0.1:${port}/preview/artifact-tabs.js`);
   const artifactModule = await artifactModuleResponse.text();
   const networkResponse = await fetch(`http://127.0.0.1:${port}/preview/agent-network.js`);
@@ -82,6 +84,8 @@ test('serves dashboard, task specs, and runtime JSON while rejecting traversal',
   assert.match(preferencesSource, /UI Artifacts/);
   assert.match(dashboardSource, /renderArtifactTabs/);
   assert.match(html, /75vh/);
+  assert.equal(localArtifact.status, 200);
+  assert.match(await localArtifact.text(), /<html|<!doctype/i);
   assert.equal(artifactModuleResponse.status, 200);
   assert.match(artifactModuleResponse.headers.get('content-type'), /text\/javascript/);
   assert.match(artifactModule, /setAttribute\('sandbox', 'allow-scripts'\)/);
