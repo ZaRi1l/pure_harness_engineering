@@ -102,6 +102,39 @@ npm run preview:live -- --project $ProjectId --checkout $ProjectRoot --binding $
 
 `실행 중 기록 에이전트`가 0명이거나 토큰 텔레메트리가 비어 있어도 첫 등록·화면 검사는 실패한 것이 아닙니다. 네이티브 AI 세션의 에이전트/훅/rollout 기록을 이 runtime으로 보내는 어댑터는 위 절차에서 설치되지 않습니다. 기존 프로젝트 훅이 자체 `.ai/runtime`에 쓰는 경우 새 Harness의 `projects/<id>/runtime`에는 나타나지 않습니다. **자동 수집까지 확인했다고 보고하지 마세요.**
 
+## 4. AI 도구별 설정 점검
+
+아래 명령은 Harness 설치 디렉터리에서 **도구 하나를 선택해 후보와 차단 이유를 확인**합니다. `$Target`을 `codex`, `claude`(Claude Code), `opencode`, `antigravity` 중 하나로 바꾸세요. 네 도구를 한꺼번에 점검하려면 `--targets all`도 가능합니다. 각 줄을 개별 실행하고 종료 코드와 메시지를 읽으세요.
+
+```powershell
+Set-Location $HarnessRoot
+$Target = 'claude' # codex / claude / opencode / antigravity 중 하나
+node scripts/detect-targets.mjs --root $ProjectRoot --json
+node scripts/validate.mjs --targets $Target --profile core --json
+node scripts/sync.mjs --targets $Target --profile core --dry-run
+node scripts/sync.mjs --targets $Target --profile core --check
+```
+
+`detect-targets`는 선택 프로젝트의 **설정 파일 표식만** 찾으며 AI 프로그램 설치·버전·실행 가능 여부를 확인하지 않습니다. `validate`와 `sync --check`는 현재 생성 manifest와 네이티브 스모크 근거가 없어 0이 아닌 상태로 끝날 수 있습니다. `--dry-run`은 후보 경로와 기존 파일 충돌을 보여줍니다. 이 세 명령은 설정 파일을 생성·설치하지 않습니다. `--profile core`는 최소 역할·Skill 후보, `--profile all`은 전체 후보입니다.
+
+현재는 네 대상 모두 [네이티브 스모크 절차](native-smoke-worksheet.md)가 미검증이라 일반 쓰기 명령 `node scripts/sync.mjs --targets $Target --profile core`는 차단됩니다. `--force` 같은 우회 명령도 없습니다. 나중에 역할 파일 생성이 검증되더라도 그것만으로 루트 지침, 훅, Skill 탐색, 기존 프로젝트 runtime 연결까지 설치되는 것은 아닙니다. 실제 전환 전에 대상 도구에서 역할 호출·Skill 탐색·유효 권한을 독립 검증하고 [전환 게이트](project-isolation-cutover.md)를 통과해야 합니다.
+
+## 5. 첫 AI 작업과 수동 토큰 가져오기
+
+AI 프로그램에서 **대상 프로젝트 checkout인 `$ProjectRoot`**를 열어 첫 요청을 해보세요. 예: “README를 읽고 이 프로젝트의 실행 방법을 파일 변경 없이 설명해줘.” 먼저 그 프로그램이 프로젝트의 에이전트 지침·역할·Skill을 실제로 읽는지 확인해야 합니다. Harness 설치 폴더에서 대화하거나 manifest만 등록했다고 그 설정이 프로젝트에 설치되지는 않습니다. 첫 대화가 정상이어도 대시보드에 에이전트가 자동 표시된다는 뜻은 아닙니다.
+
+Codex의 **해당 프로젝트 세션에서 나온** rollout JSONL 파일의 절대경로를 이미 알고 있다면 아래처럼 토큰 집계를 수동으로 가져올 수 있습니다. 원본 JSONL은 읽기 전용이고 집계 snapshot은 선택한 Harness runtime에 기록됩니다.
+
+```powershell
+Set-Location $HarnessRoot
+$RolloutFile = 'C:\path\to\rollout.jsonl' # 자신의 Codex rollout JSONL 절대경로
+if (-not (Test-Path -LiteralPath $RolloutFile -PathType Leaf)) { throw 'rollout 파일 경로를 확인하세요.' }
+node scripts/import-telemetry.mjs --project $ProjectId --checkout $ProjectRoot --binding $Binding --file $RolloutFile
+if ($LASTEXITCODE -ne 0) { throw '토큰 집계 가져오기 실패' }
+```
+
+파일이 여러 개면 `--file <절대경로>`를 반복해 **같은 명령에 모두** 넣으세요. 실행할 때마다 선택한 파일 집합의 집계로 snapshot을 교체하며 자동 감시·증분 갱신은 하지 않습니다. 다른 프로젝트나 무관한 세션 파일을 섞으면 전체 수치가 오해를 부를 수 있습니다. 정확한 네이티브 child ID 연결 근거가 없으면 일부 비용은 `unattributed`로 남습니다. 이 가져오기는 **Codex rollout 전용**이고 다른 세 도구의 토큰 수집을 지원한다고 뜻하지 않습니다.
+
 ## 막히면
 
 - `MISSING_FILE`: manifest와 binding의 경로를 확인합니다.

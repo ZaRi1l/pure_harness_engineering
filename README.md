@@ -13,6 +13,10 @@ Pure Harness는 Codex 중심의 가벼운 작업 흐름 도구입니다. Main Co
 
 현재 이 절차로 확인할 수 있는 것은 **프로젝트 등록·진단, 별도 runtime, 대시보드와 수동 작업 편집**입니다. 프로젝트 manifest의 `"adapters": {}`만으로 AI 설정·훅이 설치되지는 않습니다. 기존 프로젝트의 훅이 자체 runtime을 기록한다면 이 대시보드로 자동 전달되지 않으며, 에이전트와 토큰 텔레메트리 화면이 비어 있어도 등록 실패를 뜻하지 않습니다. 기존 프로젝트의 자동화 전환·runtime 이관은 아직 [전환 게이트](docs/project-isolation-cutover.md)에서 막혀 있습니다.
 
+Codex, Claude Code, OpenCode, Antigravity 중 사용할 도구의 **후보 설정과 현재 차단 이유**는 [도구별 점검 명령](docs/first-use.md#4-ai-도구별-설정-점검)으로 확인할 수 있습니다. 지금은 설정 파일을 한 번에 바꿔 설치하는 단계가 아닙니다.
+
+AI 작업은 Harness 설치가 아닌 **대상 프로젝트 checkout에서** 시작합니다. [첫 AI 작업과 수동 토큰 가져오기](docs/first-use.md#5-첫-ai-작업과-수동-토큰-가져오기)는 선택 사항이며, 자동 수집과 다릅니다.
+
 ## 시작하기
 
 ### 새 프로젝트를 처음 시작할 때 (Windows PowerShell 7)
