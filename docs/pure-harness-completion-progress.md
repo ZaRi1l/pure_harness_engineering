@@ -27,3 +27,17 @@
 | T4 self-check | T1 고정 loader 소비; setup 전 코어 검사와 setup 후 child identity 검사 구분 | T1 후 실행 |
 
 Root가 공유한 기준 실행 결과는 `npm test`: 총 484, 통과 479, 실패 1, skip 4, exit 1이다. 실패는 기존 README 기대값 `tests/preview-server.test.mjs:341-345`이며 승인된 가이드 변경 `60c8c2e` 통합에서 재검증할 항목이다. 이 기록은 실패를 통과로 해석하지 않는다. 화면 통합 T1은 별도 `D:/dev/pure_harness_dashboard_complete` worktree의 `codex/dashboard-completion` 브랜치에서 기준 `2a4b5d2`로 실행 중이라고 Root가 보고했다. 결과와 통합 SHA는 아직 대기다.
+
+## 화면·최종 E2E 계획 사전 점검 (구현 전)
+
+[화면·최종 E2E 계획](superpowers/plans/2026-10-08-dashboard-completion-e2e.md)은 실제 위젯과 독립적인 고정 컨텍스트/설치/네이티브 브리지 인터페이스를 잇는다. 아래는 계획 검토 기록이며 통과 증거가 아니다.
+
+| 작업 | 의존성·수락 경계 | 상태 |
+| --- | --- | --- |
+| UI T1→T2→T3 | 복원 화면·가이드를 합친 뒤 실제 widget/controller를 연결한 DOM/HTTP 시험, locale·오류·지연 응답·초안 보존; runtime 의미를 UI에 복제하지 않음 | T1 별도 worktree 실행 중; T2/T3 대기 |
+| T4 통합 | 검토된 컨텍스트·setup·native bridge와 UI를 한 tree에 통합; 모든 관련 테스트 뒤 `CODE_SHA` 고정 | 선행 작업 대기 |
+| T5→T6 실사용 | `CODE_SHA`의 새 remote 없는 중립 복사본 cold start 후 지속형 비-ephemeral 네이티브 Codex 세션에서 hello CLI·테스트·실제 rollout 관찰 | 대기; 기본/글로벌 trust 변경이나 위험한 hook 우회 금지 |
+| T7 문서·증거 | 성공한 실제 단계만 문서화; `CODE_SHA`와 문서 후 `RELEASE_SHA`를 구분하고 native-critical closure digest가 같을 때만 이전 native 증거 승계 | 대기; 두 commit SHA가 같다고 꾸미지 않음 |
+| T8 출시·정리 | 최종 SHA의 테스트·중립 복사본·native 증거 검증 뒤 출처/포함 증명된 작업 브랜치만 정리하고 승인된 main push 확인 | 대기; 무관/불명 자산은 보존 |
+
+고정 컨텍스트 T1은 Root 보고에 따르면 `D:/dev/pure_harness_fixed_context`의 분리 worktree에서 기준 `6162746`으로 실행 중이다. UI T1의 기준은 위에 기록한 `2a4b5d2`다. 두 작업의 결과·실제 테스트 명령·통합 SHA는 아직 수신되지 않았다.
