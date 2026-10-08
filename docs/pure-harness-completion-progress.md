@@ -69,3 +69,27 @@ Root 보고 기준 구현 흐름은 고정 컨텍스트·UI·source inventory·n
 | 고정 컨텍스트 T2 | 실행 중, commit/결과 미수신 | runtime/claim 경계 결과 대기 |
 
 이 수치는 Root가 전달한 작업별 결과이지 여기서 재실행한 증거가 아니다. 최종 완료 판단은 통합 브랜치의 정확한 SHA와 재실행 결과, 독립 검토, 중립 복사본 실사용 증거에 따른다. setup T2에서는 public `applyBridgePlan`에 `stagingRoot`를 넘기지 않는다. bridge plan만 staging에서 만들고, 실제 쓰기는 canonical `project/` publish 뒤 실행한다.
+
+## 후속 마일스톤 (Root 전달; 위 중간 상태 갱신)
+
+| 작업 | 전달된 commit·실행 결과 | 검토 상태·남은 일 |
+| --- | --- | --- |
+| 고정 컨텍스트 T2 | `de5a0a8`, runtime 집중 테스트 52/52 통과 | 수정 검증 완료; 구형 reader 소비자 실패는 T3 연결 전 상태이며, T3/통합 suite에서 재확인 |
+| UI T2 | `7c499b4`, UI/HTTP 58건과 인접 65건 통과 | 독립 검토에서 추가 지적 없음; 최종 통합 DOM/HTTP 재실행 대기 |
+| source inventory T1 | `a707187`, 12/12 통과, plan 중 임시 쓰기 없음 | 로컬 점검 결과. remote HEAD 긍정 경로는 parser 증거만 있어 실제 transport/네이티브 검증 대기 |
+| 공통 지침 T6 | `7c3a619`, 독립 검토, 12 통과·2 skip | 개별 지침 검토 완료. 생성 child AGENTS/Skill의 T3 재렌더·digest·통합 검증 대기 |
+| native bridge T3 | 기존 `8bd759d` 이후 안전·도구 간 소유권 여섯 건 수정 중 | 새 commit/테스트/독립 검토 미수신; `nativeSmoke`는 미검증 |
+| 고정 컨텍스트 T3 | reader 연결 구현 중 | 결과·검토 미수신; 앞선 T2의 구형 소비자 실패 해소 확인 필요 |
+| 고정 컨텍스트 T4 | `0ae290f` 검토에서 자체 config 오류가 fixture 상태에 가려지는 문제 발견 | 수정·재시험·재검토 진행 중; 통과 아님 |
+| UI T3 | 지속 오류 메시지 로케일·lifecycle 문구 구현 중 | 결과·독립 검토 미수신 |
+| 설정 T2 | 구현과 집중 테스트 진행 중 | 결과·독립 검토 미수신 |
+
+최종 통합은 분리된 `D:/dev/pure_harness_final_integration`의 `codex/final-single-project-integration`에서 검토된 cherry-pick부터 시작했다는 Root 보고다. 이것은 아직 `main` 통합, 전체 suite, 중립 복사본/native 실사용 또는 push 증거가 아니다. 사용자의 활성 `/goal`에는 최종 `main` push가 포함되지만 그 완료 여부는 최종 SHA와 remote 확인 전까지 **대기**다. 이 구간은 전달된 수치·검토 메시지만 기록하며 실제 네이티브 ID, rollout, `CODE_SHA`/`RELEASE_SHA`를 만들어 적지 않는다.
+
+## `135608e` 통합 중간 점검 (Root 전달; 전체 게이트 실패)
+
+- Setup 소유 5개 commit과 CLI 4개 commit 및 `package.json`의 setup 명령이 통합됐다. 결합 집중 시험은 136/136 통과했다. 이것은 새 중립 설치의 실제 Apply나 native 실행 증거가 아니다.
+- `npm run self-check`는 exit 0, 자체 검사 PASS로 보고됐다. 동시에 setup 미실행, 훅 미관찰, 글로벌 설정/auth/native 미검증 경고가 남아 있으므로 지원 완료나 hook 통과로 승격하지 않는다.
+- UI/가이드는 개별 독립 검토 승인. 갤러리 `c6573ec`도 runtime 바이트 동일과 독립 9/9 검토 승인이 있으나 이 통합 SHA에는 아직 반영·재시험 대기다.
+- `135608e`의 `npm test`는 607건 중 597 통과·5 실패·5 skip (exit 1)이었다. 실패는 오래된 dashboard `guideCopy` 테스트 1건(단언 3개)과 `NODE_TEST_CONTEXT` 없는 runner에서 실행된 source-inventory remote fixture 4건이다. 따라서 이 SHA의 전체 suite는 **실패**로 기록한다.
+- 따라서 최종 통합 suite/self-check 재실행, 정확한 `CODE_SHA` 고정, remote 없는 중립 복사본, 실제 Codex hello 앱·agent ID·rollout telemetry, 관찰 기반 문서 갱신, `main` push/remote 대조와 작업 브랜치 정리는 모두 **미완료**다. 사용자용 production guide는 이 기록 단계에서 변경하지 않았다.
