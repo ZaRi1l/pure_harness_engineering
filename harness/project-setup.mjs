@@ -81,7 +81,7 @@ async function setupJournal(harnessRoot) {
 function checkedJournal(harnessRoot, journal) {
   const stagingRoot = path.join(path.resolve(harnessRoot), '.harness/staging');
   if (!journal || journal.schemaVersion !== 1 || !uuid(journal.setupId) || !['new', 'existing', 'update'].includes(journal.mode) ||
-      !['preparing', 'displacing-empty', 'publishing', 'published', 'bridge-applied', 'rollback-blocked', 'rolled-back'].includes(journal.phase) ||
+      !['preparing', 'displacing-empty', 'publishing', 'published', 'bridge-applied', 'rollback-blocked', 'recovering', 'rolled-back'].includes(journal.phase) ||
       journal.projectRoot !== path.join(path.resolve(harnessRoot), 'project') ||
       !['absent', 'empty', 'configured'].includes(journal.destinationState) || !targets.has(journal.target) ||
       typeof journal.transaction !== 'string' || path.dirname(journal.transaction) !== stagingRoot ||
@@ -114,27 +114,53 @@ async function assertRecoveryPaths(harnessRoot, journal) {
     await assertOwnedPath(harnessRoot, path.relative(harnessRoot, candidate));
   await assertOwnedPath(harnessRoot, path.join('.harness', 'recovery-records'));
 }
-async function recoveryRecord(harnessRoot, journal, { create = false } = {}) {
+function recordFile(harnessRoot, journal) {
+  return path.join(harnessRoot, '.harness/recovery-records', `${path.basename(journal.transaction)}.json`);
+}
+function expectedRecoveryRecord(journal, { retainProject, retainStaging }) {
+  return { schemaVersion: 1, setupId: journal.setupId, transaction: journal.transaction,
+    destinationState: journal.destinationState, stagedFingerprint: journal.stagedFingerprint,
+    retainedProject: retainProject ? path.join(journal.transaction, 'recovered-project') : null,
+    retainedStaging: retainStaging ? journal.staged : null };
+}
+async function readRecoveryRecord(harnessRoot, journal) {
+  const file = recordFile(harnessRoot, journal);
+  await assertOwnedPath(harnessRoot, path.relative(harnessRoot, file));
+  const bytes = await content(file);
+  if (!bytes) return null;
+  let record;
+  try { record = JSON.parse(bytes); } catch { throw new Error('invalid recovery record'); }
+  if (JSON.stringify(record) !== JSON.stringify(expectedRecoveryRecord(journal, {
+    retainProject: record.retainedProject === path.join(journal.transaction, 'recovered-project'),
+    retainStaging: record.retainedStaging === journal.staged
+  }))) throw new Error('recovery record drift');
+  return record;
+}
+async function ensureRecoveryRecord(harnessRoot, journal, expected) {
   const file = path.join(harnessRoot, '.harness/recovery-records', `${path.basename(journal.transaction)}.json`);
   await assertOwnedPath(harnessRoot, path.relative(harnessRoot, file));
-  const retainedProject = path.join(journal.transaction, 'recovered-project');
-  const retainedStaging = journal.staged;
-  const projectPresent = !!(await stat(retainedProject));
-  const stagingPresent = !!(await stat(retainedStaging));
-  if (!projectPresent && !stagingPresent) return null;
-  const expected = { schemaVersion: 1, setupId: journal.setupId, transaction: journal.transaction,
-    retainedProject: projectPresent ? retainedProject : null, retainedStaging: stagingPresent ? retainedStaging : null };
-  const prior = await content(file);
+  const prior = await readRecoveryRecord(harnessRoot, journal);
   if (prior) {
-    let parsed;
-    try { parsed = JSON.parse(prior); } catch { throw new Error('invalid recovery record'); }
-    if (JSON.stringify(parsed) !== JSON.stringify(expected)) throw new Error('recovery record drift');
-  } else if (create) {
+    if (JSON.stringify(prior) !== JSON.stringify(expected)) throw new Error('recovery record drift');
+  } else {
     await mkdir(path.dirname(file), { recursive: true });
     await assertOwnedPath(harnessRoot, path.relative(harnessRoot, file));
-    await writeFile(file, JSON.stringify(expected), { flag: 'wx' });
-  } else throw new Error('missing recovery record');
+    const handle = await open(file, 'wx');
+    try { await handle.writeFile(JSON.stringify(expected)); await handle.sync(); }
+    finally { await handle.close(); }
+  }
   return file;
+}
+async function verifyRetainedEvidence(harnessRoot, journal, record) {
+  await assertRecoveryPaths(harnessRoot, journal);
+  if (record.retainedProject) {
+    if (!(await stat(record.retainedProject))?.isDirectory() ||
+        await treeFingerprint(record.retainedProject, new Set(journal.ignoredDirectories)) !== journal.stagedFingerprint)
+      throw new Error('retained project drift');
+  }
+  if (record.retainedStaging && (!(await stat(record.retainedStaging))?.isDirectory() ||
+      (journal.stagedFingerprint && await treeFingerprint(record.retainedStaging, new Set(journal.ignoredDirectories)) !== journal.stagedFingerprint)))
+    throw new Error('retained staging drift');
 }
 async function assertNoPendingJournal(harnessRoot) {
   const journal = await setupJournal(harnessRoot);
@@ -143,13 +169,21 @@ async function assertNoPendingJournal(harnessRoot) {
   if (journal.phase !== 'rolled-back') throw new Error('pending setup journal; explicit recovery required');
   if (journal.recoveryRecord) {
     await assertRecoveryPaths(harnessRoot, journal);
-    if (await recoveryRecord(harnessRoot, journal) !== journal.recoveryRecord) throw new Error('missing recovery record');
+    const record = await readRecoveryRecord(harnessRoot, journal);
+    if (!record || recordFile(harnessRoot, journal) !== journal.recoveryRecord) throw new Error('missing recovery record');
+    await verifyRetainedEvidence(harnessRoot, journal, record);
   }
 }
-async function atomic(file, bytes) {
+async function atomic(file, bytes, { sync = false } = {}) {
   await mkdir(path.dirname(file), { recursive: true });
   const temp = `${file}.${randomUUID()}.tmp`;
-  try { await writeFile(temp, bytes, { flag: 'wx' }); await rename(temp, file); }
+  try {
+    if (sync) {
+      const handle = await open(temp, 'wx');
+      try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+    } else await writeFile(temp, bytes, { flag: 'wx' });
+    await rename(temp, file);
+  }
   finally { await rm(temp, { force: true }); }
 }
 async function lock(harnessRoot, fn, { recoverStale = false } = {}) {
@@ -264,7 +298,7 @@ function managedDirectories(actions) {
   return result;
 }
 
-export async function recoverProjectSetup({ harnessRoot } = {}) {
+export async function recoverProjectSetup({ harnessRoot } = {}, { beforeWrite } = {}) {
   if (typeof harnessRoot !== 'string' || !path.isAbsolute(harnessRoot)) throw new Error('absolute harness root required');
   const projectRoot = path.join(path.resolve(harnessRoot), 'project');
   await assertSafeSetupDestination({ harnessRoot, destination: projectRoot });
@@ -272,7 +306,11 @@ export async function recoverProjectSetup({ harnessRoot } = {}) {
     const file = path.join(harnessRoot, journalName);
     const journal = checkedJournal(harnessRoot, await setupJournal(harnessRoot));
     if (journal.phase === 'rolled-back') {
-      if (journal.recoveryRecord) { await assertRecoveryPaths(harnessRoot, journal); await recoveryRecord(harnessRoot, journal); }
+      if (journal.recoveryRecord) {
+        const record = await readRecoveryRecord(harnessRoot, journal);
+        if (!record) throw new Error('missing recovery record');
+        await verifyRetainedEvidence(harnessRoot, journal, record);
+      }
       return { phase: 'rolled-back', projectRoot, retainedStaging: journal.transaction };
     }
     if (journal.mode === 'update' || journal.phase === 'bridge-applied') throw new Error('setup journal requires manual bridge/config recovery');
@@ -280,37 +318,69 @@ export async function recoverProjectSetup({ harnessRoot } = {}) {
     if (await content(path.join(harnessRoot, `.harness/adapters/${journal.target}.journal.json`)) ||
         await content(path.join(harnessRoot, `.harness/adapters/${journal.target}.json`)) ||
         await content(path.join(harnessRoot, configName))) throw new Error('setup journal has bridge or config state; manual recovery required');
-    const destination = await stat(projectRoot), displaced = await stat(journal.displaced), staged = await stat(journal.staged);
+    const retained = path.join(journal.transaction, 'recovered-project');
+    const destination = await stat(projectRoot), displaced = await stat(journal.displaced), staged = await stat(journal.staged), retainedInfo = await stat(retained);
     if (destination && (!destination.isDirectory() || destination.isSymbolicLink())) throw new Error('recovery destination drift');
     if (displaced && (!displaced.isDirectory() || displaced.isSymbolicLink() || (await readdir(journal.displaced)).length)) throw new Error('displaced empty destination drift');
     if (staged && (!staged.isDirectory() || staged.isSymbolicLink())) throw new Error('staged project drift');
-    if (journal.phase === 'preparing' || journal.phase === 'displacing-empty' || (journal.phase === 'rollback-blocked' && journal.stagedFingerprint === null)) {
-      if (destination && (journal.destinationState !== 'empty' || (await readdir(projectRoot)).length || displaced)) throw new Error('recovery destination drift');
-      if (!destination && journal.destinationState === 'empty' && !displaced) throw new Error('missing displaced empty destination');
-      if (destination && journal.destinationState === 'absent') throw new Error('recovery destination drift');
+    if (retainedInfo && (!retainedInfo.isDirectory() || retainedInfo.isSymbolicLink())) throw new Error('retained project drift');
+    let record;
+    let published = false;
+    if (journal.phase === 'recovering') {
+      if (journal.recoveryRecord !== recordFile(harnessRoot, journal)) throw new Error('missing recovery intent');
+      record = await readRecoveryRecord(harnessRoot, journal);
+      if (!record) throw new Error('missing recovery record');
     } else {
-      if (!journal.stagedFingerprint) throw new Error('missing published fingerprint');
-      if (destination && staged) throw new Error('staged and published projects both present');
-      if (destination && await treeFingerprint(projectRoot, new Set(journal.ignoredDirectories)) !== journal.stagedFingerprint)
-        throw new Error('published project outside drift');
-      if (journal.destinationState === 'empty' && !displaced) throw new Error('missing displaced empty destination');
+      if (retainedInfo) throw new Error('unexpected retained project before recovery intent');
+      published = !!(destination && journal.stagedFingerprint &&
+        await treeFingerprint(projectRoot, new Set(journal.ignoredDirectories)) === journal.stagedFingerprint);
+      if (published && staged) throw new Error('staged and published projects both present');
+      if (!published && destination && (journal.destinationState !== 'empty' || (await readdir(projectRoot)).length || displaced))
+        throw new Error('recovery destination drift');
+      if (!published && !destination && journal.destinationState === 'empty' && !displaced) throw new Error('missing displaced empty destination');
+      if (published && journal.destinationState === 'empty' && !displaced) throw new Error('missing displaced empty destination');
       if (journal.destinationState === 'absent' && displaced) throw new Error('unexpected displaced destination');
+      record = expectedRecoveryRecord(journal, { retainProject: published, retainStaging: !!staged });
+      journal.recoveryRecord = await ensureRecoveryRecord(harnessRoot, journal, record);
+      await beforeWrite?.('after-record');
+      journal.phase = 'recovering';
+      await atomic(file, JSON.stringify(journal), { sync: true });
     }
-    if (destination && journal.stagedFingerprint) {
-      const retained = path.join(journal.transaction, 'recovered-project');
-      if (await stat(retained)) throw new Error('recovery output already exists');
-      await assertSafeSetupDestination({ harnessRoot, destination: projectRoot });
-      await assertRecoveryPaths(harnessRoot, journal);
-      await rename(projectRoot, retained);
-    }
+
+    if (record.retainedProject) {
+      if (!journal.stagedFingerprint || staged) throw new Error('invalid retained project intent');
+      if (retainedInfo) {
+        if (await treeFingerprint(retained, new Set(journal.ignoredDirectories)) !== journal.stagedFingerprint)
+          throw new Error('retained project drift');
+        if (destination && (journal.destinationState !== 'empty' || displaced || (await readdir(projectRoot)).length))
+          throw new Error('both published and retained projects present');
+      } else {
+        if (!destination || await treeFingerprint(projectRoot, new Set(journal.ignoredDirectories)) !== journal.stagedFingerprint)
+          throw new Error('published project outside drift');
+        if (journal.destinationState === 'empty' && !displaced) throw new Error('missing displaced empty destination');
+        if (journal.destinationState === 'absent' && displaced) throw new Error('unexpected displaced destination');
+        await assertSafeSetupDestination({ harnessRoot, destination: projectRoot });
+        await assertRecoveryPaths(harnessRoot, journal);
+        await rename(projectRoot, retained);
+        await beforeWrite?.('after-retain');
+      }
+    } else if (retainedInfo) throw new Error('unexpected retained project');
+    if (!!record.retainedStaging !== !!staged) throw new Error('retained staging drift');
     if (journal.destinationState === 'empty' && displaced && !(await stat(projectRoot))) {
       await assertSafeSetupDestination({ harnessRoot, destination: projectRoot });
       await assertRecoveryPaths(harnessRoot, journal);
       await rename(journal.displaced, projectRoot);
+      await beforeWrite?.('after-restore-empty');
     }
-    journal.recoveryRecord = await recoveryRecord(harnessRoot, journal, { create: true }) ?? undefined;
+    if (journal.destinationState === 'empty') {
+      if (!(await stat(projectRoot))?.isDirectory() || (await readdir(projectRoot)).length || await stat(journal.displaced))
+        throw new Error('empty destination not restored');
+    } else if (await stat(projectRoot)) throw new Error('unexpected recovered destination');
+    await verifyRetainedEvidence(harnessRoot, journal, record);
+    if (JSON.stringify(await readRecoveryRecord(harnessRoot, journal)) !== JSON.stringify(record)) throw new Error('recovery record drift');
+    await beforeWrite?.('before-final-journal');
     journal.phase = 'rolled-back';
-    await atomic(file, JSON.stringify(journal));
+    await atomic(file, JSON.stringify(journal), { sync: true });
     return { phase: 'rolled-back', projectRoot, retainedStaging: journal.transaction };
   }, { recoverStale: true });
 }

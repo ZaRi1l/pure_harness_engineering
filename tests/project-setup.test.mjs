@@ -264,7 +264,7 @@ test('crash after publish requires explicit recovery and refuses outside drift',
   assert.equal(await exists(f.projectRoot), true);
   await assert.rejects(planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' }), /journal|recover/i);
   await writeFile(path.join(f.projectRoot, 'outside.txt'), 'external');
-  await assert.rejects(recoverProjectSetup({ harnessRoot: f.harnessRoot }), /outside drift/i);
+  await assert.rejects(recoverProjectSetup({ harnessRoot: f.harnessRoot }), /outside drift|destination drift/i);
   assert.equal(await readFile(path.join(f.projectRoot, 'outside.txt'), 'utf8'), 'external');
   await rm(path.join(f.projectRoot, 'outside.txt'));
   const result = await recoverProjectSetup({ harnessRoot: f.harnessRoot });
@@ -321,6 +321,84 @@ test('recovery refuses a junction-swapped record directory before retaining publ
   assert.equal(await readFile(path.join(outside, 'sentinel.txt'), 'utf8'), 'outside bytes');
   assert.equal(await exists(path.join(f.projectRoot, '.git')), true);
 });
+
+test('conflicting recovery record blocks before moving the published child', async t => {
+  const f = await fixture(t, true);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  const moduleUrl = new URL('../harness/project-setup.mjs', import.meta.url).href;
+  const code = `import { applyProjectSetup } from ${JSON.stringify(moduleUrl)}; await applyProjectSetup(${JSON.stringify({ harnessRoot: f.harnessRoot, plan })}, { beforeWrite: phase => { if (phase === 'after-publish') process.exit(86); } });`;
+  assert.equal(spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', windowsHide: true }).status, 86);
+  const journalPath = path.join(f.harnessRoot, '.harness/setup-journal.json');
+  const before = await readFile(journalPath);
+  const journal = JSON.parse(before);
+  const recordPath = path.join(f.harnessRoot, '.harness/recovery-records', `${path.basename(journal.transaction)}.json`);
+  await mkdir(path.dirname(recordPath), { recursive: true });
+  await writeFile(recordPath, '{"foreign":true}');
+  await assert.rejects(recoverProjectSetup({ harnessRoot: f.harnessRoot }), /record|collision|drift/i);
+  assert.deepEqual(await readFile(journalPath), before);
+  assert.equal(await readFile(recordPath, 'utf8'), '{"foreign":true}');
+  assert.equal(await exists(path.join(f.projectRoot, '.git')), true);
+  assert.equal(await exists(journal.displaced), true);
+  assert.equal(await exists(path.join(journal.transaction, 'recovered-project')), false);
+});
+
+test('crash after empty destination restore resumes recovery from durable intent', async t => {
+  const f = await fixture(t, true);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  const moduleUrl = new URL('../harness/project-setup.mjs', import.meta.url).href;
+  const applyCode = `import { applyProjectSetup } from ${JSON.stringify(moduleUrl)}; await applyProjectSetup(${JSON.stringify({ harnessRoot: f.harnessRoot, plan })}, { beforeWrite: phase => { if (phase === 'after-publish') process.exit(86); } });`;
+  assert.equal(spawnSync(process.execPath, ['--input-type=module', '-e', applyCode], { encoding: 'utf8', windowsHide: true }).status, 86);
+  const recoverCode = `import { recoverProjectSetup } from ${JSON.stringify(moduleUrl)}; await recoverProjectSetup(${JSON.stringify({ harnessRoot: f.harnessRoot })}, { beforeWrite: phase => { if (phase === 'after-restore-empty') process.exit(87); } });`;
+  assert.equal(spawnSync(process.execPath, ['--input-type=module', '-e', recoverCode], { encoding: 'utf8', windowsHide: true }).status, 87);
+  const journal = JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/setup-journal.json')));
+  assert.equal(journal.phase, 'recovering');
+  assert.deepEqual(await readdir(f.projectRoot), []);
+  assert.equal(await exists(path.join(journal.transaction, 'recovered-project/.git')), true);
+  const recordPath = path.join(f.harnessRoot, '.harness/recovery-records', `${path.basename(journal.transaction)}.json`);
+  assert.equal(JSON.parse(await readFile(recordPath)).retainedProject, path.join(journal.transaction, 'recovered-project'));
+  const result = await recoverProjectSetup({ harnessRoot: f.harnessRoot });
+  assert.equal(result.phase, 'rolled-back');
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan });
+  assert.equal(await exists(path.join(journal.transaction, 'recovered-project/.git')), true);
+});
+
+test('recovery write error after retaining project is safely resumable', async t => {
+  const f = await fixture(t, true);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  const moduleUrl = new URL('../harness/project-setup.mjs', import.meta.url).href;
+  const applyCode = `import { applyProjectSetup } from ${JSON.stringify(moduleUrl)}; await applyProjectSetup(${JSON.stringify({ harnessRoot: f.harnessRoot, plan })}, { beforeWrite: phase => { if (phase === 'after-publish') process.exit(86); } });`;
+  assert.equal(spawnSync(process.execPath, ['--input-type=module', '-e', applyCode], { encoding: 'utf8', windowsHide: true }).status, 86);
+  await assert.rejects(recoverProjectSetup({ harnessRoot: f.harnessRoot }, {
+    beforeWrite: phase => { if (phase === 'after-retain') throw new Error('injected recovery write error'); }
+  }), /injected recovery write error/);
+  const journal = JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/setup-journal.json')));
+  assert.equal(journal.phase, 'recovering');
+  assert.equal(await exists(f.projectRoot), false);
+  assert.equal(await exists(path.join(journal.transaction, 'recovered-project/.git')), true);
+  assert.equal(await exists(journal.displaced), true);
+  assert.equal((await recoverProjectSetup({ harnessRoot: f.harnessRoot })).phase, 'rolled-back');
+  assert.deepEqual(await readdir(f.projectRoot), []);
+  assert.equal(await exists(path.join(journal.transaction, 'recovered-project/.git')), true);
+});
+
+for (const phase of ['after-record', 'before-final-journal']) {
+  test(`recovery resumes after process crash at ${phase}`, async t => {
+    const f = await fixture(t, true);
+    const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+    const moduleUrl = new URL('../harness/project-setup.mjs', import.meta.url).href;
+    const applyCode = `import { applyProjectSetup } from ${JSON.stringify(moduleUrl)}; await applyProjectSetup(${JSON.stringify({ harnessRoot: f.harnessRoot, plan })}, { beforeWrite: step => { if (step === 'after-publish') process.exit(86); } });`;
+    assert.equal(spawnSync(process.execPath, ['--input-type=module', '-e', applyCode], { encoding: 'utf8', windowsHide: true }).status, 86);
+    const recoverCode = `import { recoverProjectSetup } from ${JSON.stringify(moduleUrl)}; await recoverProjectSetup(${JSON.stringify({ harnessRoot: f.harnessRoot })}, { beforeWrite: step => { if (step === ${JSON.stringify(phase)}) process.exit(87); } });`;
+    assert.equal(spawnSync(process.execPath, ['--input-type=module', '-e', recoverCode], { encoding: 'utf8', windowsHide: true }).status, 87);
+    const journalPath = path.join(f.harnessRoot, '.harness/setup-journal.json');
+    const interrupted = JSON.parse(await readFile(journalPath));
+    assert.equal(interrupted.phase, phase === 'after-record' ? 'published' : 'recovering');
+    assert.equal(await exists(path.join(f.harnessRoot, '.harness/recovery-records', `${path.basename(interrupted.transaction)}.json`)), true);
+    assert.equal((await recoverProjectSetup({ harnessRoot: f.harnessRoot })).phase, 'rolled-back');
+    assert.deepEqual(await readdir(f.projectRoot), []);
+    assert.equal(await exists(path.join(interrupted.transaction, 'recovered-project/.git')), true);
+  });
+}
 
 test('extra staged local file introduced during copy fails before canonical publish', async t => {
   const f = await fixture(t);
