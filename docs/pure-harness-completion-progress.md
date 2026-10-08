@@ -100,3 +100,5 @@ Root 보고 기준 구현 흐름은 고정 컨텍스트·UI·source inventory·n
 - 같은 기준의 `npm run self-check`는 exit 0이다. setup 미실행, hook 미관찰, native/model entitlement 미검증 WARN은 예상된 미검증 상태다. WARN을 실제 native 권한·훅 통과로 해석하지 않는다.
 - `workerproject_setup_task2`가 정확한 코드 복사본에서 중립 cold-start를 진행 중이라고 Root가 전달했다. 아직 실제 setup/앱 실행·테스트·agent ID·rollout telemetry 결과가 도착하지 않아 모두 **대기**다. native ACK 없이 subagent ID를 추정해 기록하지 않는다.
 - 관찰에 기반한 사용자 절차 문서 갱신/재연, 출시 SHA의 재시험, 검증된 작업 브랜치 정리, `main` push 및 remote SHA 대조도 **미완료**다. 이 문서 변경은 native-critical 코드/생성 출력의 동등성을 주장하거나 `nativeSmoke`를 승격하지 않는다.
+
+후속 cold-start에서 `7d1a8c9`가 생성한 child `AGENTS.md`의 claim 예제가 제거된 `--project`, `--checkout`, `--binding` 플래그를 여전히 쓴다는 결함이 확인됐다. 따라서 위 `CODE_SHA` 표기는 당시의 전체 코드 시험 통과 기록일 뿐 최종 frozen 코드가 아니다. 수정 `3693951ee2e72343f079c429ed9e1cdad3e489c9`는 project cwd에서 실행 가능한 flagless claim/release 지침을 생성하며, 실제 PowerShell 명령을 포함한 bridge/runtime 집중 시험 82/82가 통과했다. 새 전체 suite/self-check, 수정 SHA의 중립 복사본·native 실행 및 release 검증은 별도 대기다.
