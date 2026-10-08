@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { cp, lstat, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -275,6 +275,51 @@ test('crash after publish requires explicit recovery and refuses outside drift',
   await applyProjectSetup({ harnessRoot: f.harnessRoot, plan });
   assert.equal(await exists(path.join(f.projectRoot, '.git')), true);
   assert.equal(await exists(path.join(journal.transaction, 'recovered-project/.git')), true);
+  const recordPath = path.join(f.harnessRoot, '.harness/recovery-records', `${path.basename(journal.transaction)}.json`);
+  const record = JSON.parse(await readFile(recordPath));
+  assert.equal(record.retainedProject, path.join(journal.transaction, 'recovered-project'));
+  assert.equal(await exists(record.retainedProject), true);
+});
+
+test('recovery refuses a junction-swapped transaction without moving the published project outside core', async t => {
+  const f = await fixture(t, true);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  const moduleUrl = new URL('../harness/project-setup.mjs', import.meta.url).href;
+  const code = `import { applyProjectSetup } from ${JSON.stringify(moduleUrl)}; await applyProjectSetup(${JSON.stringify({ harnessRoot: f.harnessRoot, plan })}, { beforeWrite: phase => { if (phase === 'after-publish') process.exit(86); } });`;
+  assert.equal(spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', windowsHide: true }).status, 86);
+  const journalPath = path.join(f.harnessRoot, '.harness/setup-journal.json');
+  const journalBytes = await readFile(journalPath);
+  const journal = JSON.parse(journalBytes);
+  const outside = path.join(f.base, 'outside-transaction');
+  await rename(journal.transaction, outside);
+  await symlink(outside, journal.transaction, process.platform === 'win32' ? 'junction' : 'dir');
+  const outsideBefore = await readdir(outside);
+  await writeFile(path.join(outside, 'sentinel.txt'), 'untouched outside');
+  await assert.rejects(recoverProjectSetup({ harnessRoot: f.harnessRoot }), /link|junction|reparse|escape|unsafe/i);
+  assert.deepEqual(await readFile(journalPath), journalBytes);
+  assert.deepEqual((await readdir(outside)).sort((a, b) => a.localeCompare(b)), [...outsideBefore, 'sentinel.txt'].sort((a, b) => a.localeCompare(b)));
+  assert.equal(await readFile(path.join(outside, 'sentinel.txt'), 'utf8'), 'untouched outside');
+  assert.equal(await exists(path.join(outside, 'recovered-project')), false);
+  assert.equal(await exists(path.join(f.projectRoot, '.git')), true);
+});
+
+test('recovery refuses a junction-swapped record directory before retaining published bytes', async t => {
+  const f = await fixture(t, true);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  const moduleUrl = new URL('../harness/project-setup.mjs', import.meta.url).href;
+  const code = `import { applyProjectSetup } from ${JSON.stringify(moduleUrl)}; await applyProjectSetup(${JSON.stringify({ harnessRoot: f.harnessRoot, plan })}, { beforeWrite: phase => { if (phase === 'after-publish') process.exit(86); } });`;
+  assert.equal(spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', windowsHide: true }).status, 86);
+  const journalPath = path.join(f.harnessRoot, '.harness/setup-journal.json');
+  const journalBefore = await readFile(journalPath);
+  const outside = path.join(f.base, 'outside-records');
+  await mkdir(outside);
+  await writeFile(path.join(outside, 'sentinel.txt'), 'outside bytes');
+  await symlink(outside, path.join(f.harnessRoot, '.harness/recovery-records'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(recoverProjectSetup({ harnessRoot: f.harnessRoot }), /link|junction|reparse|escape|unsafe/i);
+  assert.deepEqual(await readFile(journalPath), journalBefore);
+  assert.deepEqual(await readdir(outside), ['sentinel.txt']);
+  assert.equal(await readFile(path.join(outside, 'sentinel.txt'), 'utf8'), 'outside bytes');
+  assert.equal(await exists(path.join(f.projectRoot, '.git')), true);
 });
 
 test('extra staged local file introduced during copy fails before canonical publish', async t => {

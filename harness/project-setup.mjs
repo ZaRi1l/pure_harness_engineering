@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { cp, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { assertSafeSetupDestination, inspectSetupSource } from './source-inventory.mjs';
 import { applyBridgePlan, buildBridgePlan, checkNativeBridge, rollbackNativeBridge } from './native-bridge.mjs';
@@ -88,13 +88,63 @@ function checkedJournal(harnessRoot, journal) {
       !path.basename(journal.transaction).startsWith(`${journal.setupId}-`) || !uuid(path.basename(journal.transaction).slice(journal.setupId.length + 1)) ||
       journal.staged !== path.join(journal.transaction, 'project') || journal.displaced !== path.join(journal.transaction, 'empty-project') ||
       !(journal.stagedFingerprint === null || /^[a-f0-9]{64}$/.test(journal.stagedFingerprint)) || !Array.isArray(journal.ignoredDirectories) ||
-      journal.ignoredDirectories.some(value => typeof value !== 'string' || value.includes('\\') || path.isAbsolute(value) || value.split('/').some(part => !part || part === '.' || part === '..')))
+      journal.ignoredDirectories.some(value => typeof value !== 'string' || value.includes('\\') || path.isAbsolute(value) || value.split('/').some(part => !part || part === '.' || part === '..')) ||
+      (journal.recoveryRecord !== undefined && journal.recoveryRecord !== path.join(path.resolve(harnessRoot), '.harness/recovery-records', `${path.basename(journal.transaction)}.json`)))
     throw new Error('invalid setup journal; manual recovery required');
   return journal;
 }
+async function assertOwnedPath(harnessRoot, relative) {
+  const root = path.resolve(harnessRoot);
+  const target = path.resolve(root, relative);
+  const parts = path.relative(root, target).split(path.sep);
+  if (!parts.length || parts.some(part => !part || part === '.' || part === '..') || !target.startsWith(`${root}${path.sep}`)) throw new Error('recovery path escape');
+  let current = root;
+  for (const part of parts) {
+    current = path.join(current, part);
+    const info = await stat(current);
+    if (!info) break;
+    if (info.isSymbolicLink()) throw new Error('recovery link or reparse point forbidden');
+    const canonical = await realpath(current);
+    if ((process.platform === 'win32' ? canonical.toLowerCase() : canonical) !== (process.platform === 'win32' ? current.toLowerCase() : current))
+      throw new Error('recovery link or reparse escape');
+  }
+}
+async function assertRecoveryPaths(harnessRoot, journal) {
+  for (const candidate of [journal.transaction, journal.staged, journal.displaced, path.join(journal.transaction, 'recovered-project')])
+    await assertOwnedPath(harnessRoot, path.relative(harnessRoot, candidate));
+  await assertOwnedPath(harnessRoot, path.join('.harness', 'recovery-records'));
+}
+async function recoveryRecord(harnessRoot, journal, { create = false } = {}) {
+  const file = path.join(harnessRoot, '.harness/recovery-records', `${path.basename(journal.transaction)}.json`);
+  await assertOwnedPath(harnessRoot, path.relative(harnessRoot, file));
+  const retainedProject = path.join(journal.transaction, 'recovered-project');
+  const retainedStaging = journal.staged;
+  const projectPresent = !!(await stat(retainedProject));
+  const stagingPresent = !!(await stat(retainedStaging));
+  if (!projectPresent && !stagingPresent) return null;
+  const expected = { schemaVersion: 1, setupId: journal.setupId, transaction: journal.transaction,
+    retainedProject: projectPresent ? retainedProject : null, retainedStaging: stagingPresent ? retainedStaging : null };
+  const prior = await content(file);
+  if (prior) {
+    let parsed;
+    try { parsed = JSON.parse(prior); } catch { throw new Error('invalid recovery record'); }
+    if (JSON.stringify(parsed) !== JSON.stringify(expected)) throw new Error('recovery record drift');
+  } else if (create) {
+    await mkdir(path.dirname(file), { recursive: true });
+    await assertOwnedPath(harnessRoot, path.relative(harnessRoot, file));
+    await writeFile(file, JSON.stringify(expected), { flag: 'wx' });
+  } else throw new Error('missing recovery record');
+  return file;
+}
 async function assertNoPendingJournal(harnessRoot) {
   const journal = await setupJournal(harnessRoot);
-  if (journal && checkedJournal(harnessRoot, journal).phase !== 'rolled-back') throw new Error('pending setup journal; explicit recovery required');
+  if (!journal) return;
+  checkedJournal(harnessRoot, journal);
+  if (journal.phase !== 'rolled-back') throw new Error('pending setup journal; explicit recovery required');
+  if (journal.recoveryRecord) {
+    await assertRecoveryPaths(harnessRoot, journal);
+    if (await recoveryRecord(harnessRoot, journal) !== journal.recoveryRecord) throw new Error('missing recovery record');
+  }
 }
 async function atomic(file, bytes) {
   await mkdir(path.dirname(file), { recursive: true });
@@ -221,8 +271,12 @@ export async function recoverProjectSetup({ harnessRoot } = {}) {
   return lock(harnessRoot, async () => {
     const file = path.join(harnessRoot, journalName);
     const journal = checkedJournal(harnessRoot, await setupJournal(harnessRoot));
-    if (journal.phase === 'rolled-back') return { phase: 'rolled-back', projectRoot, retainedStaging: journal.transaction };
+    if (journal.phase === 'rolled-back') {
+      if (journal.recoveryRecord) { await assertRecoveryPaths(harnessRoot, journal); await recoveryRecord(harnessRoot, journal); }
+      return { phase: 'rolled-back', projectRoot, retainedStaging: journal.transaction };
+    }
     if (journal.mode === 'update' || journal.phase === 'bridge-applied') throw new Error('setup journal requires manual bridge/config recovery');
+    await assertRecoveryPaths(harnessRoot, journal);
     if (await content(path.join(harnessRoot, `.harness/adapters/${journal.target}.journal.json`)) ||
         await content(path.join(harnessRoot, `.harness/adapters/${journal.target}.json`)) ||
         await content(path.join(harnessRoot, configName))) throw new Error('setup journal has bridge or config state; manual recovery required');
@@ -245,9 +299,16 @@ export async function recoverProjectSetup({ harnessRoot } = {}) {
     if (destination && journal.stagedFingerprint) {
       const retained = path.join(journal.transaction, 'recovered-project');
       if (await stat(retained)) throw new Error('recovery output already exists');
+      await assertSafeSetupDestination({ harnessRoot, destination: projectRoot });
+      await assertRecoveryPaths(harnessRoot, journal);
       await rename(projectRoot, retained);
     }
-    if (journal.destinationState === 'empty' && displaced && !(await stat(projectRoot))) await rename(journal.displaced, projectRoot);
+    if (journal.destinationState === 'empty' && displaced && !(await stat(projectRoot))) {
+      await assertSafeSetupDestination({ harnessRoot, destination: projectRoot });
+      await assertRecoveryPaths(harnessRoot, journal);
+      await rename(journal.displaced, projectRoot);
+    }
+    journal.recoveryRecord = await recoveryRecord(harnessRoot, journal, { create: true }) ?? undefined;
     journal.phase = 'rolled-back';
     await atomic(file, JSON.stringify(journal));
     return { phase: 'rolled-back', projectRoot, retainedStaging: journal.transaction };
