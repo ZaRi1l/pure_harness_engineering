@@ -126,6 +126,11 @@ async function rejectSymlinkComponents(target, field) {
   }
 }
 
+async function requireDirectoryIfPresent(target, field) {
+  try { if (!(await lstat(target)).isDirectory()) fail('INVALID_PATH', field); }
+  catch (error) { if (error instanceof ContextError) throw error; if (error.code !== 'ENOENT') fail('UNAVAILABLE_PATH', field); }
+}
+
 async function gitIdentity(cwd, field) {
   const result = spawnSync('git', ['rev-parse', '--path-format=absolute', '--show-toplevel', '--absolute-git-dir', '--git-common-dir', '--is-inside-work-tree'], { cwd, encoding: 'utf8', windowsHide: true });
   if (result.status !== 0) fail('INVALID_GIT', field);
@@ -168,6 +173,7 @@ export async function loadFixedProjectContext({ harnessRoot, cwd = process.cwd()
 
   const management = path.join(harness, '.harness');
   for (const name of ['', 'config.json', 'tasks', 'memory', 'runtime']) await rejectSymlinkComponents(path.join(management, name), `.harness/${name}`);
+  for (const name of ['', 'tasks', 'memory', 'runtime']) await requireDirectoryIfPresent(path.join(management, name), `.harness/${name}`);
   const configPath = path.join(management, 'config.json');
   let configExists;
   try { if (!(await lstat(configPath)).isFile()) fail('INVALID_CONFIG', 'config'); configExists = true; }

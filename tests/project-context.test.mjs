@@ -88,6 +88,23 @@ test('setup preview rejects an existing non-file config rather than treating it 
   assert.deepEqual(await readdir(path.dirname(f.configPath)), before);
 });
 
+test('fixed management paths may be absent but cannot be regular files', async t => {
+  const absent = await fixedFixture();
+  assert.equal((await loadFixedProjectContext({ harnessRoot: absent.harnessRoot, cwd: absent.projectRoot })).projectId, 'project');
+  for (const name of ['tasks', 'memory', 'runtime']) {
+    await t.test(name, async () => {
+      const f = await fixedFixture();
+      const location = path.join(f.harnessRoot, '.harness', name);
+      const bytes = `not a ${name} directory\n`;
+      await writeFile(location, bytes);
+      const configBefore = await readFile(f.configPath);
+      await assert.rejects(loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot }), /path|directory|harness/i);
+      assert.equal(await readFile(location, 'utf8'), bytes);
+      assert.deepEqual(await readFile(f.configPath), configBefore);
+    });
+  }
+});
+
 test('fixed loader rejects a symlinked worktree Git pointer', async t => {
   const f = await fixedFixture();
   const pointer = path.join(f.linkedRoot, '.git');
