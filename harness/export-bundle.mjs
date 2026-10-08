@@ -34,6 +34,26 @@ async function assertNoSymlinkAncestors(absolute) {
   }
 }
 
+async function assertRegularSourceFile(absolute) {
+  await assertNoSymlinkAncestors(path.dirname(absolute));
+  const metadata = await lstat(absolute);
+  if (metadata.isSymbolicLink()) throw new Error(`symlink source rejected: ${absolute}`);
+  if (!metadata.isFile()) throw new Error(`source is not a regular file: ${absolute}`);
+}
+
+async function assertSourceTree(directory) {
+  await assertNoSymlinkAncestors(directory);
+  async function visit(current) {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) throw new Error(`symlink source rejected: ${absolute}`);
+      if (entry.isDirectory()) await visit(absolute);
+      else if (!entry.isFile()) throw new Error(`unsupported source file type: ${absolute}`);
+    }
+  }
+  await visit(directory);
+}
+
 function assertDistinct(source, output) {
   const a = path.normalize(source).toLowerCase(), b = path.normalize(output).toLowerCase();
   if (a === b || a.startsWith(`${b}${path.sep}`) || b.startsWith(`${a}${path.sep}`))
@@ -80,6 +100,10 @@ export async function exportBundle({ source = defaultSource, output, targets = '
   await assertNoSymlinkAncestors(path.dirname(outputRoot));
   try { await lstat(outputRoot); throw new Error(`output already exists: ${outputRoot}`); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
+
+  await assertRegularSourceFile(path.join(sourceRoot, 'harness/compatibility.json'));
+  await assertSourceTree(path.join(sourceRoot, 'harness/agents'));
+  await assertSourceTree(path.join(sourceRoot, '.agents/skills'));
 
   const compatibilityText = await readFile(path.join(sourceRoot, 'harness/compatibility.json'), 'utf8');
   assertPortableText(compatibilityText, 'harness/compatibility.json');

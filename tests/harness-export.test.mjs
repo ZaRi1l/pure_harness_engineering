@@ -94,6 +94,54 @@ test('rejects symlinked skill resources without creating a bundle', async () => 
   });
 });
 
+for (const linkedSource of ['harness/agents/planner.md', 'harness/compatibility.json']) {
+  test(`rejects symlinked ${linkedSource} source without creating a bundle`, async t => {
+    await withTemporaryDirectory(async parent => {
+      const fixture = path.join(parent, 'engine');
+      await mkdir(path.join(fixture, 'harness'), { recursive: true });
+      await mkdir(path.join(fixture, '.agents'), { recursive: true });
+      await cp(path.join(source, 'harness/agents'), path.join(fixture, 'harness/agents'), { recursive: true });
+      await cp(path.join(source, 'harness/compatibility.json'), path.join(fixture, 'harness/compatibility.json'));
+      await cp(path.join(source, '.agents/skills'), path.join(fixture, '.agents/skills'), { recursive: true });
+      const target = path.join(fixture, linkedSource);
+      await rm(target);
+      try { await symlink(path.join(source, linkedSource), target, 'file'); }
+      catch (error) { if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('file symlinks unavailable'); throw error; }
+      const output = path.join(parent, 'bundle');
+      await assert.rejects(exportBundle({ source: fixture, output, targets: 'codex', profile: 'core' }), /symlink/i);
+      await assert.rejects(lstat(output), { code: 'ENOENT' });
+    });
+  });
+}
+
+test('rejects a linked canonical roles directory before reading its files', async () => {
+  await withTemporaryDirectory(async parent => {
+    const fixture = path.join(parent, 'engine');
+    await mkdir(path.join(fixture, 'harness'), { recursive: true });
+    await mkdir(path.join(fixture, '.agents'), { recursive: true });
+    await cp(path.join(source, 'harness/compatibility.json'), path.join(fixture, 'harness/compatibility.json'));
+    await cp(path.join(source, '.agents/skills'), path.join(fixture, '.agents/skills'), { recursive: true });
+    try { await symlink(path.join(source, 'harness/agents'), path.join(fixture, 'harness/agents'), 'junction'); }
+    catch (error) { if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return; throw error; }
+    const output = path.join(parent, 'bundle');
+    await assert.rejects(exportBundle({ source: fixture, output, targets: 'codex', profile: 'core' }), /symlink/i);
+    await assert.rejects(lstat(output), { code: 'ENOENT' });
+  });
+});
+
+test('rejects a linked harness directory before reading compatibility metadata', async () => {
+  await withTemporaryDirectory(async parent => {
+    const fixture = path.join(parent, 'engine');
+    await mkdir(path.join(fixture, '.agents'), { recursive: true });
+    await cp(path.join(source, '.agents/skills'), path.join(fixture, '.agents/skills'), { recursive: true });
+    try { await symlink(path.join(source, 'harness'), path.join(fixture, 'harness'), 'junction'); }
+    catch (error) { if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return; throw error; }
+    const output = path.join(parent, 'bundle');
+    await assert.rejects(exportBundle({ source: fixture, output, targets: 'codex', profile: 'core' }), /symlink/i);
+    await assert.rejects(lstat(output), { code: 'ENOENT' });
+  });
+});
+
 test('CLI exports a disposable Claude candidate and rejects a repeated export', async () => {
   await withTemporaryDirectory(async parent => {
     const output = path.join(parent, 'bundle');
