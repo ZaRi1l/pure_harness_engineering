@@ -27,3 +27,4 @@ import './harness-migration.test.mjs';
 import './harness-distribution.test.mjs';
 import './harness-skills.test.mjs';
 import './harness-cli.test.mjs';
+import './harness-export.test.mjs';
