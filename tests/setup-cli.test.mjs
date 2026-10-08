@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cp, lstat, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { execFileSync } from 'node:child_process';
 import { main } from '../scripts/setup.mjs';
+import { planProjectSetup } from '../harness/project-setup.mjs';
 
 const engine = fileURLToPath(new URL('..', import.meta.url));
 const exists = async file => !!(await lstat(file).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error)));
@@ -110,4 +112,50 @@ test('interactive existing source is prompted and unconfirmed plan remains read-
   assert.match(output, /"target": "claude"/);
   assert.equal(await exists(path.join(f.harnessRoot, '.harness')), false);
   assert.equal(await exists(path.join(f.harnessRoot, 'project')), false);
+});
+
+test('standalone recover restores a displaced empty child and reports retained staging pointer', async t => {
+  const f = await fixture(t);
+  const projectRoot = path.join(f.harnessRoot, 'project');
+  await mkdir(projectRoot);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  const transaction = path.join(f.harnessRoot, '.harness/staging', `${plan.setupId}-${randomUUID()}`);
+  const displaced = path.join(transaction, 'empty-project');
+  await mkdir(transaction, { recursive: true });
+  await rename(projectRoot, displaced);
+  const journal = path.join(f.harnessRoot, '.harness/setup-journal.json');
+  await writeFile(journal, JSON.stringify({ schemaVersion: 1, setupId: plan.setupId, mode: 'new', phase: 'displacing-empty',
+    projectRoot, destinationState: 'empty', target: 'claude', transaction,
+    staged: path.join(transaction, 'project'), displaced, stagedFingerprint: null, ignoredDirectories: [] }));
+  assert.equal(await main(['--recover', '--plan'], f.io), 1);
+  assert.equal(await main(['--recover', '--apply', 'plan.json'], f.io), 1);
+  assert.equal(await exists(projectRoot), false);
+  assert.equal(JSON.parse(await readFile(journal)).phase, 'displacing-empty');
+  f.output.stdout = '';
+  assert.equal(await main(['--recover'], f.io), 0);
+  const result = JSON.parse(f.output.stdout);
+  assert.equal(result.phase, 'rolled-back');
+  assert.equal(result.projectRoot, projectRoot);
+  assert.equal(result.retainedStaging, transaction);
+  assert.equal(await exists(projectRoot), true);
+  assert.equal(await exists(path.join(projectRoot, '.git')), false);
+  assert.equal(JSON.parse(await readFile(journal)).phase, 'rolled-back');
+});
+
+test('recover refuses unsupported journal phase without printing private payload or changing it', async t => {
+  const f = await fixture(t);
+  const projectRoot = path.join(f.harnessRoot, 'project');
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  const transaction = path.join(f.harnessRoot, '.harness/staging', `${plan.setupId}-${randomUUID()}`);
+  await mkdir(transaction, { recursive: true });
+  const journal = path.join(f.harnessRoot, '.harness/setup-journal.json');
+  const bytes = JSON.stringify({ schemaVersion: 1, setupId: plan.setupId, mode: 'new', phase: 'bridge-applied',
+    projectRoot, destinationState: 'absent', target: 'claude', transaction,
+    staged: path.join(transaction, 'project'), displaced: path.join(transaction, 'empty-project'),
+    stagedFingerprint: null, ignoredDirectories: [], privateNote: 'SECRET_JOURNAL_BODY' });
+  await writeFile(journal, bytes);
+  assert.equal(await main(['--recover'], f.io), 1);
+  assert.match(f.output.stderr, /manual review/i);
+  assert.doesNotMatch(f.output.stderr, /SECRET_JOURNAL_BODY/);
+  assert.equal(await readFile(journal, 'utf8'), bytes);
 });
