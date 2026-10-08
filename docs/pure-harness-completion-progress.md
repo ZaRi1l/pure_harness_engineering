@@ -41,3 +41,18 @@ Root가 공유한 기준 실행 결과는 `npm test`: 총 484, 통과 479, 실�
 | T8 출시·정리 | 최종 SHA의 테스트·중립 복사본·native 증거 검증 뒤 출처/포함 증명된 작업 브랜치만 정리하고 승인된 main push 확인 | 대기; 무관/불명 자산은 보존 |
 
 고정 컨텍스트 T1은 Root 보고에 따르면 `D:/dev/pure_harness_fixed_context`의 분리 worktree에서 기준 `6162746`으로 실행 중이다. UI T1의 기준은 위에 기록한 `2a4b5d2`다. 두 작업의 결과·실제 테스트 명령·통합 SHA는 아직 수신되지 않았다.
+
+## 설정·네이티브 브리지 계획 사전 점검 (구현 전)
+
+[설정·브리지 계획](superpowers/plans/2026-10-08-project-setup-bridge.md)은 고정 컨텍스트의 정확한 7키 config와 branded context를 소비한다. 아래는 계획 인터페이스 검토일 뿐 실제 Apply·네이티브 시험 결과가 아니다.
+
+| 작업 | 생산·소비 및 검토 경계 | 상태 |
+| --- | --- | --- |
+| T1 source inventory | 원본 Git/head·파일 해시·범용/제품/데이터/혼합 분류의 읽기 전용 fingerprint를 T2에 제공 | 분리 worktree 착수 예정 |
+| T3 bridge | canonical 역할/Skill에서 생성한 path별 action·before/after digest·충돌 목록을 T2에 제공; 기존 후보/시험 설치 게이트와 별개 | T1과 병렬 분리 worktree 착수 예정 |
+| T2 setup transaction | T1 fingerprint와 T3 bridge plan을 모두 소비한 뒤 staging·검증·고정 child publish·7키 config 마지막 기록 | T1/T3 이후 |
+| T4 setup CLI/hook | T2 setup 계약과 T3 생성 hook 명령을 소비; cwd가 아닌 설치 경로 고정 | T2/T3 이후 |
+| T6 공통 지침 | canonical 경로·제품 AGENTS managed block을 T3와 조정; 지침 수정 뒤 T3 재렌더·digest 재검증 | T3와 조정하며 진행 |
+| T5 독립 수락 | T1–T4와 T6의 결과를 중립 fixture에서 재검증; 기존 원본 보존과 native 미검증 표시 확인 | 선행 작업 이후 |
+
+Root 보고 기준 구현 흐름은 고정 컨텍스트·UI·source inventory·native bridge의 네 분리 worktree/브랜치다. 같은 파일의 동시 writer는 없고 통합은 순차 조정한다. 새 managed bridge Apply가 성공해도 기존 후보 export/disposable-trial 게이트를 해제하지 않으며 `nativeSmoke`는 실제 세션 관찰 전까지 `unverified`다. 비밀값·프롬프트/출력 본문 analytics, 원본 제품 cleanup은 범위 밖이다. 계획 세 개가 완료 기준을 덮고 있다는 것은 범위 확인이지 코드·시험 완료 주장이 아니다.
