@@ -167,45 +167,43 @@ test('dashboard heading and network guide describe reported records, not confirm
   assert.equal(preferences.t('dashboard.futureStart'), '미래 시작 시각');
 });
 
-test('guide keeps project state intact and directs setup to a staged installation in both locales', () => {
+test('guide keeps project state intact and directs setup to the fixed child in both locales', () => {
   const { api, document, storage } = fixture();
   const preferences = api.create(document, { storage });
   const english = preferences.t('guide.body');
-  assert.match(english, /staged local installation/i);
-  assert.match(english, /selected project.*management paths/i);
-  assert.match(english, /preserve existing.*runtime/i);
+  assert.match(english, /One Harness installation.*one independent Git child/i);
+  assert.match(english, /\.harness\//);
+  assert.match(english, /Run init only once/i);
+  assert.match(english, /without moving the original/i);
+  assert.match(english, /Conflicts stop before overwrite/i);
   assert.doesNotMatch(english, /Remove-Item|Get-ChildItem|\.ai\/tasks\/\*\.md/i);
 
   preferences.setLocale('ko');
   const korean = preferences.t('guide.body');
-  assert.match(korean, /별도.*설치/);
-  assert.match(korean, /선택.*프로젝트.*관리 경로/);
-  assert.match(korean, /기존.*runtime.*보존/);
+  assert.match(korean, /Harness 설치 한 개.*project\//);
+  assert.match(korean, /\.harness\//);
+  assert.match(korean, /init은 처음 한 번만/);
+  assert.match(korean, /원본을 이동하지 않고 복사/);
+  assert.match(korean, /충돌은 덮어쓰기 전에 중단/);
   assert.doesNotMatch(korean, /Remove-Item|Get-ChildItem|\.ai\/tasks\/\*\.md/i);
 });
 
-test('both guide locales distinguish read-only generator inspection from gated writes and show selected-project preview context', () => {
+test('both guide locales keep native verification separate from setup and show flagless preview', () => {
   const { api, document, storage } = fixture();
   const preferences = api.create(document, { storage });
   for (const locale of ['en', 'ko']) {
     preferences.setLocale(locale);
     const body = preferences.t('guide.body');
     const network = preferences.t('guide.networkBody');
-    for (const command of [
-      'node scripts/detect-targets.mjs --json',
-      'node scripts/validate.mjs --targets codex --profile core --json',
-      'node scripts/sync.mjs --targets codex --profile core --dry-run',
-      'node scripts/sync.mjs --targets codex --profile core --check'
-    ]) assert.ok(body.includes(command), `${locale} guide omits ${command}`);
-    assert.match(body, /native smoke/i);
-    assert.match(body, /preview\/index\.html.*#guide/s);
-    assert.match(body, /npm run preview:live -- --project .* --checkout .* --binding /);
-    assert.match(network, /npm run preview:live -- --project .* --checkout .* --binding /);
-    assert.doesNotMatch(network, /(?:^|\n)(?:Real runtime|실제 runtime): npm run preview:live(?:\n|<)/);
+    assert.match(body, locale === 'en' ? /Generated files alone do not prove native role or Skill discovery/ : /파일 생성만으로 네이티브 역할·Skill 탐색.*증명되지 않습니다/);
+    assert.match(body, locale === 'en' ? /do not use sync to bypass/ : /sync.*우회하지 마세요/);
+    assert.match(body, /preview:live.*#guide/s);
+    assert.match(network, /npm run preview:live/);
+    assert.doesNotMatch(body + network, /--project|--checkout|--binding/);
   }
 });
 
-test('guide panel uses live preferences for both locale paths and selected-project commands', () => {
+test('guide panel uses live preferences for both locale paths and fixed-project commands', () => {
   const { api, document, storage } = fixture();
   const preferences = api.create(document, { storage });
   const english = createGuidePanel({ document, translate: preferences.t });
@@ -213,7 +211,7 @@ test('guide panel uses live preferences for both locale paths and selected-proje
   assert.equal(choices[0].textContent, 'Start a new project');
   assert.equal(choices[2].textContent, 'Open an already connected project');
   choices[2].click();
-  assert.match(english.children[3].children[1].textContent, /^npm run preview:live -- --project/);
+  assert.equal(english.children[3].children[1].textContent, 'npm run status\nnpm run preview:live');
   assert.doesNotMatch(english.children[3].children[1].textContent, /npm run init/);
 
   preferences.setLocale('ko');
@@ -221,5 +219,7 @@ test('guide panel uses live preferences for both locale paths and selected-proje
   assert.equal(korean.children[1].children[0].textContent, '새 프로젝트 시작');
   korean.children[1].children[1].click();
   assert.match(korean.children[3].children[0].textContent, /원본 프로젝트와 runtime을 그대로 보존/);
-  assert.equal(korean.children[3].children.length, 1);
+  assert.equal(korean.children[3].children.length, 2);
+  assert.match(korean.children[3].children[1].textContent, /^npm run setup\nnpm run init/);
+  assert.doesNotMatch(korean.children[3].children[1].textContent, /--project|--checkout|--binding/);
 });
