@@ -7,7 +7,7 @@
 1. **새 빈 프로젝트**라면 [1. 새 프로젝트 시작](#1-새-프로젝트-시작)을 따릅니다.
 2. **이미 작업 중인 프로젝트**라면 원본을 보존하고 [2. 격리 복사해 시험하기](#2-기존-프로젝트를-격리-복사해-시험하기)를 따릅니다.
 
-> 이 단계에서 검증되는 것은 프로젝트 식별·별도 runtime·대시보드의 수동 작업 편집입니다. 프로젝트 등록만으로 Codex/Claude Code/OpenCode/Antigravity의 설정, Skill, 훅이 자동 설치되거나 기존 훅 이벤트가 새 runtime으로 전달되지는 않습니다. 따라서 새 프로젝트의 에이전트 그래프와 토큰 텔레메트리가 비어 있을 수 있습니다. 기존 프로젝트의 자동화 전환과 데이터 이관은 아직 지원 절차가 아닙니다.
+> 프로젝트 등록으로 검증되는 것은 식별·별도 runtime·대시보드의 수동 작업 편집입니다. [4. 도구별 후보 생성과 격리 시험](#4-ai-도구별-후보-생성과-격리-시험)은 별도의 선택 사항입니다. 후보를 생성·시험 설치해도 훅과 runtime 연결은 설치되지 않으며, 기존 프로젝트의 자동화 전환과 데이터 이관도 완료되지 않습니다.
 
 ## 1. 새 프로젝트 시작
 
@@ -102,22 +102,49 @@ npm run preview:live -- --project $ProjectId --checkout $ProjectRoot --binding $
 
 `실행 중 기록 에이전트`가 0명이거나 토큰 텔레메트리가 비어 있어도 첫 등록·화면 검사는 실패한 것이 아닙니다. 네이티브 AI 세션의 에이전트/훅/rollout 기록을 이 runtime으로 보내는 어댑터는 위 절차에서 설치되지 않습니다. 기존 프로젝트 훅이 자체 `.ai/runtime`에 쓰는 경우 새 Harness의 `projects/<id>/runtime`에는 나타나지 않습니다. **자동 수집까지 확인했다고 보고하지 마세요.**
 
-## 4. AI 도구별 설정 점검
+## 4. AI 도구별 후보 생성과 격리 시험
 
-아래 명령은 Harness 설치 디렉터리에서 **도구 하나를 선택해 후보와 차단 이유를 확인**합니다. `$Target`을 `codex`, `claude`(Claude Code), `opencode`, `antigravity` 중 하나로 바꾸세요. 네 도구를 한꺼번에 점검하려면 `--targets all`도 가능합니다. 각 줄을 개별 실행하고 종료 코드와 메시지를 읽으세요.
+아래는 **소스 엔진**, 새 **후보 묶음**, 새 **시험용 소비 프로젝트**를 각각 분리하는 예시입니다. `$Target`을 `codex`, `claude`(Claude Code), `opencode`, `antigravity` 중 하나로 바꾸세요. `all` 또는 `codex,claude`처럼 쉼표로 구분한 부분집합도 됩니다. `core`는 다섯 역할·네 Skill, `all` 프로필은 열다섯 역할·여덟 Skill입니다. 이 명령은 기존 `$ProjectRoot`의 파일을 바꾸지 않습니다.
 
 ```powershell
-Set-Location $HarnessRoot
-$Target = 'claude' # codex / claude / opencode / antigravity 중 하나
-node scripts/detect-targets.mjs --root $ProjectRoot --json
-node scripts/validate.mjs --targets $Target --profile core --json
-node scripts/sync.mjs --targets $Target --profile core --dry-run
-node scripts/sync.mjs --targets $Target --profile core --check
+Set-Location $HarnessRoot # export-target.mjs가 있는 Pure Harness 엔진
+$Target = 'claude'
+$BundleRoot = 'C:\work\pure-harness-claude-candidate' # 아직 없는 절대경로
+if (Test-Path -LiteralPath $BundleRoot) { throw '후보 경로가 이미 있습니다. 다른 새 경로를 선택하세요.' }
+node scripts/export-target.mjs --output $BundleRoot --targets $Target --profile core
+if ($LASTEXITCODE -ne 0) { throw '후보 생성 실패' }
 ```
 
-`detect-targets`는 선택 프로젝트의 **설정 파일 표식만** 찾으며 AI 프로그램 설치·버전·실행 가능 여부를 확인하지 않습니다. `validate`와 `sync --check`는 현재 생성 manifest와 네이티브 스모크 근거가 없어 0이 아닌 상태로 끝날 수 있습니다. `--dry-run`은 후보 경로와 기존 파일 충돌을 보여줍니다. 이 세 명령은 설정 파일을 생성·설치하지 않습니다. `--profile core`는 최소 역할·Skill 후보, `--profile all`은 전체 후보입니다.
+`export-target.mjs`는 엔진의 정본을 읽어 새 폴더에 대상 도구의 역할 파일과 선택된 Skill 파일, `bundle-manifest.json`을 생성합니다. Codex를 선택하면 `.codex/config.toml`, Claude를 선택하면 `.claude/skills/`도 후보에 포함됩니다. 원본 엔진과 기존 프로젝트는 수정하지 않으며, 출력 경로는 미리 존재하거나 엔진 경로와 중첩되거나 심볼릭 링크를 거쳐서는 안 됩니다. 별도 엔진을 입력하려면 `--source <엔진-절대경로>`를 추가할 수 있습니다. manifest의 `status: unverified`는 네이티브 검증이 끝나지 않았음을 뜻합니다.
 
-현재는 네 대상 모두 [네이티브 스모크 절차](native-smoke-worksheet.md)가 미검증이라 일반 쓰기 명령 `node scripts/sync.mjs --targets $Target --profile core`는 차단됩니다. `--force` 같은 우회 명령도 없습니다. 나중에 역할 파일 생성이 검증되더라도 그것만으로 루트 지침, 훅, Skill 탐색, 기존 프로젝트 runtime 연결까지 설치되는 것은 아닙니다. 실제 전환 전에 대상 도구에서 역할 호출·Skill 탐색·유효 권한을 독립 검증하고 [전환 게이트](project-isolation-cutover.md)를 통과해야 합니다.
+다음은 **버려도 되는 빈 Git checkout**에서만 후보 설치를 시험합니다. 원본 프로젝트 복사본도 여기에 넣지 마세요. 설치기는 정확한 Git root만 받으며, `--trial`은 remote가 없고 기존 파일이 제한된 시험 checkout에서만 허용합니다. 세 경로는 서로 안에 두지 마세요.
+
+```powershell
+$TrialRoot = 'C:\work\pure-harness-consumer-trial' # 아직 없는 절대경로
+if (Test-Path -LiteralPath $TrialRoot) { throw '시험 경로가 이미 있습니다. 다른 새 경로를 선택하세요.' }
+New-Item -ItemType Directory -Path $TrialRoot | Out-Null
+git -C $TrialRoot init
+if ($LASTEXITCODE -ne 0) { throw '시험 Git 초기화 실패' }
+if (@(git -C $TrialRoot remote).Count -ne 0) { throw 'remote가 있는 checkout에서는 중단하세요.' }
+Set-Location $HarnessRoot
+node scripts/install-target.mjs --bundle $BundleRoot --project $TrialRoot --plan --trial
+if ($LASTEXITCODE -ne 0) { throw '설치 계획 점검 실패' }
+node scripts/install-target.mjs --bundle $BundleRoot --project $TrialRoot --apply --trial
+if ($LASTEXITCODE -ne 0) { throw '시험 설치 실패' }
+node scripts/install-target.mjs --bundle $BundleRoot --project $TrialRoot --check
+if ($LASTEXITCODE -ne 0) { throw '설치 파일 점검 실패' }
+```
+
+`--plan`은 기본 모드이며 쓰지 않고 설치할 경로를 보여줍니다. `--apply`는 파일을 만들고 소유 상태를 기록합니다. `--check`는 설치된 파일의 해시를 확인합니다. 파일 설치는 도구 전환과 다릅니다. 네이티브 동작을 살피려면 **롤백 전에** 시험 checkout인 `$TrialRoot`를 선택한 도구에서 열고 역할 호출, Skill 탐색, 읽기 전용 역할의 유효 권한을 직접 확인하세요. 도구를 설치·실행하거나 이 검증을 자동 수행하는 명령은 위 절차에 없습니다.
+
+시험이 끝나면 같은 묶음으로 아래 명령을 실행하세요. `--rollback`은 설치기가 소유한 **변경되지 않은** 파일과 설치 상태만 제거하며, 사용자가 수정한 파일이 있으면 중단합니다. 시험 프로젝트 폴더 자체나 Git 저장소는 삭제하지 않습니다.
+
+```powershell
+node scripts/install-target.mjs --bundle $BundleRoot --project $TrialRoot --rollback
+if ($LASTEXITCODE -ne 0) { throw '롤백 실패: 파일을 직접 삭제하지 말고 충돌을 확인하세요.' }
+```
+
+[네이티브 스모크 절차](native-smoke-worksheet.md)는 아직 완료 근거가 아닙니다. 일반 `sync`는 네이티브 준비 게이트로 막혀 있고, unverified 묶음의 일반 프로젝트 `--apply`도 차단됩니다. 루트 지침, 훅, runtime 연결 및 기존 설정 병합도 범위 밖이므로 성공한 후보 생성·시험 설치를 실제 프로젝트 전환으로 보고하지 마세요. 기존 프로젝트의 [전환 게이트](project-isolation-cutover.md)는 계속 적용됩니다.
 
 ## 5. 첫 AI 작업과 수동 토큰 가져오기
 

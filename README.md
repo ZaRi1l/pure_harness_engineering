@@ -13,7 +13,7 @@ Pure Harness는 Codex 중심의 가벼운 작업 흐름 도구입니다. Main Co
 
 현재 이 절차로 확인할 수 있는 것은 **프로젝트 등록·진단, 별도 runtime, 대시보드와 수동 작업 편집**입니다. 프로젝트 manifest의 `"adapters": {}`만으로 AI 설정·훅이 설치되지는 않습니다. 기존 프로젝트의 훅이 자체 runtime을 기록한다면 이 대시보드로 자동 전달되지 않으며, 에이전트와 토큰 텔레메트리 화면이 비어 있어도 등록 실패를 뜻하지 않습니다. 기존 프로젝트의 자동화 전환·runtime 이관은 아직 [전환 게이트](docs/project-isolation-cutover.md)에서 막혀 있습니다.
 
-Codex, Claude Code, OpenCode, Antigravity 중 사용할 도구의 **후보 설정과 현재 차단 이유**는 [도구별 점검 명령](docs/first-use.md#4-ai-도구별-설정-점검)으로 확인할 수 있습니다. 지금은 설정 파일을 한 번에 바꿔 설치하는 단계가 아닙니다.
+Codex, Claude Code, OpenCode, Antigravity 중 사용할 도구의 **후보 파일은 새 폴더에 생성**할 수 있습니다. [도구별 후보 생성·격리 시험](docs/first-use.md#4-ai-도구별-후보-생성과-격리-시험)을 따라가세요. 이 경로는 기존 프로젝트의 설정을 덮어쓰는 자동 전환이 아닙니다.
 
 AI 작업은 Harness 설치가 아닌 **대상 프로젝트 checkout에서** 시작합니다. [첫 AI 작업과 수동 토큰 가져오기](docs/first-use.md#5-첫-ai-작업과-수동-토큰-가져오기)는 선택 사항이며, 자동 수집과 다릅니다.
 
@@ -149,9 +149,19 @@ npm run demo:reset
 
 ## 네 도구용 역할 생성기: 현재 단계와 제한
 
-제품에 종속되지 않는 정본 역할은 `harness/agents/<id>.md`에 있습니다. Node 스크립트는 Codex, Claude Code, OpenCode, Antigravity용 후보 역할 파일을 생성합니다. 생성된 역할의 소비에는 Node나 생성기 스크립트가 필요하지 않습니다. 정본 Skill은 `.agents/skills/`에 있습니다. 이 checkout에는 정본 역할 15개가 있지만 기존 Codex 설정에는 수동 관리 역할 14개만 등록되어 있습니다. 기존 설정, 훅, 루트 지침, Skill은 이 단계에서 생성·채택되지 않았고 생성 manifest나 승인된 채택 기록도 없습니다.
+제품에 종속되지 않는 정본 역할은 `harness/agents/<id>.md`에 있습니다. `scripts/export-target.mjs`는 Codex, Claude Code, OpenCode, Antigravity용 **후보 묶음**을 기존 경로와 겹치지 않는 새 절대경로에 생성합니다. 대상 하나, 쉼표로 구분한 부분집합 또는 `all`을 선택할 수 있습니다. 생성된 역할의 소비에는 Node나 생성기 스크립트가 필요하지 않습니다. 정본 Skill은 `.agents/skills/`에 있으며 후보 묶음에는 선택된 Skill 파일도 포함됩니다. 이 checkout의 기존 Codex 설정은 별도 수동 관리 상태로 유지됩니다.
 
-현재 `harness/compatibility.json`에서 네 대상 모두 `nativeSmoke: unverified`입니다. 따라서 후보 문법과 유효 권한·네이티브 로딩을 검증했다고 볼 수 없으며 일반 `sync` 쓰기 경로는 네이티브 스모크 게이트로 차단됩니다. Codex Skill 경로에는 고정 CLI 문서 근거가 있지만 역할 호출과 유효 권한의 네이티브 스모크는 없습니다. 다른 세 대상의 Skill 탐색도 생성기가 네이티브 준비 상태로 인정하지 않습니다. 네 도구를 모두 사용할 수 있는 배포물이라고 설명하거나 실제 checkout에 후보 파일을 적용하지 마세요. [네 도구 네이티브 스모크 절차](docs/native-smoke-worksheet.md)와 [생성기 상세 설명](docs/cross-tool-generator.md)을 참조하세요.
+```powershell
+Set-Location $HarnessRoot
+$Target = 'claude' # codex / claude / opencode / antigravity / all
+$BundleRoot = 'C:\work\pure-harness-claude-candidate' # 아직 존재하지 않는 별도 폴더
+node scripts/export-target.mjs --output $BundleRoot --targets $Target --profile core
+if ($LASTEXITCODE -ne 0) { throw '후보 생성 실패' }
+```
+
+생성기는 원본 엔진을 변경하지 않고 `bundle-manifest.json`에 `status: unverified`를 기록합니다. 결과를 살펴보고 싶다면 [격리된 Git 시험 설치·점검·롤백](docs/first-use.md#4-ai-도구별-후보-생성과-격리-시험)을 따르세요. 생성기와 설치기는 루트 지침, 훅, runtime 연결 또는 기존 프로젝트 설정을 자동 병합하지 않습니다.
+
+현재 `harness/compatibility.json`에서 네 대상 모두 `nativeSmoke: unverified`입니다. 따라서 후보 생성·격리 설치 성공만으로 유효 권한·네이티브 로딩이나 Skill 탐색을 검증했다고 볼 수 없으며 일반 `sync` 쓰기 경로는 네이티브 스모크 게이트로 차단됩니다. 일반 프로젝트에 후보를 적용하지 마세요. [네 도구 네이티브 스모크 절차](docs/native-smoke-worksheet.md)와 [생성기 상세 설명](docs/cross-tool-generator.md)을 참조하세요.
 
 다음은 읽기 전용 탐색·검사 명령입니다. `--targets`는 `codex`, `claude`, `opencode`, `antigravity`, 쉼표로 구분한 부분집합 또는 `all`을 받고, `--profile`은 `core` 또는 `all`입니다. `--root <경로>`를 생략하면 현재 작업 디렉터리를 사용합니다.
 

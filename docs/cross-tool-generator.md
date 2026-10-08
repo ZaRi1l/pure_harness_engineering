@@ -2,7 +2,51 @@
 
 The canonical, product-neutral role sources are `harness/agents/<id>.md`. Repository-side Node scripts render candidate agent files for Codex, Claude Code, OpenCode, and Antigravity. The generator runs at build time; a consumer of generated roles does not need Node or these scripts. Canonical skills remain in `.agents/skills/`.
 
-This checkout contains 15 canonical role sources, including `goal-manager`, but its existing Codex config registers only 14 hand-owned agents. The config, those 14 TOMLs, hooks, root instructions, and eight skills are not generated or adopted by this stage. There is no checked-in adoption record or generated manifest. Do not treat these candidates as an installed four-tool distribution.
+This checkout contains 15 canonical role sources, including `goal-manager`, but its existing Codex config registers only 14 hand-owned agents. The existing config, those 14 TOMLs, hooks, and root instructions are not adopted by this stage. There is no checked-in adoption record or sync-generated manifest. A separate candidate bundle can now be exported without changing this checkout; do not treat it as a verified four-tool distribution.
+
+## Generate a candidate bundle now
+
+From the engine checkout, choose one target (or a comma-separated subset, or `all`) and a **new absolute output directory**. `core` contains five roles and four skills; `all` contains 15 roles and eight skills. Keep the engine, bundle, and consumer checkout separate and nonnested.
+
+```powershell
+$EngineRoot = 'C:\tools\pure-harness'
+$BundleRoot = 'C:\work\pure-harness-claude-candidate' # must not already exist
+$Target = 'claude' # codex / claude / opencode / antigravity / all
+Set-Location $EngineRoot
+node scripts/export-target.mjs --output $BundleRoot --targets $Target --profile core
+if ($LASTEXITCODE -ne 0) { throw 'Candidate export failed' }
+```
+
+For all four targets at once, choose a different new output path and run `node scripts/export-target.mjs --output C:\work\pure-harness-all-candidate --targets all --profile all`.
+
+Use `--source <absolute-engine-path>` only when the source is not the script's own checkout. The export does not alter the source or merge into an existing output. It writes raw target-native role files (Codex TOML or leading YAML metadata for the others), selected canonical `.agents/skills/`, and Claude's `.claude/skills/` when Claude is selected. Codex also gets a candidate `.codex/config.toml`. `bundle-manifest.json` records exact file hashes and `status: unverified`. It does **not** supply root instructions, hooks, project runtime binding, task telemetry, or an existing project's config merge.
+
+To inspect an install without touching an existing project, use a disposable empty Git root with no remotes. The installer rejects a nonroot project path, path collisions, modified owned files, and a non-disposable `--apply --trial` target. `--plan` is read-only; `--apply --trial` is the only permitted apply path for this unverified bundle. Run each step only after the previous succeeds:
+
+```powershell
+$TrialRoot = 'C:\work\pure-harness-consumer-trial' # must not already exist
+if (Test-Path -LiteralPath $TrialRoot) { throw 'Choose a new trial path' }
+New-Item -ItemType Directory -Path $TrialRoot | Out-Null
+git -C $TrialRoot init
+if ($LASTEXITCODE -ne 0) { throw 'Git init failed' }
+if (@(git -C $TrialRoot remote).Count -ne 0) { throw 'Trial checkout has a remote' }
+Set-Location $EngineRoot
+node scripts/install-target.mjs --bundle $BundleRoot --project $TrialRoot --plan --trial
+if ($LASTEXITCODE -ne 0) { throw 'Install plan failed' }
+node scripts/install-target.mjs --bundle $BundleRoot --project $TrialRoot --apply --trial
+if ($LASTEXITCODE -ne 0) { throw 'Trial apply failed' }
+node scripts/install-target.mjs --bundle $BundleRoot --project $TrialRoot --check
+if ($LASTEXITCODE -ne 0) { throw 'Installed-file check failed' }
+```
+
+Open `$TrialRoot` in the selected application and follow the [native smoke worksheet](native-smoke-worksheet.md) if you want to test native behavior; the script sequence itself does not launch or validate any tool. When finished, roll back the unchanged installed files:
+
+```powershell
+node scripts/install-target.mjs --bundle $BundleRoot --project $TrialRoot --rollback
+if ($LASTEXITCODE -ne 0) { throw 'Rollback stopped; inspect files before retrying' }
+```
+
+Rollback removes only installer-owned, unchanged files and its state, not the trial Git repository. The existing `sync` gate remains separate and closed until its native evidence and ownership requirements are met.
 
 ## Evidence and gates
 
