@@ -1,6 +1,6 @@
-# Pure Harness 완료 확인표 — 설계 승인 전 기준
+# Pure Harness 완료 확인표 — 활성 목표 기준
 
-이 표는 [완성 설계](superpowers/specs/2026-10-08-pure-harness-completion-design.md)의 관찰 기준이다. 구현 기준 커밋 `05c1ba4`에서 충족하지 않은 항목을 완료로 표시하지 않는다. 명령·로그·파일 diff·네이티브 세션 증거를 각 구현 작업의 검증 기록에 남긴다.
+이 표는 2026-10-08 활성 `/goal`의 [완성 설계](superpowers/specs/2026-10-08-pure-harness-completion-design.md)에 대한 관찰 기준이다. [진행 기록](pure-harness-completion-progress.md)에 명령·로그·파일 diff·네이티브 세션 증거를 연결한다. 구현 기준 커밋 `05c1ba4`에서 충족하지 않은 항목을 완료로 표시하지 않는다.
 
 | 요구 | 현재 사실 | 완료에 필요한 관찰 |
 | --- | --- | --- |
