@@ -269,3 +269,69 @@ test('reported-running age buckets never claim native liveness at a fixed one-ho
   assert.match(text, /Reported running: 5.*within past hour: 1.*unknown start: 4.*No live liveness check/s);
   assert.doesNotMatch(text, /0 live agents|confirmed live/i);
 });
+
+test('preview rejection after leaving its route cannot append an error to Guide', async () => {
+  const delayedSpecs = deferred();
+  let firstSpecs = true;
+  const fetchImpl = async url => {
+    if (url === '/runtime/catalog') return response({ agents: [], skills: [] });
+    if (url === '/runtime/tasks') return response(tasks());
+    if (url === '/runtime/telemetry') return response(telemetry());
+    if (url === '/runtime/task-specs') {
+      if (firstSpecs) { firstSpecs = false; return delayedSpecs.promise; }
+      return response({ taskSpecs: [] });
+    }
+    return response(snapshot());
+  };
+  const ui = await mountIntegratedDashboard({ fetchImpl });
+  await ui.navigate('#preview');
+  await ui.navigate('#guide');
+  delayedSpecs.reject(Error('PRIVATE_PREVIEW_PATH'));
+  await ui.settle();
+  assert.ok(ui.document.querySelector('[data-guide-choice="existing"]'));
+  assert.equal(Boolean(ui.document.querySelector('#preview-error')), false);
+  assert.doesNotMatch(ui.document.querySelector('#app').textContent, /Preview Lab unavailable|PRIVATE_PREVIEW_PATH/);
+  await ui.navigate('#preview');
+  assert.ok(ui.document.querySelector('#preview-artifacts'));
+  assert.equal(Boolean(ui.document.querySelector('#preview-error')), false);
+});
+
+test('older Preview success cannot displace a newer visit or its selected artifact', async () => {
+  const oldSpecs = deferred(), oldSnapshot = deferred();
+  const newSpecs = deferred(), newSnapshot = deferred();
+  const specsQueue = [oldSpecs, newSpecs];
+  const snapshotQueue = [oldSnapshot, newSnapshot];
+  let previewReads = false;
+  const newestSpecs = { taskSpecs: [{ title: 'Fresh spec', path: '.ai/tasks/fresh.md', content: 'Fresh details' }] };
+  const newestSnapshot = snapshot('Current goal', 'fresh-agent', [
+    { label: 'First screen', href: '/preview/demo-ui.html?screen=one' },
+    { label: 'Selected screen', href: '/preview/demo-ui.html?screen=two' }
+  ]);
+  const fetchImpl = async url => {
+    if (url === '/runtime/catalog') return response({ agents: [], skills: [] });
+    if (url === '/runtime/tasks') return response(tasks());
+    if (url === '/runtime/telemetry') return response(telemetry());
+    if (url === '/runtime/task-specs') return specsQueue.shift()?.promise ?? response(newestSpecs);
+    return previewReads ? snapshotQueue.shift()?.promise ?? response(newestSnapshot) : response(snapshot());
+  };
+  const ui = await mountIntegratedDashboard({ fetchImpl });
+  previewReads = true;
+  await ui.navigate('#preview');
+  await ui.navigate('#guide');
+  await ui.navigate('#preview');
+  newSpecs.resolve(response(newestSpecs)); newSnapshot.resolve(response(newestSnapshot));
+  await ui.settle();
+  const host = ui.document.querySelector('#preview-artifacts');
+  const tabs = host.querySelectorAll('[role="tab"]');
+  tabs[1].click();
+  assert.equal(tabs[1].getAttribute('aria-selected'), 'true');
+  assert.match(ui.document.querySelector('#task-specs').textContent, /Fresh spec/);
+  oldSpecs.resolve(response({ taskSpecs: [{ title: 'Old spec', path: '.ai/tasks/old.md', content: 'Old details' }] }));
+  oldSnapshot.resolve(response(snapshot('Old goal', 'old-agent', [{ label: 'Old screen', href: '/preview/old.html' }])));
+  await ui.settle();
+  await ui.tick();
+  assert.match(ui.document.querySelector('#task-specs').textContent, /Fresh spec/);
+  assert.doesNotMatch(ui.document.querySelector('#task-specs').textContent, /Old spec/);
+  assert.equal(ui.document.querySelectorAll('#preview-artifacts [role="tab"]')[1].getAttribute('aria-selected'), 'true');
+  assert.equal(ui.document.querySelector('#preview-artifacts iframe').src, '/preview/demo-ui.html?screen=two');
+});

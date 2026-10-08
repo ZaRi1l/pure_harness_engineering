@@ -24,6 +24,7 @@ let taskEditor;
 let telemetryPanel;
 let taskPollGeneration = 0;
 let snapshotPollGeneration = 0;
+let previewPollGeneration = 0;
 let taskFetchError;
 const dashboardTabs = ['overview', 'tasks', 'agents', 'telemetry'];
 let selectedDashboardTab = 'overview';
@@ -275,11 +276,15 @@ function catalogView(type) {
 async function paintPreview() {
   const specsHost = document.querySelector('#task-specs'), artifactsHost = document.querySelector('#preview-artifacts');
   if (!specsHost || !artifactsHost) return;
+  const requestGeneration = ++previewPollGeneration;
+  const current = () => requestGeneration === previewPollGeneration && location.hash.slice(1) === 'preview'
+    && document.querySelector('#task-specs') === specsHost && document.querySelector('#preview-artifacts') === artifactsHost;
   try {
     const [specs, snapshot] = await Promise.all([
       fetch('/runtime/task-specs', { cache: 'no-store' }).then(response => response.json()),
       fetch('/runtime/snapshot', { cache: 'no-store' }).then(response => response.json())
     ]);
+    if (!current()) return;
     specsHost.replaceChildren();
     list(specsHost, specs.taskSpecs, (li, spec) => {
       const details = el('details'), summary = el('summary', '', `${q(spec.title)} — ${q(spec.path)}`), source = el('pre', '', q(spec.content));
@@ -295,6 +300,7 @@ async function paintPreview() {
     }
     document.querySelector('#preview-error')?.remove();
   } catch {
+    if (!current()) return;
     let message = document.querySelector('#preview-error');
     if (!message) { message = el('p', 'bad'); message.id = 'preview-error'; app.append(message); }
     message.textContent = t('preview.unavailable');
@@ -315,6 +321,7 @@ function guide() {
 function route() {
   const viewName = location.hash.slice(1) || 'dashboard';
   const view = ({ dashboard, preview, agents: () => catalogView('agents'), skills: () => catalogView('skills'), guide }[viewName] || dashboard);
+  if (view !== preview) previewPollGeneration++;
   if (view !== dashboard && networkController) {
     networkController.destroy();
     networkController = undefined;
