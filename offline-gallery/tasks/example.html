@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task brief — offline sketch</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; color: #21312f; background: #eef2ed; }
+    * { box-sizing: border-box; }
+    body { max-width: 880px; margin: 0 auto; padding: clamp(20px, 5vw, 56px); }
+    header { border-bottom: 3px solid #33745f; padding-bottom: 22px; }
+    .eyebrow { color: #33745f; font-size: .75rem; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { font-size: clamp(2rem, 5vw, 3.25rem); line-height: 1.1; margin: 8px 0 12px; }
+    h2 { font-size: 1.1rem; margin: 0 0 12px; }
+    p { margin: 0; }
+    .summary { max-width: 60ch; color: #52625e; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+    .meta span { border: 1px solid #b6c8bd; border-radius: 99px; padding: 4px 11px; font-size: .82rem; }
+    main { display: grid; gap: 16px; margin-top: 22px; }
+    section { background: #fff; border: 1px solid #d5dfd5; border-radius: 12px; padding: 22px; }
+    ul { margin: 0; padding-left: 22px; }
+    li + li { margin-top: 8px; }
+    .note { border-left: 4px solid #33745f; padding-left: 14px; color: #52625e; }
+    @media (min-width: 700px) { main { grid-template-columns: 1fr 1fr; } .wide { grid-column: 1 / -1; } }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="eyebrow">Work item · illustrative sketch</p>
+    <h1>Task brief</h1>
+    <p class="summary">A compact place to agree on the outcome, capture observable checks, and hand off a bounded piece of work.</p>
+    <div class="meta"><span>Owner: team</span><span>Status: ready for review</span><span>Scope: one work item</span></div>
+  </header>
+  <main>
+    <section class="wide">
+      <h2>Outcome</h2>
+      <p>Make the next step clear enough that someone else can pick it up without reconstructing the whole conversation.</p>
+    </section>
+    <section>
+      <h2>Acceptance evidence</h2>
+      <ul>
+        <li>The intended result is visible in the finished artifact.</li>
+        <li>A repeatable check demonstrates the normal path.</li>
+        <li>A limitation or failure path is recorded honestly.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>Handoff</h2>
+      <p class="note">Summarize what changed, where the evidence lives, and what remains open. Leave decisions for the next owner explicit.</p>
+    </section>
+  </main>
+</body>
+</html>

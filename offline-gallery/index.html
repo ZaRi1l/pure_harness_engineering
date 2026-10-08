@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pure Harness · Offline Gallery</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; color: #182735; background: #f2f5f6; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header, main { max-width: 1100px; margin: auto; padding: 1.5rem; }
+    header h1 { margin: 0; font-size: clamp(1.6rem, 3vw, 2.4rem); }
+    header p { margin: .35rem 0 0; color: #465967; }
+    main { padding-top: 0; }
+    .gallery { display: grid; gap: 1rem; grid-template-columns: minmax(180px, 250px) minmax(0, 1fr); }
+    .side, .stage { background: white; border: 1px solid #d6dfe3; border-radius: 12px; padding: 1rem; }
+    .side h2, .stage h2 { margin: 0 0 .75rem; font-size: 1rem; }
+    #gallery-tabs { display: grid; gap: .5rem; }
+    #gallery-tabs button { width: 100%; padding: .7rem .8rem; border: 1px solid #b8c8cf; border-radius: 8px; background: white; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+    #gallery-tabs button[aria-selected="true"] { background: #e3f1f0; border-color: #167269; font-weight: 700; }
+    #gallery-tabs button:focus-visible, a:focus-visible { outline: 3px solid #167269; outline-offset: 2px; }
+    #gallery-status { margin: 0 0 .75rem; color: #465967; }
+    #gallery-frame { display: block; width: 100%; min-height: 520px; border: 1px solid #b8c8cf; border-radius: 8px; background: #fff; }
+    .fallback { margin: .8rem 0 0; }
+    a { color: #075c65; }
+    @media (max-width: 680px) { .gallery { grid-template-columns: 1fr; } #gallery-frame { min-height: 420px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Offline task gallery</h1>
+    <p>Standalone task sketches. Open this file directly without a server.</p>
+  </header>
+  <main>
+    <div class="gallery">
+      <nav class="side" aria-label="Task sketches">
+        <h2>Tasks</h2>
+        <div id="gallery-tabs" role="tablist" aria-label="Task sketches"></div>
+      </nav>
+      <section class="stage" aria-label="Selected task sketch">
+        <h2>Preview</h2>
+        <p id="gallery-status" aria-live="polite">Choose a task sketch.</p>
+        <iframe id="gallery-frame" title="Selected task sketch" sandbox=""></iframe>
+        <p class="fallback">Your browser's file permissions or policy may block the embedded view. <a id="gallery-open" href="./tasks/example.html" target="_blank" rel="noopener">Open the selected sketch separately</a>.</p>
+      </section>
+    </div>
+  </main>
+  <script src="./gallery.js"></script>
+</body>
+</html>
