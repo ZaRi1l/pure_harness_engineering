@@ -102,3 +102,10 @@ Root 보고 기준 구현 흐름은 고정 컨텍스트·UI·source inventory·n
 - 관찰에 기반한 사용자 절차 문서 갱신/재연, 출시 SHA의 재시험, 검증된 작업 브랜치 정리, `main` push 및 remote SHA 대조도 **미완료**다. 이 문서 변경은 native-critical 코드/생성 출력의 동등성을 주장하거나 `nativeSmoke`를 승격하지 않는다.
 
 후속 cold-start에서 `7d1a8c9`가 생성한 child `AGENTS.md`의 claim 예제가 제거된 `--project`, `--checkout`, `--binding` 플래그를 여전히 쓴다는 결함이 확인됐다. 따라서 위 `CODE_SHA` 표기는 당시의 전체 코드 시험 통과 기록일 뿐 최종 frozen 코드가 아니다. 수정 `3693951ee2e72343f079c429ed9e1cdad3e489c9`는 project cwd에서 실행 가능한 flagless claim/release 지침을 생성하며, 실제 PowerShell 명령을 포함한 bridge/runtime 집중 시험 82/82가 통과했다. 새 전체 suite/self-check, 수정 SHA의 중립 복사본·native 실행 및 release 검증은 별도 대기다.
+
+## 2026-10-08 후속 코드·중립 복사본 관찰 (Root 전달; native 미완료)
+
+- `aed6a14365deb32f2a2727df144f9986d062e881`의 전체 `npm test`는 exit 0, 617건 중 612 통과·0 실패·5 skip, 296555.6895ms였다. 같은 SHA의 `npm run self-check`도 exit 0이며 자체 검사는 PASS, setup/훅/native/model entitlement 경고는 여전히 미검증 상태다. 생성된 child claim/release 명령을 실제 PowerShell로 실행하는 bridge/runtime 집중 시험은 82/82 통과했다.
+- Root가 전달한 중립 후보 `D:/dev/harness-test/final-cold-start-20261008`는 위 `aed6a14` clean Core 복사본과 remote 없는 child로 준비됐다. 생성된 manifest 14개가 기대값과 일치했고 flagless claim/release, `status`, `self-check`는 각각 exit 0이었다. 이는 정적 생성물·CLI 관찰이며 실제 Codex native 동작으로 승격하지 않는다.
+- 사용자 문서 동기화는 README, 첫 사용, 설정 참고, 런타임 설명에서 고정 `project/`·실제 live `#guide`·별도 오프라인 갤러리·조건부 Codex 프로젝트/훅 신뢰 절차를 안내한다. 통합 문서·가이드·오프라인 집중 시험은 58/58 통과했다. 이 문서 단계 뒤 전체 suite의 새 HEAD 재실행은 아직 하지 않았으며 출시 직전 게이트로 남긴다.
+- 실제 Codex 프로젝트 신뢰 승인은 사용자 선택 대기(현재 신뢰 계층 비활성)이고, Root의 재확인 시점에 localhost `20128` TCP 연결도 되지 않았다. 따라서 실제 역할·Skill 탐색, 다섯 hook callback, 앱 실행, agent ID·rollout 근거는 아직 없다. `nativeSmoke`는 **미검증**이며 `main` push·remote SHA 확인·작업 브랜치 정리도 **미완료**다.
