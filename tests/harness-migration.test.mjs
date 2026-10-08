@@ -162,7 +162,8 @@ test('ordinary sync refuses all 15 unmarked Codex collisions and other target co
   for (const [target, relative] of [['claude', '.claude/agents/planner.md'], ['opencode', '.opencode/agents/planner.md'], ['antigravity', '.agents/agents/planner/agent.md']]) {
     await mkdir(path.dirname(path.join(root, relative)), { recursive: true });
     await writeFile(path.join(root, relative), 'human owned');
-    const item = { ...rendered[0], path: relative, target };
+    const item = { ...rendered[0], path: relative, target,
+      body: '---\ndescription: collision fixture\n---\n# Planner\n' };
     const plan = await planSync({ root, targets: [target], profile: 'all', rendered: [item], manifest: { entries: [] } });
     assert.equal(plan.actions[0].kind, 'conflict');
   }
