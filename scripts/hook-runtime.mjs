@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { RuntimeStore, contextFromArgs } from './runtime-state.mjs';
+import { RuntimeStore } from './runtime-state.mjs';
+import { getScriptHarnessRoot, loadFixedProjectContext } from './project-context.mjs';
 import { shortTaskNameForId } from './telemetry-schema.mjs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
@@ -14,12 +15,12 @@ export async function handleHook(payload, context) {
     if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('hook outside verified checkout');
   }
   await store.initialize(); const event = payload.hook_event_name || payload.event || 'Unknown';
-  const agentId = payload.agent_id || payload.subagent_id, id = String(agentId || 'unknown-agent'), role = String(payload.agent_type || payload.agent_name || 'subagent');
+  const agentId = payload.agent_id || payload.subagent_id, id = agentId ? String(agentId) : null, role = String(payload.agent_type || payload.agent_name || 'subagent');
   await store.addEvent('hook_dispatch', `Codex hook dispatched: ${event}`, { hook_event: event });
   if (event === 'SessionStart') await store.addEvent('session_started', 'Codex session started');
   else if (event === 'SessionEnd') await store.addEvent('session_ended', 'Codex session ended');
-  else if (event === 'SubagentStart') {
-    await store.agentStarted(id, role, String(payload.task || ''), { task_id: payload.task_id, turn_token: payload.turn_token, source: 'hook' });
+  else if (event === 'SubagentStart' && id) {
+    await store.agentStarted(id, role, '', { task_id: payload.task_id, turn_token: payload.turn_token, source: 'hook' });
     if (store.context && agentId && payload.spawned_at && payload.parent_thread_id) await store.recordChildLink({
       project_id: store.context.projectId, acknowledgement: 'success', child_agent_id: agentId,
       parent_agent_id: payload.parent_thread_id, root_turn_id: payload.root_turn_id ?? null,
@@ -29,11 +30,19 @@ export async function handleHook(payload, context) {
       spawned_at: payload.spawned_at, completed_at: null,
     });
   }
-  else if (event === 'SubagentStop') {
+  else if (event === 'SubagentStop' && id) {
     await store.agentStopped(id, payload.outcome ? String(payload.outcome) : 'stopped', { task_id: payload.task_id, turn_token: payload.turn_token, source: 'hook' });
     if (store.context && agentId && payload.completed_at && (await store.readChildLinks()).some(link => link.child_agent_id === agentId)) await store.completeChildLink(agentId, payload.completed_at);
   }
   else if (event === 'Stop') await store.addEvent('turn_stopped', 'Codex turn stopped');
 }
-async function main() { try { const { context } = await contextFromArgs(process.argv.slice(2)); const raw = await readStdin(); await handleHook(raw ? JSON.parse(raw) : {}, context); } catch { console.log(JSON.stringify({ systemMessage: 'Pure Harness runtime update skipped: project context or binding invalid' })); } }
+export async function runHook(payload, { harnessRoot = getScriptHarnessRoot(import.meta.url), diagnostic = message => console.log(JSON.stringify({ systemMessage: message })) } = {}) {
+  try {
+    const context = await loadFixedProjectContext({ harnessRoot, cwd: payload.cwd || process.cwd() });
+    await handleHook(payload, context);
+  } catch {
+    diagnostic('Pure Harness hook skipped: outside the verified project or context unavailable');
+  }
+}
+async function main() { try { const raw = await readStdin(); await runHook(raw ? JSON.parse(raw) : {}); } catch { console.log(JSON.stringify({ systemMessage: 'Pure Harness hook skipped: invalid payload' })); } }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) await main();

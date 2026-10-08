@@ -4,16 +4,33 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { handleHook } from '../scripts/hook-runtime.mjs';
+import { handleHook, runHook } from '../scripts/hook-runtime.mjs';
 import { RuntimeStore } from '../scripts/runtime-state.mjs';
+import { fixedFixture } from './support/fixed-project-fixture.mjs';
 
 const legacyHook = (payload, root) => handleHook(payload, RuntimeStore.legacyFixture(root));
+
+test('anchored hook reaches fixed child runtime and ignores outside checkout without leaking prompt', async () => {
+  const f = await fixedFixture();
+  await runHook({ hook_event_name: 'SubagentStart', cwd: f.projectRoot, agent_id: 'native-1',
+    parent_thread_id: 'parent-1', task_id: 'task-1', turn_token: 'turn-1', spawned_at: '2026-10-08T00:00:00.000Z', task: 'SECRET_PROMPT' }, { harnessRoot: f.harnessRoot });
+  const store = new RuntimeStore(await (await import('../scripts/project-context.mjs')).loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot }));
+  const snapshot = await store.readSnapshot();
+  assert.equal(snapshot.status.agents[0].id, 'native-1');
+  assert.equal(snapshot.status.agents[0].current_task, '');
+  assert.equal(snapshot.status.agents[0].turn_token, undefined);
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET_PROMPT/);
+  const before = JSON.stringify(snapshot);
+  await runHook({ hook_event_name: 'SessionStart', cwd: path.dirname(f.harnessRoot) }, { harnessRoot: f.harnessRoot, diagnostic: () => {} });
+  assert.equal(JSON.stringify(await store.readSnapshot()), before);
+});
 
 test('hook without native child or parent IDs does not fabricate a confirmed link', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
   const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
   await handleHook({ hook_event_name: 'SubagentStart', task_id: 'task-1', root_turn_id: 'root-1', task: 'SECRET_PROMPT' }, store);
   assert.deepEqual(await store.readChildLinks(), []);
+  assert.deepEqual((await store.readStatus()).agents, []);
 });
 
 test('hook forwards explicitly observed native IDs into one exact child link', async () => {
