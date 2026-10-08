@@ -89,7 +89,7 @@ test('dashboard-integrated-navigation-keeps-real-widgets', async () => {
   await ui.navigate('#preview');
   assert.ok(document.querySelector('#preview-artifacts'));
   await ui.navigate('#guide');
-  const guideCopy = { new: /new, empty Git project/, existing: /original project and runtime untouched/, connected: /manifest and local binding already exist/ };
+  const guideCopy = { new: /Run setup.*new project.*separate child Git in project\//s, existing: /original project and runtime untouched.*copied into project\/, not moved/s, connected: /already configured fixed project.*run status and the live preview/s };
   for (const choice of ['new', 'existing', 'connected']) {
     const button = document.querySelector(`[data-guide-choice="${choice}"]`);
     assert.ok(button);
