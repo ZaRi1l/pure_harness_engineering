@@ -357,6 +357,28 @@ test('guide safety copy preserves existing project state and requires explicit c
   }
 });
 
+test('start documents link to current preservation and safe preview guidance', async () => {
+  const readme = await readFile(path.resolve('README.md'), 'utf8');
+  const firstUse = await readFile(path.resolve('docs/first-use.md'), 'utf8');
+  const setupReference = await readFile(path.resolve('docs/setup-reference.md'), 'utf8');
+  const docs = [
+    { source: readme, dir: '.', required: ['docs/first-use.md', 'docs/setup-reference.md'] },
+    { source: firstUse, dir: 'docs', required: ['setup-reference.md', 'advanced-first-use.md'] }
+  ];
+  for (const { source, dir, required } of docs) {
+    const links = [...source.matchAll(/\]\(([^)#]+)(?:#[^)]+)?\)/g)].map(match => match[1]);
+    for (const target of required) assert.ok(links.includes(target), `${dir} no longer links to ${target}`);
+    for (const target of links.filter(link => !/^[a-z]+:/i.test(link))) {
+      await readFile(path.resolve(dir, target), 'utf8');
+    }
+  }
+  assert.match(firstUse, /원본을 보존/);
+  assert.match(firstUse, /기존 파일은 덮어쓰지 않/);
+  assert.match(setupReference, /기존 프로젝트 runtime[\s\S]{0,80}보존하세요/);
+  assert.match(setupReference, /기존 runtime[\s\S]{0,80}삭제하거나 초기화하지 마세요/);
+  assert.match(setupReference, /file:\/\/[\s\S]{0,80}지원되는 가이드 열람 경로가 아닙니다/);
+});
+
 test('rejects preview links that resolve outside preview root', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-preview-'));
   const outside = await mkdtemp(path.join(tmpdir(), 'pure-preview-outside-'));
