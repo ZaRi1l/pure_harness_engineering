@@ -30,7 +30,7 @@ test('dashboard tabs retain task draft, focus, scroll, and widget instances acro
     fetch: async url => ({ json: async () => url === '/runtime/catalog' ? { agents: [], skills: [] } : url === '/runtime/tasks' ? { tasks: [], write_token: 'write-token' } : snapshot }),
     createTaskEditor: host => { const item = { host, draft: '', update() {}, destroy() {} }; editors.push(item); return item; },
     createTelemetryPanel: host => { const item = { host, refresh() {}, rerender() {}, destroy() {} }; panels.push(item); return item; },
-    AgentSignalNetwork: { create: host => { const item = { host, update() {}, destroy() {} }; networks.push(item); return item; } },
+    AgentSignalNetwork: { create: host => { const item = { host, update() {}, destroy() {}, setTranslate(fn) { this.localeLabel = fn('network.modeLabel'); } }; networks.push(item); return item; } },
     PreviewPreferences: { create: () => ({ locale: 'en', t: key => key, mount() {}, subscribe(fn) { changePreference = fn; } }) },
     createGuidePanel: () => element(), renderArtifactTabs: () => ({})
   };
@@ -62,6 +62,7 @@ test('dashboard tabs retain task draft, focus, scroll, and widget instances acro
   refresh();
   changePreference({ locale: 'ko' });
   await new Promise(resolve => setImmediate(resolve));
+  assert.equal(networks[0].localeLabel, 'network.modeLabel');
   assert.equal(tab('telemetry').getAttribute('aria-selected'), 'true');
   assert.equal(editors.length, 1);
   assert.equal(editors[0].draft, 'unsaved task');

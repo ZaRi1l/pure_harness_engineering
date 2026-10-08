@@ -323,6 +323,8 @@ preferences.subscribe(({ locale }) => {
   if (locale === renderedLocale) return;
   renderedLocale = locale;
   telemetryPanel?.rerender();
+  taskEditor?.relocalize?.();
+  networkController?.setTranslate?.(t);
   artifactRenderKey = '';
   localizeShell();
   route();

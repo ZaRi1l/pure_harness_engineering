@@ -236,6 +236,31 @@ test('task editor preserves add draft controls, focus, selection, scroll and val
   editor.destroy();
 });
 
+test('task editor relocalizes an open form in place without losing draft or focus', () => {
+  const { host, document } = taskDOM();
+  let locale = 'en';
+  const editor = createTaskEditor(host, { translate: key => `${locale}:${key}` });
+  editor.update([task()], 'token');
+  action(host, 'add').click();
+  const title = field(host, 'title');
+  const status = field(host, 'status');
+  title.value = 'Unsubmitted draft';
+  title.focus(); title.setSelectionRange(3, 8); title.scrollTop = 17;
+  assert.match(host.textContent, /en:task\.title/);
+  locale = 'ko';
+  editor.relocalize();
+  assert.equal(field(host, 'title'), title);
+  assert.equal(field(host, 'status'), status);
+  assert.equal(title.value, 'Unsubmitted draft');
+  assert.equal(document.activeElement, title);
+  assert.deepEqual([title.selectionStart, title.selectionEnd, title.scrollTop], [3, 8, 17]);
+  assert.match(host.textContent, /ko:task\.title/);
+  assert.match(host.textContent, /ko:task\.status\.pending/);
+  assert.equal(action(host, 'save').textContent, 'ko:task.save');
+  assert.doesNotMatch(host.textContent, /en:task\.title|en:task\.save/);
+  editor.destroy();
+});
+
 test('task editor keeps edit revision and draft on conflict until explicit reload', async () => {
   const { host, document } = taskDOM();
   let request;

@@ -79,12 +79,17 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
     for (const value of STATUSES) { const option = make('option', translate(`task.status.${value}`)); option.value = value; status.append(option); }
     status.value = record?.status ?? 'pending';
     const branch = make('input'); branch.value = record?.branch ?? ''; branch.maxLength = 120; branch.setAttribute('data-task-field', 'branch');
+    const formLabels = new Map();
     for (const [label, control] of [['task.title', title], ['task.status', status], ['task.branch', branch]]) {
-      const wrapper = make('label', translate(label)); wrapper.append(control); form.append(wrapper);
+      const wrapper = make('label');
+      const caption = make('span', translate(label));
+      formLabels.set(label, caption);
+      wrapper.append(caption, control); form.append(wrapper);
     }
     const messageHost = make('div'); form.append(messageHost);
-    form.append(button('task.save', 'save', save), button('task.cancel', 'cancel', cancel));
-    active = { mode, id: record?.id, originalRevision: record?.revision, requestId: mode === 'add' ? globalThis.crypto.randomUUID() : null, sentBody: null, fields: { title, status, branch }, messages: {}, messageHost, form, conflict: null };
+    const saveButton = button('task.save', 'save', save), cancelButton = button('task.cancel', 'cancel', cancel);
+    form.append(saveButton, cancelButton);
+    active = { mode, id: record?.id, originalRevision: record?.revision, requestId: mode === 'add' ? globalThis.crypto.randomUUID() : null, sentBody: null, fields: { title, status, branch }, formLabels, saveButton, cancelButton, messages: {}, messageHost, form, conflict: null };
     formHost.replaceChildren(form); renderToolbar(); renderRows(); title.focus?.();
   };
   async function save() {
@@ -124,6 +129,17 @@ export function createTaskEditor(host, { fetchImpl = fetch, translate = key => k
   }
   return {
     update(nextTasks, nextToken) { if (destroyed) return; tasks = Array.isArray(nextTasks) ? nextTasks : []; writeToken = nextToken || null; renderToolbar(); renderRows(); },
+    relocalize() {
+      if (destroyed) return;
+      renderToolbar(); renderRows();
+      if (!active) return;
+      for (const [key, caption] of active.formLabels) caption.textContent = translate(key);
+      for (const option of active.fields.status.children) option.textContent = translate(`task.status.${option.value}`);
+      active.saveButton.textContent = translate('task.save');
+      active.cancelButton.textContent = translate('task.cancel');
+      if (active.reloadButton) active.reloadButton.textContent = translate('task.reload');
+      if (active.retryButton) active.retryButton.textContent = translate('task.retry');
+    },
     destroy() { destroyed = true; generation++; active = null; host.replaceChildren(); }
   };
 }
