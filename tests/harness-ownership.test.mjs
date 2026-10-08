@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { planSync, applyPlan, makeGeneratedFile, recoverPartial } from '../harness/ownership.mjs';
+import { planSync, applyPlan, makeGeneratedFile, parseGeneratedFile, recoverPartial } from '../harness/ownership.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 async function fixture(t) {
@@ -33,6 +33,36 @@ const render = (id = 'planner', target = 'claude', body = `---\nname: ${id}\n---
   target, roleId: id, sourcePath: `harness/agents/${id}.md`, sourceSha256: sha(id), body,
 });
 const args = (root, rendered, manifest = { entries: [] }) => ({ root, targets: ['claude'], profile: 'core', rendered, manifest });
+test('Markdown outputs keep native frontmatter first and preserve the exact owned body', () => {
+  for (const target of ['claude', 'opencode', 'antigravity']) {
+    const item = render('planner', 'claude', '---\nname: planner\n---\nRole body.\n');
+    item.target = target;
+    item.path = target === 'antigravity' ? '.agents/agents/planner/agent.md' : `.${target}/agents/planner.md`;
+    const { file, entry } = makeGeneratedFile(item);
+    assert.ok(file.startsWith('---\nname: planner\n---\n'), `${target} requires frontmatter at byte zero`);
+    assert.match(file, /^---\nname: planner\n---\n<!-- @pure-harness-generated /);
+    assert.deepEqual(parseGeneratedFile(target, file, entry).body, item.body);
+    assert.equal(entry.bodySha256, sha(item.body));
+    assert.equal(entry.fileSha256, sha(file));
+  }
+});
+
+test('legacy Markdown header remains owned for safe update, while tampering is rejected', async t => {
+  const root = await fixture(t), item = render(), generated = makeGeneratedFile(item);
+  const marker = /<!-- @pure-harness-generated [^\r\n]+ -->\n/.exec(generated.file)?.[0];
+  assert.ok(marker);
+  const legacyFile = marker + item.body;
+  const legacyEntry = { ...generated.entry, fileSha256: sha(legacyFile) };
+  assert.deepEqual(parseGeneratedFile(item.target, legacyFile, legacyEntry).body, item.body);
+  assert.throws(() => parseGeneratedFile(item.target, legacyFile.replace('"generator":"pure-harness"', '"generator":"forged"'), legacyEntry), /invalid ownership header/);
+  assert.throws(() => parseGeneratedFile(item.target, legacyFile.replace('body\n', 'tampered\n'), legacyEntry), /bodySha256 mismatch/);
+  await mkdir(path.dirname(path.join(root, item.path)), { recursive: true });
+  await writeFile(path.join(root, item.path), legacyFile);
+  await writeFile(path.join(root, 'harness/generated-manifest.json'), JSON.stringify({ entries: [legacyEntry] }));
+  const plan = await planSync(args(root, [item], { entries: [legacyEntry] }));
+  assert.deepEqual(plan.actions.map(action => action.kind), ['update']);
+  assert.equal(plan.writable, true);
+});
 async function install(root, item) {
   const { file, entry } = makeGeneratedFile(item);
   await mkdir(path.dirname(path.join(root, entry.path)), { recursive: true });
@@ -56,7 +86,7 @@ test('creates only declared output, then no-op preserves bytes and mtimes', asyn
 
 test('owned update and stale prune require exact prior bytes and header', async t => {
   const root = await fixture(t), old = render(), entry = await install(root, old);
-  const updated = render('planner', 'claude', 'new body\n');
+  const updated = render('planner', 'claude', '---\nname: planner\n---\nnew body\n');
   const plan = await planSync(args(root, [updated], { entries: [entry] }));
   assert.deepEqual(plan.actions.map(a => a.kind), ['update']);
   await applyPlan(plan);
@@ -81,7 +111,7 @@ test('unowned collision blocks an entire target before writes', async t => {
 
 test('hash-matched headerless, forged, or field-mismatched files are not owned', async t => {
   for (const mutate of [
-    file => file.replace(/^<!--.*?-->\n/, ''),
+    file => file.replace(/<!-- @pure-harness-generated [^\r\n]+ -->\n/, ''),
     file => file.replace('"generator":"pure-harness"', '"generator":"forged"'),
     file => file.replace('"sourcePath":"harness/agents/planner.md"', '"sourcePath":"harness/agents/worker.md"'),
   ]) {

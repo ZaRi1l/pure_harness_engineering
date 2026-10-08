@@ -49,19 +49,31 @@ export function makeGeneratedFile(item) {
   if (!/^[a-f0-9]{64}$/.test(item.sourceSha256)) throw new Error('invalid sourceSha256');
   const bodySha256 = sha(item.body);
   const header = { generator: 'pure-harness', schemaVersion: 1, sourcePath: item.sourcePath, sourceSha256: item.sourceSha256, rendererVersion: RENDERER_VERSION, bodySha256 };
-  const prefix = item.target === 'codex' ? `# @pure-harness-generated ${JSON.stringify(header)}\n` : `<!-- @pure-harness-generated ${JSON.stringify(header)} -->\n`;
-  const file = prefix + item.body;
+  const marker = item.target === 'codex' ? `# @pure-harness-generated ${JSON.stringify(header)}\n` : `<!-- @pure-harness-generated ${JSON.stringify(header)} -->\n`;
+  let file;
+  if (item.target === 'codex') file = marker + item.body;
+  else {
+    // Native Markdown agents require YAML frontmatter at byte zero. Keep ownership
+    // outside YAML so the target's frontmatter fields remain unchanged.
+    const frontmatter = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(item.body)?.[0];
+    if (!frontmatter) throw new Error('rendered Markdown requires YAML frontmatter');
+    file = frontmatter + marker + item.body.slice(frontmatter.length);
+  }
   return { file, entry: { path: item.path, target: item.target, roleId: item.roleId, sourcePath: item.sourcePath, sourceSha256: item.sourceSha256, rendererVersion: RENDERER_VERSION, bodySha256, fileSha256: sha(file) } };
 }
 export function parseGeneratedFile(target, file, entry) {
-  const match = target === 'codex' ? /^# @pure-harness-generated ([^\r\n]+)\n/.exec(file) : /^<!-- @pure-harness-generated ([^\r\n]+) -->\n/.exec(file);
+  const frontmatter = target === 'codex' ? null : /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(file)?.[0];
+  const legacy = target === 'codex' || !frontmatter;
+  const headerStart = legacy ? 0 : frontmatter.length;
+  const match = target === 'codex' ? /^# @pure-harness-generated ([^\r\n]+)\n/.exec(file)
+    : /^<!-- @pure-harness-generated ([^\r\n]+) -->\n/.exec(file.slice(headerStart));
   if (!match) throw new Error('missing or malformed ownership header');
   let header;
   try { header = JSON.parse(match[1]); } catch { throw new Error('malformed ownership header JSON'); }
   if (!header || Object.keys(header).join() !== headerFields.join() || header.generator !== 'pure-harness' || header.schemaVersion !== 1) throw new Error('invalid ownership header schema or generator');
   if (JSON.stringify(header) !== match[1]) throw new Error('noncanonical ownership header');
   if (entry) for (const field of headerFields.slice(2)) if (header[field] !== entry[field]) throw new Error(`ownership header ${field} mismatch`);
-  const body = file.slice(match[0].length);
+  const body = legacy ? file.slice(match[0].length) : frontmatter + file.slice(headerStart + match[0].length);
   if (sha(body) !== header.bodySha256) throw new Error('ownership bodySha256 mismatch');
   return { body, header };
 }
