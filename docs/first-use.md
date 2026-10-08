@@ -30,7 +30,9 @@ npm run status
 npm run preview:live
 ```
 
-AI 도구에서는 Harness 설치 루트가 아닌 `project/` 폴더를 프로젝트로 여세요. `preview:live`가 실제로 출력한 localhost 주소에 `#guide`를 붙여 엽니다. `preview/index.html`을 `file://`로 직접 여는 방식은 지원되지 않습니다. 서버는 `Ctrl+C`로 종료합니다. 이미 설정된 설치에서 AI 도구를 바꿀 때는 `npm run setup`으로 기존 프로젝트의 업데이트 계획을 검토하세요. 도구 파일 설치만으로 네이티브 역할 탐색·Skill 탐색·훅 발송을 확인했다고 간주하지 마세요.
+AI 도구에서는 Harness 설치 루트가 아닌 `project/` 폴더를 프로젝트로 여세요. Codex 첫 세션에서는 이 폴더의 신뢰 여부를 검토해 승인하고, `/hooks`에서 현재 훅의 정확한 정의와 명령을 확인한 뒤 신뢰 여부를 결정하세요. 생성된 설정 파일만으로 훅 실행 권한이 승인되지는 않습니다.
+
+`preview:live`가 실제로 출력한 localhost 주소에 `#guide`를 붙여 엽니다. `preview/index.html`을 `file://`로 직접 여는 방식은 지원되지 않습니다. 서버는 `Ctrl+C`로 종료합니다. 이미 설정된 설치에서 AI 도구를 바꿀 때는 `npm run setup`으로 기존 프로젝트의 업데이트 계획을 검토하세요. 도구 파일 설치만으로 네이티브 역할 탐색·Skill 탐색·훅 발송을 확인했다고 간주하지 마세요.
 
 서버 없이 화면 예시만 보려면 Harness 설치의 [오프라인 갤러리](../offline-gallery/index.html)를 브라우저에서 직접 여세요. 이 페이지는 `file://`로 열 수 있으며 live `#guide`나 실제 프로젝트 runtime 화면이 아닙니다. 브라우저가 갤러리 안의 iframe을 막으면 [독립 예시](../offline-gallery/tasks/example.html)를 별도 탭으로 여세요.
 
