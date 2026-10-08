@@ -33,6 +33,50 @@ test('hook without native child or parent IDs does not fabricate a confirmed lin
   assert.deepEqual((await store.readStatus()).agents, []);
 });
 
+test('unknown event names cannot persist prompt or credential-shaped payload text', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  await handleHook({ hook_event_name: 'SessionStart SECRET_CREDENTIAL_BODY', event: 'SubagentStart', task: 'SECRET_PROMPT_BODY' }, store);
+  const snapshot = await store.readSnapshot();
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET_CREDENTIAL_BODY|SECRET_PROMPT_BODY/);
+  assert.deepEqual(snapshot.status.agents, []);
+});
+
+test('agent nickname and unsupported outcome cannot enter lifecycle status, signals, or events', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  await handleHook({ hook_event_name: 'SubagentStart', agent_id: 'native-1', agent_name: 'SECRET_NICKNAME_BODY',
+    agent_type: 'SECRET_ROLE_BODY', task: 'SECRET_PROMPT_BODY' }, store);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'native-1', outcome: 'SECRET_OUTPUT_BODY' }, store);
+  const snapshot = await store.readSnapshot();
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET_NICKNAME_BODY|SECRET_ROLE_BODY|SECRET_PROMPT_BODY|SECRET_OUTPUT_BODY/);
+  assert.equal(snapshot.status.agents[0].role, 'unknown');
+  assert.equal(snapshot.status.agents[0].status, 'stopped');
+});
+
+test('agent_name alone is not a role and body-like child metadata is not retained', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
+  await handleHook({ hook_event_name: 'SubagentStart', agent_id: 'native-2', agent_name: 'SECRET_NICKNAME_BODY',
+    parent_thread_id: 'parent-1', root_turn_id: 'SECRET ROOT BODY', spawned_at: '2026-10-01T00:00:00.000Z',
+    model: 'SECRET_MODEL_BODY', reasoning_effort: 'SECRET_EFFORT_BODY', fork_turns: 'SECRET_FORK_BODY' }, store);
+  const snapshot = await store.readSnapshot();
+  assert.equal(snapshot.status.agents[0].role, 'unknown');
+  assert.equal((await store.readChildLinks())[0].root_turn_id, null);
+  assert.doesNotMatch(JSON.stringify({ snapshot, links: await store.readChildLinks() }), /SECRET_/);
+});
+
+test('malformed native identifiers are not persisted or used to fabricate child links', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
+  await handleHook({ hook_event_name: 'SubagentStart', agent_id: 'SECRET AGENT BODY', parent_thread_id: 'parent-1',
+    spawned_at: '2026-10-01T00:00:00.000Z' }, store);
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.status.agents, []);
+  assert.deepEqual(await store.readChildLinks(), []);
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET AGENT BODY/);
+});
+
 test('hook forwards explicitly observed native IDs into one exact child link', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
   const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
