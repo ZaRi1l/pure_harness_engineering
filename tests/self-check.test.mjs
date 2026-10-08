@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { cp, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cp, mkdtemp, mkdir, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,93 @@ import { checkRepository, hookDispatchDiagnostic, main as selfCheckMain } from '
 import { rolesFor } from '../scripts/route-task.mjs';
 import { discoverCatalog, legacyCatalogFixture } from '../scripts/catalog.mjs';
 import { RuntimeStore } from '../scripts/runtime-state.mjs';
+import { fixedFixture } from './support/fixed-project-fixture.mjs';
+
+test('unconfigured installation warns without creating project management or child checkout', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-unconfigured-check-'));
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  const before = await readdir(root);
+  const report = await checkRepository(root, { exerciseRuntime: false, exerciseHttp: false });
+  assert.ok(report.warnings.some(item => /setup.*not.*run/i.test(item)));
+  assert.ok(!report.failures.some(item => /fixed project|child Git|setup/i.test(item)));
+  assert.deepEqual(await readdir(root), before);
+});
+
+test('configured installation diagnoses fixed child identity without runtime initialization', async () => {
+  const f = await fixedFixture();
+  const configBefore = await readFile(f.configPath, 'utf8');
+  const report = await checkRepository(f.harnessRoot, { exerciseRuntime: false, exerciseHttp: false });
+  assert.ok(report.checks.some(item => /fixed project.*project/i.test(item)));
+  assert.ok(!report.failures.some(item => /fixed project|child Git|setup/i.test(item)));
+  assert.equal(await readFile(f.configPath, 'utf8'), configBefore);
+  assert.deepEqual(await readdir(path.dirname(f.configPath)), ['config.json']);
+});
+
+test('present malformed fixed config fails without repair', async () => {
+  const f = await fixedFixture();
+  const bytes = '{bad json';
+  await writeFile(f.configPath, bytes);
+  const report = await checkRepository(f.harnessRoot, { exerciseRuntime: false, exerciseHttp: false });
+  assert.ok(report.failures.some(item => /fixed project.*config/i.test(item)));
+  assert.equal(await readFile(f.configPath, 'utf8'), bytes);
+});
+
+test('missing child Git fails even with a valid fixed config', async () => {
+  const f = await fixedFixture();
+  await rename(path.join(f.projectRoot, '.git'), path.join(f.projectRoot, 'saved-git'));
+  const configBefore = await readFile(f.configPath, 'utf8');
+  const report = await checkRepository(f.harnessRoot, { exerciseRuntime: false, exerciseHttp: false });
+  assert.ok(report.failures.some(item => /fixed project.*Git/i.test(item)));
+  assert.equal(await readFile(f.configPath, 'utf8'), configBefore);
+});
+
+test('fixed management junction fails without touching target or config', async t => {
+  const f = await fixedFixture();
+  const target = path.join(path.dirname(f.harnessRoot), 'outside-management');
+  await mkdir(target);
+  await rename(path.join(f.harnessRoot, '.harness'), path.join(f.harnessRoot, '.harness-original'));
+  try { await symlink(target, path.join(f.harnessRoot, '.harness'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('symlink privilege unavailable'); return; } throw error; }
+  const before = await readdir(target);
+  const report = await checkRepository(f.harnessRoot, { exerciseRuntime: false, exerciseHttp: false });
+  assert.ok(report.failures.some(item => /fixed project.*path/i.test(item)));
+  assert.deepEqual(await readdir(target), before);
+  assert.ok((await readFile(path.join(f.harnessRoot, '.harness-original', 'config.json'))).length > 0);
+});
+
+test('normal CLI self-check anchors to its script installation from unrelated cwd', async () => {
+  const unrelated = await mkdtemp(path.join(tmpdir(), 'pure-other-cwd-'));
+  execFileSync('git', ['init', '-q'], { cwd: unrelated });
+  const script = path.resolve('scripts/self-check.mjs');
+  const result = spawnSync(process.execPath, [script], { cwd: unrelated, encoding: 'utf8', windowsHide: true });
+  assert.doesNotMatch(result.stdout, /FAIL missing \.codex\/config\.toml/);
+  assert.doesNotMatch(result.stdout, /FAIL missing \.codex\/hooks\.json/);
+  assert.match(result.stdout, /WARN Fixed project setup has not run/);
+});
+
+test('unsupported installed Codex doctor is unverified, not an own-config failure', async () => {
+  const report = await checkRepository(path.resolve('.'), { exerciseRuntime: false, exerciseHttp: false,
+    spawnCodex: () => ({ status: 2, stdout: '', stderr: "error: unrecognized subcommand 'doctor'" }) });
+  assert.ok(report.warnings.some(item => /Codex.*unsupported|Codex.*unverified/i.test(item)));
+  assert.ok(!report.failures.some(item => /Codex config rejected/.test(item)));
+});
+
+test('installed Codex that ignores project config reports unverified native validation', async () => {
+  const report = await checkRepository(path.resolve('.'), { exerciseRuntime: false, exerciseHttp: false,
+    spawnCodex: () => ({ status: 0, stdout: '{"checks":{"config.load":{"status":"ignored"}}}', stderr: '' }) });
+  assert.ok(report.warnings.some(item => /config.*ignored|config.*unverified/i.test(item)));
+  assert.ok(!report.checks.includes('Codex config loads in strict mode'));
+});
+
+test('global Codex config failure is unverified while own config failure remains fatal', async () => {
+  const global = await checkRepository(path.resolve('.'), { exerciseRuntime: false, exerciseHttp: false,
+    spawnCodex: () => ({ status: 1, stdout: '', stderr: 'error in C:/Users/User/.codex/config.toml: invalid model' }) });
+  assert.ok(global.warnings.some(item => /global Codex config/i.test(item)));
+  assert.ok(!global.failures.some(item => /Codex config rejected/.test(item)));
+  const own = await checkRepository(path.resolve('.'), { exerciseRuntime: false, exerciseHttp: false,
+    spawnCodex: () => ({ status: 1, stdout: '', stderr: `error in ${path.resolve('.codex/config.toml')}: invalid model` }) });
+  assert.ok(own.failures.some(item => /Codex config rejected/.test(item)));
+});
 
 test('routing keeps SMALL light and expands larger work', () => {
   assert.deepEqual(rolesFor('small'), ['worker']);
@@ -153,6 +240,8 @@ test('self-check accepts non-Git installation only with a valid explicit project
   await writeFile(bindingPath, JSON.stringify({ schemaVersion: 1, registrations: [{ projectId: 'alpha', harnessRoot, projectRoot: checkoutRoot }] }));
   const report = await checkRepository(harnessRoot, { exerciseRuntime: false, exerciseHttp: false, projectBinding: { projectId: 'alpha', checkoutRoot, bindingPath } });
   assert.ok(report.checks.some(item => item.includes('binding is valid')));
+  assert.ok(report.warnings.some(item => item.includes('Legacy binding is diagnostic only')));
+  assert.ok(report.warnings.some(item => item.includes('Fixed project setup has not run')));
   assert.ok(report.warnings.some(item => item.includes('non-Git installation')));
   assert.ok(!report.failures.some(item => item.includes('tracked manifest inventory unavailable')));
 });

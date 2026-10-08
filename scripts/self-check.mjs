@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, realpath } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createPreviewServer } from './preview-server.mjs';
-import { RuntimeStore, findRoot } from './runtime-state.mjs';
+import { RuntimeStore } from './runtime-state.mjs';
 import { discoverCatalog, legacyCatalogFixture } from './catalog.mjs';
 import { hookDispatchDiagnostic, inspectRuntime } from './watchdog.mjs';
 import { renderStaticPreview } from './generate-preview.mjs';
 import { inspectProjectBinding } from './project-diagnostic.mjs';
-import { loadProjectContext } from './project-context.mjs';
+import { getScriptHarnessRoot, loadFixedProjectContext, loadProjectContext } from './project-context.mjs';
 
 const HOOK_EVENTS = ['SessionStart', 'SessionEnd', 'SubagentStart', 'SubagentStop', 'Stop'];
 const MODEL = /^gpt-6-(sol|luna)$/;
@@ -55,17 +55,46 @@ function validateCodex(root, text, executableOverride, spawnCodex = spawnSync) {
   if (result.error) return result.error.code === 'EPERM'
     ? [null, `Codex config validation blocked by the current sandbox: ${result.error.message}`]
     : [null, `Codex executable unavailable: ${result.error.message}`];
-  try { const payload = JSON.parse(result.stdout); if (payload.checks?.['config.load']?.status === 'ok') return [true, '']; }
+  try {
+    const payload = JSON.parse(result.stdout);
+    const load = payload.checks?.['config.load'];
+    if (result.status === 0 && load?.status === 'ok') return [true, ''];
+    if (['ignored', 'skipped', 'unverified'].includes(load?.status) || (result.status === 0 && !load))
+      return [null, 'Installed Codex did not verify the project config; native config validation is unverified'];
+  }
   catch {}
-  return [false, `Codex config rejected: ${(result.stderr || result.stdout || 'unknown error').slice(0, 500)}`];
+  const detail = result.stderr || result.stdout || 'unknown error';
+  if (/(?:unrecognized|unknown|unexpected|invalid) (?:subcommand|command|argument|option).*?(?:doctor|--json|--strict-config)/is.test(detail))
+    return [null, 'Installed Codex doctor command is unsupported; native config validation is unverified'];
+  const normalized = detail.replaceAll('\\', '/').toLowerCase();
+  const ownConfig = path.join(root, '.codex', 'config.toml').replaceAll('\\', '/').toLowerCase();
+  if ((/(?:\/|^)\.codex\/config\.toml/i.test(normalized) || /(?:authentication|authorization|credentials)/i.test(detail)) && !normalized.includes(ownConfig))
+    return [null, 'Global Codex config or authentication prevented native validation; project config is unverified'];
+  return [false, `Codex config rejected: ${detail.slice(0, 500)}`];
 }
 
 export async function checkRepository(root, { exerciseRuntime = true, exerciseHttp = true, codexExecutable, spawnCodex, projectBinding } = {}) {
   root = path.resolve(root); const report = reportObject(), configPath = path.join(root, '.codex', 'config.toml'), hooksPath = path.join(root, '.codex', 'hooks.json');
+  const fixedConfigPath = path.join(root, '.harness', 'config.json');
+  try {
+    const management = path.join(root, '.harness');
+    const managementStat = lstatSync(management, { throwIfNoEntry: false });
+    if (managementStat && !managementStat.isDirectory()) throw new Error('.harness path is not a local directory');
+    const configStat = lstatSync(fixedConfigPath, { throwIfNoEntry: false });
+    if (configStat && !configStat.isFile()) throw new Error('.harness config path is not a local file');
+    if (!configStat) report.warnings.push('Fixed project setup has not run');
+    else {
+      const fixed = await loadFixedProjectContext({ harnessRoot: root, cwd: root });
+      report.checks.push(`Fixed project ${fixed.projectId} identity and management paths are valid`);
+    }
+  } catch (error) {
+    report.failures.push(`fixed project: ${error.message}`);
+  }
   let nonGitInstallation = false;
   if (projectBinding !== undefined) {
     const diagnostic = await inspectProjectBinding(projectBinding);
     report.require(diagnostic.ok, `Project ${diagnostic.projectId} binding is valid`, `project binding ${diagnostic.code}: ${diagnostic.message}`);
+    report.warnings.push('Legacy binding is diagnostic only and does not select the fixed installed project');
     if (diagnostic.ok) {
       const context = await loadProjectContext(projectBinding);
       nonGitInstallation = (await realpath(root)) === context.harnessRoot;
@@ -117,7 +146,7 @@ export async function checkRepository(root, { exerciseRuntime = true, exerciseHt
   return report;
 }
 
-export async function main(argv = process.argv.slice(2), root = findRoot(), checkOptions = {}) {
+export async function main(argv = process.argv.slice(2), root = getScriptHarnessRoot(import.meta.url), checkOptions = {}) {
   let projectBinding;
   if (argv.length) {
     if (argv.length !== 6 || argv[0] !== '--project' || argv[2] !== '--checkout' || argv[4] !== '--binding') { console.error('arguments: expected --project <id> --checkout <path> --binding <path>'); return 1; }
