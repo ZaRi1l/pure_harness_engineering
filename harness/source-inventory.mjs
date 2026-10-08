@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { lstat, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -31,18 +31,11 @@ const lines = bytes => bytes.toString('utf8').trim().split(/\r?\n/).filter(Boole
 const nulPaths = bytes => bytes.toString('utf8').split('\0').filter(Boolean).map(value => value.replaceAll('\\', '/'));
 const remoteGitArgs = ['-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', '-c', 'protocol.ssh.allow=always'];
 
-async function inTemporaryNonGitDirectory(action) {
-  const temporaryParent = await realpath(os.tmpdir());
-  const temporary = await mkdtemp(path.join(temporaryParent, 'silo-inventory-remote-'));
-  try {
-    if (!same(await realpath(temporary), temporary) || !(await lstat(temporary)).isDirectory()) throw new Error('temporary directory link forbidden');
-    if (lines(git(temporary, ['rev-parse', '--show-toplevel'], { allowFailure: true, isolatedRemote: true })).length) throw new Error('temporary directory belongs to a Git repository');
-    return await action(temporary);
-  } finally {
-    const info = await lstat(temporary);
-    if (!inside(temporaryParent, temporary) || !same(await realpath(temporary), temporary) || info.isSymbolicLink() || !info.isDirectory()) throw new Error('temporary directory changed; cleanup refused');
-    await rm(temporary, { recursive: true });
-  }
+async function inExistingNonGitScratch(action) {
+  const scratch = await realpath(os.tmpdir());
+  if (!same(await realpath(scratch), scratch) || !(await lstat(scratch)).isDirectory()) throw new Error('temporary scratch directory unavailable');
+  if (lines(git(scratch, ['rev-parse', '--show-toplevel'], { allowFailure: true, isolatedRemote: true })).length) throw new Error('temporary scratch belongs to a Git repository');
+  return action(scratch);
 }
 
 async function hashFile(file) {
@@ -136,14 +129,14 @@ export async function inspectSetupSource({ harnessRoot, mode, source }, { testOn
   if (/^(https:\/\/|ssh:\/\/|git@)/i.test(source)) {
     const remote = remoteInfo(source);
     if (testOnlyRemoteLookup && (!process.env.NODE_TEST_CONTEXT || typeof testOnlyRemoteLookup !== 'function')) throw new Error('test-only remote lookup unavailable');
-    const response = await inTemporaryNonGitDirectory(async temporary => {
-      const configured = lines(git(temporary, ['ls-remote', '--get-url', source]))[0];
+    const response = await inExistingNonGitScratch(async scratch => {
+      const configured = lines(git(scratch, ['ls-remote', '--get-url', source]))[0];
       if (configured !== source) throw new Error('remote URL rewrite or transport forbidden');
-      const isolated = lines(git(temporary, [...remoteGitArgs, 'ls-remote', '--get-url', source], { isolatedRemote: true }))[0];
+      const isolated = lines(git(scratch, [...remoteGitArgs, 'ls-remote', '--get-url', source], { isolatedRemote: true }))[0];
       if (isolated !== source) throw new Error('isolated remote URL mismatch');
       return testOnlyRemoteLookup
         ? Buffer.from(await testOnlyRemoteLookup(source))
-        : git(temporary, [...remoteGitArgs, 'ls-remote', '--symref', source, 'HEAD'], { isolatedRemote: true });
+        : git(scratch, [...remoteGitArgs, 'ls-remote', '--symref', source, 'HEAD'], { isolatedRemote: true });
     });
     const output = lines(response);
     const head = output.find(line => /^[a-f0-9]{40,64}\s+HEAD$/.test(line))?.split(/\s+/)[0];

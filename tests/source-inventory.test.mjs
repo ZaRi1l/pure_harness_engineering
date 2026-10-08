@@ -127,7 +127,30 @@ test('actual SSH lookup ignores inherited executable direction', async t => {
   }
 });
 
-test('remote lookup refuses a temporary directory under a Git checkout and cleans it', async t => {
+test('remote lookup uses existing non-Git scratch without creating a directory', async t => {
+  const { base, harnessRoot } = await fixture(t);
+  const scratch = path.join(base, 'scratch');
+  await mkdir(scratch);
+  const names = ['TMP', 'TEMP', 'TMPDIR'];
+  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  for (const name of names) process.env[name] = scratch;
+  try {
+    const report = await inspectSetupSource({ harnessRoot, mode: 'existing', source: 'https://fixture.invalid/repo.git' }, {
+      testOnlyRemoteLookup: async () => {
+        assert.deepEqual(await readdir(scratch), []);
+        return `${'1'.repeat(40)}\tHEAD\n`;
+      }
+    });
+    assert.equal(report.git.head, '1'.repeat(40));
+    assert.deepEqual(await readdir(scratch), []);
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  }
+});
+
+test('remote lookup refuses an existing scratch directory under a Git checkout without changing it', async t => {
   const { harnessRoot, source } = await fixture(t);
   const names = ['TMP', 'TEMP', 'TMPDIR'];
   const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
