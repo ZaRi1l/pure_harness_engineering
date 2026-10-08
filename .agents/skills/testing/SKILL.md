@@ -6,7 +6,8 @@ description: Use when a worker, verifier, or reviewer needs to plan, run, or ass
 # Testing
 
 - Test observable changed behavior; prefer the repository's existing test style.
-- For a bug fix, add regression coverage when it is practical.
+- For a bug fix, add a focused behavioral regression test, or record why one is impractical.
+- For UI changes without an available computer-use or browser path, exercise real modules in DOM tests across normal, failure, and navigation flows when those flows are affected. Report any flow that cannot be exercised.
 - Run narrow tests first, then the relevant module or package, then broader checks.
 - Workers may write and run tests, but their result is not final completion evidence.
 - Verifiers independently rerun commands and never edit implementation or tests.

@@ -27,7 +27,16 @@ test('exports four target candidates and only core roles/skills with auditable h
     assert.equal(manifest.status, 'unverified');
     assert.equal(manifest.roleIds.length, 5);
     assert.equal(manifest.entries.filter(item => item.kind === 'role').length, 20);
-    assert.equal(manifest.entries.filter(item => item.kind === 'skill').length, 10);
+    const canonicalSkills = [
+      '.agents/skills/task-routing/SKILL.md',
+      '.agents/skills/task-routing/profiles.md',
+      '.agents/skills/task-routing/references/codex-lifecycle.md',
+      '.agents/skills/task-spec/SKILL.md',
+      '.agents/skills/testing/SKILL.md',
+      '.agents/skills/failure-recovery/SKILL.md',
+    ];
+    const expectedSkillPaths = canonicalSkills.flatMap(file => [file, file.replace('.agents/skills/', '.claude/skills/')]);
+    assert.deepEqual(manifest.entries.filter(item => item.kind === 'skill').map(item => item.path).sort(), expectedSkillPaths.sort());
     for (const item of manifest.entries) {
       const body = await readFile(path.join(output, item.path));
       assert.equal(sha256(body), item.sha256, item.path);

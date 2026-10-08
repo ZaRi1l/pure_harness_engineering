@@ -22,6 +22,36 @@ test('skill inventory has exact core and optional IDs with real canonical files'
   await assert.rejects(listSkills(root, 'unknown'), /profile/);
 });
 
+test('core guidance separates engine ownership from product work and routes specialized procedures', async () => {
+  const core = await readFile(path.join(root, 'AGENTS.md'), 'utf8');
+  const testing = await readFile(path.join(root, '.agents/skills/testing/SKILL.md'), 'utf8');
+  const routing = await readFile(path.join(root, '.agents/skills/task-routing/SKILL.md'), 'utf8');
+  const lifecycle = await readFile(path.join(root, '.agents/skills/task-routing/references/codex-lifecycle.md'), 'utf8');
+
+  assert.match(core, /Root[\s\S]*overall (?:goal|request)/i);
+  assert.match(core, /delegate[^\n]*SMALL|SMALL[^\n]*delegate/i);
+  assert.match(core, /(?:nonduplicat|non-duplicat|avoid duplicat)/i);
+  assert.match(core, /(?:architectural|architecture)[\s\S]*user/i);
+  assert.match(core, /(?:actual|real) (?:commands|checks|test)[\s\S]*evidence/i);
+  assert.match(core, /--core[^\n]*engine|engine[^\n]*--core/i);
+  assert.match(core, /(?:product|selected project)[^\n]*(?:own|govern|guidance|instruction)/i);
+
+  assert.match(testing, /(?:focused|targeted) behavioral regression test/i);
+  assert.match(testing, /(?:record|document)[^\n]*impractical/i);
+  assert.match(testing, /real.modules?[^\n]*DOM/i);
+  assert.match(testing, /normal[^\n]*failure[^\n]*navigation/i);
+  assert.match(testing, /without an available computer-use or browser path/i);
+
+  assert.match(routing, /project-declared runtime/i);
+  assert.match(routing, /references\/codex-lifecycle\.md/);
+  assert.match(routing, /unavailable observability[^\n]*nonblocking|observability[^\n]*unavailable[^\n]*nonblocking/i);
+  assert.doesNotMatch(routing, /turn.token|CODEX_THREAD_ID|followup_task/);
+  assert.match(lifecycle, /turn.token/i);
+  assert.match(lifecycle, /prior turn/i);
+  assert.match(lifecycle, /exact[^\n]*ID/i);
+  assert.equal((await listSkills(root, 'all')).length, allIds.length);
+});
+
 test('core skill selection rejects contaminated optional skill metadata and copied reference files', async t => {
   const fixture = await mkdtemp(path.join(os.tmpdir(), 'harness-skills-portability-'));
   t.after(() => rm(fixture, { recursive: true, force: true }));
@@ -32,6 +62,10 @@ test('core skill selection rejects contaminated optional skill metadata and copi
   await cp(path.join(root, '.agents/skills/context-curation/SKILL.md'), optional);
   const reference = path.join(fixture, '.agents/skills/task-routing/profiles.md');
   await writeFile(reference, (await readFile(reference, 'utf8')) + `\n${hostPath}\n`);
+  await assert.rejects(listSkills(fixture, 'core'), /portable|identity|credential/i);
+  await cp(path.join(root, '.agents/skills/task-routing/profiles.md'), reference);
+  const lifecycle = path.join(fixture, '.agents/skills/task-routing/references/codex-lifecycle.md');
+  await writeFile(lifecycle, (await readFile(lifecycle, 'utf8')) + `\n${hostPath}\n`);
   await assert.rejects(listSkills(fixture, 'core'), /portable|identity|credential/i);
 });
 
