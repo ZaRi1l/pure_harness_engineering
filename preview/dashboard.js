@@ -1,6 +1,7 @@
 import { renderArtifactTabs } from '/preview/artifact-tabs.js';
 import { createTaskEditor } from '/preview/task-editor.js';
 import { createTelemetryPanel } from '/preview/telemetry-panel.js';
+import { createGuidePanel } from './guide-panel.js';
 
 const app = document.querySelector('#app');
 const preferences = globalThis.PreviewPreferences.create(document);
@@ -24,6 +25,9 @@ let telemetryPanel;
 let taskPollGeneration = 0;
 let snapshotPollGeneration = 0;
 let taskFetchError;
+const dashboardTabs = ['overview', 'tasks', 'agents', 'telemetry'];
+let selectedDashboardTab = 'overview';
+let lastDashboardSnapshot;
 
 const fallbackPolicy = (model, reasoning) => /^gpt-6-(sol|luna)$/.test(model || '')
   ? `${model.replace('gpt-6-', 'gpt-5.6-')} · ${q(reasoning || t('common.inherited'))}`
@@ -57,21 +61,75 @@ function head(title, detail) {
 }
 
 async function dashboard() {
-  if (document.querySelector('#goal')) { paint(); return; }
-  app.replaceChildren(head(t('dashboard.title'), t('dashboard.detail')));
-  const grid = el('section', 'grid');
-  grid.innerHTML = `<section class="card wide"><h2>${t('section.goal')}</h2><div id="goal"></div><div id="progress"></div></section><section class="card"><h2>${t('section.phase')}</h2><div id="phase"></div></section><section class="card wide"><h2>${t('section.activeAgents')}</h2><div id="agents"></div></section><section class="card"><h2>${t('section.verification')}</h2><div id="verification"></div></section><section class="card"><h2>${t('section.tasks')}</h2><div id="tasks"></div></section><section class="card"><h2>${t('section.claims')}</h2><div id="claims"></div></section><section class="card"><h2>${t('section.warnings')}</h2><div id="warnings"></div></section><section class="card"><h2>${t('section.blockers')}</h2><div id="blockers"></div></section><section class="card wide"><h2>${t('section.signals')}</h2><div id="signals"></div></section><section class="card full"><h2>${t('section.network')}</h2><div id="agent-network"></div></section><section class="card wide"><h2>${t('section.events')}</h2><div id="events"></div></section><section class="card"><h2>${t('section.artifacts')}</h2><div id="artifacts"></div></section>`;
+  if (document.querySelector('#goal')) { localizeDashboard(); paint(); return; }
+  const dashboardHeader = head(t('dashboard.title'), t('dashboard.detail'));
+  dashboardHeader.children[1].id = 'dashboard-title';
+  dashboardHeader.children[2].id = 'dashboard-detail';
+  app.replaceChildren(dashboardHeader);
+  const layout = el('div', 'dashboard-layout');
+  const rail = el('nav', 'dashboard-rail');
+  rail.id = 'dashboard-tablist';
+  rail.setAttribute?.('role', 'tablist');
+  rail.setAttribute?.('aria-label', t('nav.dashboard'));
+  rail.innerHTML = dashboardTabs.map((name, index) => `<button id="dashboard-tab-${name}" class="dashboard-tab" type="button" role="tab" aria-controls="dashboard-pane-${name}"><small>${String(index + 1).padStart(2, '0')}</small><span data-dashboard-label="dashboard.tabs.${name}">${t(`dashboard.tabs.${name}`)}</span></button>`).join('');
+  for (const name of dashboardTabs) {
+    const button = document.querySelector(`#dashboard-tab-${name}`);
+    button.onclick = () => selectDashboardTab(name);
+    button.onkeydown = event => {
+      const offset = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? dashboardTabs.length - 1 : offset ? (dashboardTabs.indexOf(name) + offset + dashboardTabs.length) % dashboardTabs.length : -1;
+      if (next < 0) return;
+      event.preventDefault();
+      selectDashboardTab(dashboardTabs[next]);
+      document.querySelector(`#dashboard-tab-${dashboardTabs[next]}`).focus?.();
+    };
+  }
+  const grid = el('div', 'dashboard-content');
+  grid.innerHTML = `<section id="dashboard-pane-overview" class="dashboard-pane grid" role="tabpanel" aria-labelledby="dashboard-tab-overview"><section class="card wide"><h2 data-dashboard-label="section.goal">${t('section.goal')}</h2><div id="goal"></div><div id="progress"></div></section><section class="card"><h2 data-dashboard-label="section.phase">${t('section.phase')}</h2><div id="phase"></div></section><section class="card"><h2 data-dashboard-label="section.verification">${t('section.verification')}</h2><div id="verification"></div></section><section class="card wide"><h2 data-dashboard-label="section.activeAgents">${t('section.activeAgents')}</h2><div id="agents"></div></section><section class="card"><h2 data-dashboard-label="section.claims">${t('section.claims')}</h2><div id="claims"></div></section><section class="card"><h2 data-dashboard-label="section.warnings">${t('section.warnings')}</h2><div id="warnings"></div></section><section class="card"><h2 data-dashboard-label="section.blockers">${t('section.blockers')}</h2><div id="blockers"></div></section></section><section id="dashboard-pane-tasks" class="dashboard-pane grid" role="tabpanel" aria-labelledby="dashboard-tab-tasks"><section class="card full"><h2 data-dashboard-label="section.tasks">${t('section.tasks')}</h2><div id="tasks"></div></section><section class="card wide"><h2 data-dashboard-label="section.events">${t('section.events')}</h2><div id="events"></div></section><section class="card"><h2 data-dashboard-label="section.artifacts">${t('section.artifacts')}</h2><div id="artifacts"></div></section></section><section id="dashboard-pane-agents" class="dashboard-pane grid" role="tabpanel" aria-labelledby="dashboard-tab-agents"><section class="card full"><h2 data-dashboard-label="section.network">${t('section.network')}</h2><div id="agent-network"></div></section><section class="card full"><h2 data-dashboard-label="section.signals">${t('section.signals')}</h2><div id="signals"></div></section></section>`;
   const telemetryCard = el('section', 'card full');
-  telemetryCard.append(el('h2', '', t('section.telemetry')));
+  const telemetryHeading = el('h2', '', t('section.telemetry'));
+  telemetryHeading.setAttribute?.('data-dashboard-label', 'section.telemetry');
+  telemetryCard.append(telemetryHeading);
   const telemetryHost = el('div');
   telemetryHost.id = 'telemetry';
   telemetryCard.append(telemetryHost);
-  grid.append(telemetryCard);
-  app.append(grid);
+  const telemetryPane = el('section', 'dashboard-pane grid');
+  telemetryPane.id = 'dashboard-pane-telemetry';
+  telemetryPane.setAttribute?.('role', 'tabpanel');
+  telemetryPane.setAttribute?.('aria-labelledby', 'dashboard-tab-telemetry');
+  telemetryPane.append(telemetryCard);
+  grid.append(telemetryPane);
+  layout.append(rail, grid);
+  app.append(layout);
+  selectDashboardTab(selectedDashboardTab);
   taskEditor = createTaskEditor(document.querySelector('#tasks'), { fetchImpl: fetch, translate: t });
   telemetryPanel = createTelemetryPanel(telemetryHost, { fetchImpl: fetch, translate: t });
   taskFetchError = undefined;
   paint();
+}
+
+function selectDashboardTab(name) {
+  selectedDashboardTab = name;
+  for (const tabName of dashboardTabs) {
+    const pane = document.querySelector(`#dashboard-pane-${tabName}`);
+    const tab = document.querySelector(`#dashboard-tab-${tabName}`);
+    if (pane) pane.hidden = tabName !== name;
+    if (tab) {
+      tab.setAttribute?.('aria-selected', String(tabName === name));
+      tab.setAttribute?.('tabindex', tabName === name ? '0' : '-1');
+      tab.classList.toggle('active', tabName === name);
+    }
+  }
+  if (name === 'agents' && lastDashboardSnapshot && networkController) networkController.update(lastDashboardSnapshot, catalog);
+}
+
+function localizeDashboard() {
+  const title = document.querySelector('#dashboard-title');
+  const detail = document.querySelector('#dashboard-detail');
+  document.querySelector('#dashboard-tablist')?.setAttribute?.('aria-label', t('nav.dashboard'));
+  if (title) title.textContent = t('dashboard.title');
+  if (detail) detail.textContent = t('dashboard.detail');
+  document.querySelectorAll('[data-dashboard-label]').forEach(node => { node.textContent = t(node.getAttribute('data-dashboard-label')); });
 }
 
 function elapsed(at, observedAt) {
@@ -124,6 +182,7 @@ async function paint() {
   try {
     const snapshot = await fetch('/runtime/snapshot', { cache: 'no-store' }).then(response => response.json());
     if (requestGeneration !== snapshotPollGeneration || !document.querySelector('#goal')) return;
+    lastDashboardSnapshot = snapshot;
     const status = snapshot.status;
     const fill = (selector, items, render) => {
       const host = document.querySelector(selector);
@@ -231,11 +290,7 @@ function preview() {
 }
 
 function guide() {
-  const body = el('div');
-  body.innerHTML = t('guide.body');
-  const network = el('section');
-  network.innerHTML = t('guide.networkBody');
-  app.replaceChildren(head(t('guide.title'), t('guide.detail')), body, network);
+  app.replaceChildren(head(t('guide.title'), t('guide.detail')), createGuidePanel({ document, translate: t }));
 }
 
 function route() {
