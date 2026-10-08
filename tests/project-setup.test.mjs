@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { cp, lstat, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { planProjectSetup, applyProjectSetup } from '../harness/project-setup.mjs';
+import { planProjectSetup, applyProjectSetup, recoverProjectSetup } from '../harness/project-setup.mjs';
 
 const engine = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -214,4 +214,101 @@ test('partial bridge failure on target update restores previous child and config
   assert.equal(await exists(path.join(f.harnessRoot, '.harness/adapters/opencode.json')), false);
   assert.equal(await exists(path.join(f.projectRoot, '.opencode')), false);
   assert.equal(JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/setup-journal.json'))).phase, 'rolled-back');
+});
+
+test('pending setup journal blocks both planning and Apply without overwriting recovery evidence', async t => {
+  const f = await fixture(t);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  const journalPath = path.join(f.harnessRoot, '.harness/setup-journal.json');
+  await mkdir(path.dirname(journalPath), { recursive: true });
+  const evidence = Buffer.from(JSON.stringify({ schemaVersion: 1, setupId: plan.setupId, phase: 'rollback-blocked', projectRoot: f.projectRoot }));
+  await writeFile(journalPath, evidence);
+  await assert.rejects(planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' }), /journal|recover/i);
+  await assert.rejects(applyProjectSetup({ harnessRoot: f.harnessRoot, plan }), /journal|recover/i);
+  assert.deepEqual(await readFile(journalPath), evidence);
+  assert.equal(await exists(path.join(f.harnessRoot, '.harness/setup.lock')), false);
+  assert.equal(await exists(f.projectRoot), false);
+});
+
+test('explicit recovery restores an empty child displaced before publish and permits retry', async t => {
+  const f = await fixture(t, true);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  const transaction = path.join(f.harnessRoot, '.harness/staging', `${plan.setupId}-${randomUUID()}`);
+  const displaced = path.join(transaction, 'empty-project');
+  await mkdir(transaction, { recursive: true });
+  await import('node:fs/promises').then(fs => fs.rename(f.projectRoot, displaced));
+  const journalPath = path.join(f.harnessRoot, '.harness/setup-journal.json');
+  await writeFile(journalPath, JSON.stringify({ schemaVersion: 1, setupId: plan.setupId, mode: 'new', phase: 'displacing-empty',
+    projectRoot: f.projectRoot, destinationState: 'empty', target: 'claude', transaction, staged: path.join(transaction, 'project'), displaced,
+    stagedFingerprint: null, ignoredDirectories: [] }));
+  await assert.rejects(planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' }), /journal|recover/i);
+  const result = await recoverProjectSetup({ harnessRoot: f.harnessRoot });
+  assert.equal(result.phase, 'rolled-back');
+  assert.deepEqual(await readdir(f.projectRoot), []);
+  assert.equal(JSON.parse(await readFile(journalPath)).phase, 'rolled-back');
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan });
+  assert.equal(await exists(path.join(f.projectRoot, '.git')), true);
+});
+
+test('crash after publish requires explicit recovery and refuses outside drift', async t => {
+  const f = await fixture(t, true);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  const moduleUrl = new URL('../harness/project-setup.mjs', import.meta.url).href;
+  const code = `import { applyProjectSetup } from ${JSON.stringify(moduleUrl)}; await applyProjectSetup(${JSON.stringify({ harnessRoot: f.harnessRoot, plan })}, { beforeWrite: phase => { if (phase === 'after-publish') process.exit(86); } });`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', windowsHide: true });
+  assert.equal(child.status, 86, child.stderr);
+  const journalPath = path.join(f.harnessRoot, '.harness/setup-journal.json');
+  const journal = JSON.parse(await readFile(journalPath));
+  assert.equal(journal.phase, 'published');
+  assert.equal(await exists(journal.displaced), true);
+  assert.equal(await exists(f.projectRoot), true);
+  await assert.rejects(planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' }), /journal|recover/i);
+  await writeFile(path.join(f.projectRoot, 'outside.txt'), 'external');
+  await assert.rejects(recoverProjectSetup({ harnessRoot: f.harnessRoot }), /outside drift/i);
+  assert.equal(await readFile(path.join(f.projectRoot, 'outside.txt'), 'utf8'), 'external');
+  await rm(path.join(f.projectRoot, 'outside.txt'));
+  const result = await recoverProjectSetup({ harnessRoot: f.harnessRoot });
+  assert.equal(result.phase, 'rolled-back');
+  assert.deepEqual(await readdir(f.projectRoot), []);
+  assert.equal(await exists(path.join(journal.transaction, 'recovered-project/.git')), true);
+  assert.equal(await exists(path.join(f.harnessRoot, '.harness/config.json')), false);
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan });
+  assert.equal(await exists(path.join(f.projectRoot, '.git')), true);
+  assert.equal(await exists(path.join(journal.transaction, 'recovered-project/.git')), true);
+});
+
+test('extra staged local file introduced during copy fails before canonical publish', async t => {
+  const f = await fixture(t);
+  const source = await sourceFixture(t, f);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'existing', source, target: 'claude' });
+  await assert.rejects(applyProjectSetup({ harnessRoot: f.harnessRoot, plan }, {
+    beforeWrite: async phase => {
+      if (phase !== 'after-copy') return;
+      const journal = JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/setup-journal.json')));
+      const transient = path.join(source, 'transient-extra.txt');
+      await writeFile(transient, 'unreviewed');
+      await cp(transient, path.join(journal.staged, 'transient-extra.txt'));
+      await rm(transient);
+    }
+  }), /staged|inventory|unreviewed/i);
+  assert.equal(await exists(f.projectRoot), false);
+  assert.equal(await exists(path.join(f.harnessRoot, '.harness/config.json')), false);
+});
+
+test('malformed seven-key prior configs reject update planning before any write', async t => {
+  const f = await fixture(t);
+  const first = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan: first });
+  const configPath = path.join(f.harnessRoot, '.harness/config.json');
+  const valid = JSON.parse(await readFile(configPath));
+  for (const malformed of [
+    { ...valid, createdAt: 'not-a-date' },
+    { ...valid, setupId: 'not-a-uuid' },
+    { ...valid, unknown: true, updatedAt: undefined },
+  ]) {
+    await writeFile(configPath, JSON.stringify(malformed));
+    const before = await readFile(configPath);
+    await assert.rejects(planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'update', target: 'codex' }), /invalid setup config/i);
+    assert.deepEqual(await readFile(configPath), before);
+  }
 });

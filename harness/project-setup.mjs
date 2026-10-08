@@ -9,6 +9,9 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const configName = '.harness/config.json';
 const journalName = '.harness/setup-journal.json';
 const targets = new Set(['codex', 'claude', 'opencode', 'antigravity']);
+const configKeys = ['version', 'layout', 'projectPath', 'target', 'setupId', 'createdAt', 'updatedAt'];
+const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+const iso = value => typeof value === 'string' && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
 
 async function stat(file) {
   try { return await lstat(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
@@ -26,7 +29,7 @@ async function emptyDestination(root) {
   if ((await readdir(root)).length) throw new Error('destination must be empty');
   return 'empty';
 }
-async function treeFingerprint(root, ignoredDirectories = new Set()) {
+async function treeEntries(root, ignoredDirectories = new Set()) {
   const entries = [];
   async function walk(folder, prefix = '') {
     const names = new Set();
@@ -44,8 +47,9 @@ async function treeFingerprint(root, ignoredDirectories = new Set()) {
     }
   }
   await walk(root);
-  return hash(JSON.stringify(entries.sort((a, b) => a[0].localeCompare(b[0]))));
+  return entries.sort((a, b) => a[0].localeCompare(b[0]));
 }
+async function treeFingerprint(root, ignoredDirectories = new Set()) { return hash(JSON.stringify(await treeEntries(root, ignoredDirectories))); }
 function git(cwd, args, { remote = false, allowFailure = false } = {}) {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' };
   for (const name of Object.keys(env)) if (/^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|NAMESPACE|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+|CONFIG_PARAMETERS|CONFIG_GLOBAL|CONFIG_SYSTEM)$/.test(name)) delete env[name];
@@ -65,8 +69,32 @@ async function readConfig(harnessRoot) {
   if (!bytes) return null;
   let data;
   try { data = JSON.parse(bytes); } catch { throw new Error('invalid setup config'); }
-  if (Object.keys(data).length !== 7 || data.version !== 1 || data.layout !== 'single-project' || data.projectPath !== 'project' || !targets.has(data.target) || typeof data.setupId !== 'string') throw new Error('invalid setup config');
+  if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).length !== configKeys.length || configKeys.some(key => !Object.hasOwn(data, key)) ||
+      data.version !== 1 || data.layout !== 'single-project' || data.projectPath !== 'project' || !targets.has(data.target) || !uuid(data.setupId) || !iso(data.createdAt) || !iso(data.updatedAt)) throw new Error('invalid setup config');
   return { data, bytes };
+}
+async function setupJournal(harnessRoot) {
+  const bytes = await content(path.join(harnessRoot, journalName));
+  if (!bytes) return null;
+  try { return JSON.parse(bytes); } catch { throw new Error('invalid setup journal; explicit recovery required'); }
+}
+function checkedJournal(harnessRoot, journal) {
+  const stagingRoot = path.join(path.resolve(harnessRoot), '.harness/staging');
+  if (!journal || journal.schemaVersion !== 1 || !uuid(journal.setupId) || !['new', 'existing', 'update'].includes(journal.mode) ||
+      !['preparing', 'displacing-empty', 'publishing', 'published', 'bridge-applied', 'rollback-blocked', 'rolled-back'].includes(journal.phase) ||
+      journal.projectRoot !== path.join(path.resolve(harnessRoot), 'project') ||
+      !['absent', 'empty', 'configured'].includes(journal.destinationState) || !targets.has(journal.target) ||
+      typeof journal.transaction !== 'string' || path.dirname(journal.transaction) !== stagingRoot ||
+      !path.basename(journal.transaction).startsWith(`${journal.setupId}-`) || !uuid(path.basename(journal.transaction).slice(journal.setupId.length + 1)) ||
+      journal.staged !== path.join(journal.transaction, 'project') || journal.displaced !== path.join(journal.transaction, 'empty-project') ||
+      !(journal.stagedFingerprint === null || /^[a-f0-9]{64}$/.test(journal.stagedFingerprint)) || !Array.isArray(journal.ignoredDirectories) ||
+      journal.ignoredDirectories.some(value => typeof value !== 'string' || value.includes('\\') || path.isAbsolute(value) || value.split('/').some(part => !part || part === '.' || part === '..')))
+    throw new Error('invalid setup journal; manual recovery required');
+  return journal;
+}
+async function assertNoPendingJournal(harnessRoot) {
+  const journal = await setupJournal(harnessRoot);
+  if (journal && checkedJournal(harnessRoot, journal).phase !== 'rolled-back') throw new Error('pending setup journal; explicit recovery required');
 }
 async function atomic(file, bytes) {
   await mkdir(path.dirname(file), { recursive: true });
@@ -74,10 +102,25 @@ async function atomic(file, bytes) {
   try { await writeFile(temp, bytes, { flag: 'wx' }); await rename(temp, file); }
   finally { await rm(temp, { force: true }); }
 }
-async function lock(harnessRoot, fn) {
+async function lock(harnessRoot, fn, { recoverStale = false } = {}) {
   const file = path.join(harnessRoot, '.harness/setup.lock');
   await mkdir(path.dirname(file), { recursive: true });
-  const handle = await open(file, 'wx').catch(error => { if (error.code === 'EEXIST') throw new Error('setup lock exists'); throw error; });
+  let handle;
+  try { handle = await open(file, 'wx'); }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (!recoverStale) throw new Error('setup lock exists');
+    const prior = await content(file);
+    let owner;
+    try { owner = JSON.parse(prior); } catch { throw new Error('unverifiable setup lock; manual recovery required'); }
+    if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !uuid(owner.token)) throw new Error('unverifiable setup lock; manual recovery required');
+    try { process.kill(owner.pid, 0); throw new Error('setup lock owner is still running'); }
+    catch (check) { if (check.code !== 'ESRCH') throw check; }
+    if (!(await content(file))?.equals(prior)) throw new Error('setup lock changed during recovery');
+    await unlink(file);
+    handle = await open(file, 'wx').catch(openError => { if (openError.code === 'EEXIST') throw new Error('setup lock reacquired'); throw openError; });
+  }
+  await handle.writeFile(JSON.stringify({ pid: process.pid, token: randomUUID(), startedAt: new Date().toISOString() }));
   try { return await fn(); } finally { await handle.close(); await unlink(file); }
 }
 function assertPlan(plan, harnessRoot) {
@@ -96,6 +139,7 @@ export async function planProjectSetup({ harnessRoot, mode, source, target } = {
   if (typeof harnessRoot !== 'string' || !path.isAbsolute(harnessRoot) || !targets.has(target) || !['new', 'existing', 'update'].includes(mode)) throw new Error('invalid setup request');
   const projectRoot = path.join(path.resolve(harnessRoot), 'project');
   await assertSafeSetupDestination({ harnessRoot, destination: projectRoot });
+  await assertNoPendingJournal(harnessRoot);
   const prior = await readConfig(harnessRoot);
   if (mode === 'update' ? !prior : !!prior) throw new Error(mode === 'update' ? 'setup config required for update' : 'setup already exists; use update');
   if (mode !== 'existing' && source !== undefined) throw new Error('source only allowed for existing mode');
@@ -145,6 +189,9 @@ async function revalidate(harnessRoot, plan) {
 }
 async function assertCopied(sourceReport, staged) {
   if (path.resolve(git(staged, ['rev-parse', '--show-toplevel'])) !== staged) throw new Error('staged Git worktree points outside destination');
+  const stagedFiles = (await treeEntries(staged)).filter(([, value]) => value !== 'directory').map(([name]) => name);
+  const plannedFiles = sourceReport.files.map(item => item.path).sort((a, b) => a.localeCompare(b));
+  if (JSON.stringify(stagedFiles) !== JSON.stringify(plannedFiles)) throw new Error('staged source file inventory changed');
   for (const file of sourceReport.files) {
     const bytes = await content(path.join(staged, ...file.path.split('/')));
     if (!bytes || hash(bytes) !== file.sha256) throw new Error(`staged source changed: ${file.path}`);
@@ -167,17 +214,60 @@ function managedDirectories(actions) {
   return result;
 }
 
+export async function recoverProjectSetup({ harnessRoot } = {}) {
+  if (typeof harnessRoot !== 'string' || !path.isAbsolute(harnessRoot)) throw new Error('absolute harness root required');
+  const projectRoot = path.join(path.resolve(harnessRoot), 'project');
+  await assertSafeSetupDestination({ harnessRoot, destination: projectRoot });
+  return lock(harnessRoot, async () => {
+    const file = path.join(harnessRoot, journalName);
+    const journal = checkedJournal(harnessRoot, await setupJournal(harnessRoot));
+    if (journal.phase === 'rolled-back') return { phase: 'rolled-back', projectRoot, retainedStaging: journal.transaction };
+    if (journal.mode === 'update' || journal.phase === 'bridge-applied') throw new Error('setup journal requires manual bridge/config recovery');
+    if (await content(path.join(harnessRoot, `.harness/adapters/${journal.target}.journal.json`)) ||
+        await content(path.join(harnessRoot, `.harness/adapters/${journal.target}.json`)) ||
+        await content(path.join(harnessRoot, configName))) throw new Error('setup journal has bridge or config state; manual recovery required');
+    const destination = await stat(projectRoot), displaced = await stat(journal.displaced), staged = await stat(journal.staged);
+    if (destination && (!destination.isDirectory() || destination.isSymbolicLink())) throw new Error('recovery destination drift');
+    if (displaced && (!displaced.isDirectory() || displaced.isSymbolicLink() || (await readdir(journal.displaced)).length)) throw new Error('displaced empty destination drift');
+    if (staged && (!staged.isDirectory() || staged.isSymbolicLink())) throw new Error('staged project drift');
+    if (journal.phase === 'preparing' || journal.phase === 'displacing-empty' || (journal.phase === 'rollback-blocked' && journal.stagedFingerprint === null)) {
+      if (destination && (journal.destinationState !== 'empty' || (await readdir(projectRoot)).length || displaced)) throw new Error('recovery destination drift');
+      if (!destination && journal.destinationState === 'empty' && !displaced) throw new Error('missing displaced empty destination');
+      if (destination && journal.destinationState === 'absent') throw new Error('recovery destination drift');
+    } else {
+      if (!journal.stagedFingerprint) throw new Error('missing published fingerprint');
+      if (destination && staged) throw new Error('staged and published projects both present');
+      if (destination && await treeFingerprint(projectRoot, new Set(journal.ignoredDirectories)) !== journal.stagedFingerprint)
+        throw new Error('published project outside drift');
+      if (journal.destinationState === 'empty' && !displaced) throw new Error('missing displaced empty destination');
+      if (journal.destinationState === 'absent' && displaced) throw new Error('unexpected displaced destination');
+    }
+    if (destination && journal.stagedFingerprint) {
+      const retained = path.join(journal.transaction, 'recovered-project');
+      if (await stat(retained)) throw new Error('recovery output already exists');
+      await rename(projectRoot, retained);
+    }
+    if (journal.destinationState === 'empty' && displaced && !(await stat(projectRoot))) await rename(journal.displaced, projectRoot);
+    journal.phase = 'rolled-back';
+    await atomic(file, JSON.stringify(journal));
+    return { phase: 'rolled-back', projectRoot, retainedStaging: journal.transaction };
+  }, { recoverStale: true });
+}
+
 export async function applyProjectSetup({ harnessRoot, plan } = {}, { beforeWrite } = {}) {
   assertPlan(plan, harnessRoot);
   if (plan.conflicts.length) throw new Error('setup plan contains review conflicts');
+  await assertNoPendingJournal(harnessRoot);
   return lock(harnessRoot, async () => {
+    await assertNoPendingJournal(harnessRoot);
     await revalidate(harnessRoot, plan);
     const projectRoot = plan.projectRoot;
     const journalFile = path.join(harnessRoot, journalName);
     const transaction = path.join(harnessRoot, '.harness/staging', `${plan.setupId}-${randomUUID()}`);
     const staged = path.join(transaction, 'project');
     const displaced = path.join(transaction, 'empty-project');
-    const journal = { schemaVersion: 1, setupId: plan.setupId, mode: plan.mode, phase: 'preparing', projectRoot, destinationState: plan.destinationState, target: plan.target };
+    const journal = { schemaVersion: 1, setupId: plan.setupId, mode: plan.mode, phase: 'preparing', projectRoot,
+      destinationState: plan.destinationState, target: plan.target, transaction, staged, displaced, stagedFingerprint: null, ignoredDirectories: [] };
     let published = false, bridgeApplied = false, emptyMoved = false, configWritten = false;
     let stagedFingerprint = null, ignoredDirectories = new Set(), bridgeBefore = [], createdDirectories = [], manifestBefore = null, manifestAfterHash = null;
     await mkdir(transaction, { recursive: true });
@@ -190,6 +280,7 @@ export async function applyProjectSetup({ harnessRoot, plan } = {}, { beforeWrit
           git(staged, ['init', '--initial-branch=main']);
         } else if (plan.source.kind === 'local') {
           await cp(plan.source.canonicalSource, staged, { recursive: true, force: false, errorOnExist: true });
+          await beforeWrite?.('after-copy');
           await assertCopied(plan.source, staged);
         } else {
           const url = plan.source.git.remotes[0].displayUrl;
@@ -210,7 +301,13 @@ export async function applyProjectSetup({ harnessRoot, plan } = {}, { beforeWrit
         await beforeWrite?.('after-staging');
         await revalidate(harnessRoot, plan);
         stagedFingerprint = await treeFingerprint(staged, ignoredDirectories);
-        if (plan.destinationState === 'empty') { await rename(projectRoot, displaced); emptyMoved = true; }
+        journal.stagedFingerprint = stagedFingerprint;
+        journal.ignoredDirectories = [...ignoredDirectories];
+        if (plan.destinationState === 'empty') {
+          journal.phase = 'displacing-empty'; await atomic(journalFile, JSON.stringify(journal));
+          await rename(projectRoot, displaced); emptyMoved = true;
+        }
+        journal.phase = 'publishing'; await atomic(journalFile, JSON.stringify(journal));
         await rename(staged, projectRoot); published = true;
         journal.phase = 'published'; await atomic(journalFile, JSON.stringify(journal));
         await beforeWrite?.('after-publish');
