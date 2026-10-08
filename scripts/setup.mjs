@@ -39,6 +39,9 @@ function describe(plan) {
     `To apply, enter exactly: apply ${plan.planSha256.slice(0, 12)}`,
   ].join('\n');
 }
+function nextSteps(io) {
+  io.stdout.write('From the Harness root, run once: npm run init\nThen use: npm run status\nFor the live dashboard: npm run preview:live\n');
+}
 
 export async function main(argv = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }) {
   try {
@@ -48,6 +51,7 @@ export async function main(argv = process.argv.slice(2), io = { stdin: process.s
       const plan = JSON.parse(await readFile(path.resolve(options['--apply']), 'utf8'));
       const result = await applyProjectSetup({ harnessRoot, plan });
       io.stdout.write(`${JSON.stringify(result)}\n`);
+      nextSteps(io);
       return 0;
     }
     let mode = options['--mode'];
@@ -78,6 +82,7 @@ export async function main(argv = process.argv.slice(2), io = { stdin: process.s
       if (answer !== `apply ${plan.planSha256.slice(0, 12)}`) { io.stderr.write('Setup not applied: confirmation did not match.\n'); return 1; }
       const result = await applyProjectSetup({ harnessRoot, plan });
       io.stdout.write(`${JSON.stringify(result)}\n`);
+      nextSteps(io);
       return 0;
     } finally { prompt.close(); }
   } catch (error) {

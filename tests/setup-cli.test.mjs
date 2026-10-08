@@ -45,6 +45,9 @@ test('explicit apply consumes reviewed plan and rejects conflicting selector or 
   assert.equal(await exists(path.join(f.harnessRoot, 'project')), false);
   assert.equal(await main(['--apply', file], f.io), 0);
   assert.equal(JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/config.json'))).target, 'codex');
+  assert.match(f.output.stdout, /npm run init/);
+  assert.match(f.output.stdout, /npm run status/);
+  assert.match(f.output.stdout, /npm run preview:live/);
   const altered = path.join(path.dirname(f.harnessRoot), 'altered.json');
   await writeFile(altered, JSON.stringify({ ...plan, target: 'claude' }));
   assert.equal(await main(['--apply', altered], f.io), 1);
@@ -80,6 +83,7 @@ test('interactive setup displays reviewed plan and writes only after exact hash 
   assert.match(output, /"bridge":/);
   assert.match(output, /Verification limit:/);
   assert.equal(JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/config.json'))).target, 'codex');
+  assert.match(output, /npm run init/);
 });
 
 test('interactive existing source is prompted and unconfirmed plan remains read-only', async t => {
