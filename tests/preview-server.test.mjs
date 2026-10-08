@@ -376,22 +376,22 @@ test('catalog route refuses a replaced skills-root junction while preserving nor
   assert.doesNotMatch(JSON.stringify(catalog), /PRIVATE_SKILL_SOURCE/);
 });
 
-test('staged setup guide advertises backed commands with selected-project context', async () => {
+test('setup guide shows the fixed-project commands without obsolete selectors', async () => {
   const scripts = JSON.parse(await readFile(path.resolve('package.json'), 'utf8')).scripts;
   const context = { globalThis: {}, document: { documentElement: { dataset: {}, setAttribute() {} } } };
   runInNewContext(await readFile(path.resolve('preview/preferences.js'), 'utf8'), context);
   const guide = context.globalThis.PreviewPreferences.create(context.document, { storage: null }).t('guide.body');
   const commands = [...guide.matchAll(/npm(?: run)? [\w:-]+/g)].map(match => match[0]);
-  for (const command of ['npm test', 'npm run self-check', 'npm run status', 'npm run preview:live', 'npm run preview']) {
+  for (const command of ['npm run setup', 'npm run init', 'npm run status', 'npm run preview:live']) {
     assert.ok(commands.includes(command), `guide omits ${command}`);
   }
   for (const command of commands) assert.ok(scripts[command.replace(/^npm(?: run)? /, '')]);
-  assert.match(guide, /npm run preview:live -- --project .* --checkout .* --binding /);
-  assert.match(guide, /npm run preview -- --project .* --checkout .* --binding /);
+  assert.match(guide, /npm run setup/);
+  assert.doesNotMatch(guide, /--project|--checkout|--binding/);
   assert.doesNotMatch(guide, /Remove-Item|Get-ChildItem|\.ai\/tasks\/\*\.md/i);
 });
 
-test('guide safety copy preserves existing project state and requires explicit context', async () => {
+test('guide safety copy preserves the source and uses only fixed-project commands', async () => {
   const context = { globalThis: {}, document: { documentElement: { dataset: {}, setAttribute() {} } } };
   runInNewContext(await readFile(path.resolve('preview/preferences.js'), 'utf8'), context);
   const preferences = context.globalThis.PreviewPreferences.create(context.document, { storage: null });
@@ -399,14 +399,15 @@ test('guide safety copy preserves existing project state and requires explicit c
     preferences.setLocale(locale);
     const existing = preferences.t('guide.existing.body');
     const newCommands = preferences.t('guide.new.commands');
+    const existingCommands = preferences.t('guide.existing.commands');
     const connectedCommands = preferences.t('guide.connected.commands');
-    assert.match(existing, locale === 'en' ? /original project and runtime untouched/ : /원본 프로젝트와 runtime을 그대로 보존/);
+    assert.match(existing, locale === 'en' ? /original project.*untouched/ : /원본 프로젝트.*보존/);
     assert.doesNotMatch(existing, /Remove-Item|Get-ChildItem/i);
-    for (const command of [newCommands, connectedCommands]) {
-      assert.match(command, /--project/);
-      assert.match(command, /--checkout/);
-      assert.match(command, /--binding/);
+    for (const command of [newCommands, existingCommands, connectedCommands]) {
+      assert.doesNotMatch(command, /--project|--checkout|--binding/);
     }
+    assert.match(existingCommands, /^npm run setup/);
+    assert.doesNotMatch(connectedCommands, /npm run init/);
   }
 });
 
@@ -425,10 +426,9 @@ test('start documents link to current preservation and safe preview guidance', a
       await readFile(path.resolve(dir, target), 'utf8');
     }
   }
-  assert.match(firstUse, /원본을 보존/);
-  assert.match(firstUse, /기존 파일은 덮어쓰지 않/);
-  assert.match(setupReference, /기존 프로젝트 runtime[\s\S]{0,80}보존하세요/);
-  assert.match(setupReference, /기존 runtime[\s\S]{0,80}삭제하거나 초기화하지 마세요/);
+  assert.match(firstUse, /원본은 이동하거나 수정하지 않/);
+  assert.match(firstUse, /기존 파일은 검토 없이 덮어쓰지 않/);
+  assert.match(setupReference, /원본 저장소와 기존 runtime[\s\S]{0,80}삭제하거나 초기화하지 마세요/);
   assert.match(setupReference, /file:\/\/[\s\S]{0,80}지원되는 가이드 열람 경로가 아닙니다/);
 });
 

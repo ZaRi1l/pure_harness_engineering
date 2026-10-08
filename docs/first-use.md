@@ -1,34 +1,34 @@
 # Pure Harness 처음 사용하기
 
-Windows PowerShell 7 기준입니다. Node.js 20+와 Git이 필요합니다. **Harness 설치 하나와 프로젝트 하나**로 시작하세요. 아래에서 자신의 상황 하나만 고르면 됩니다.
+Windows PowerShell 7 기준입니다. Node.js 20+와 Git이 필요합니다. Harness 설치 한 개는 고정된 `project/` 한 개만 관리합니다. `project/`는 Harness 자체와 별개의 Git 저장소이고, 로컬 설치 상태·작업 명세·메모리·runtime은 무시되는 `.harness/`에 둡니다.
 
-## 1. 이미 설정된 로컬 프로젝트 확인
+먼저 Harness 저장소를 별도 폴더에 clone하거나 준비된 설치 폴더로 이동하세요. 아래 예시 경로는 자신의 설치 경로로 바꿉니다.
 
-프로젝트 `harness-adapter/project.json`과 Harness 설치의 `harness-adapter/binding.local.json`이 이미 준비되어 있다면, 새로 만들거나 초기화하지 마세요.
+```powershell
+Set-Location C:\tools\pure-harness
+npm run setup
+```
 
-1. 터미널에서 Harness 설치 폴더로 이동합니다: `Set-Location C:\tools\pure-harness` (자신의 경로로 변경).
-2. 자신의 ID·프로젝트 checkout·binding 절대경로를 넣어 실행합니다:
+설정에서 새 프로젝트 또는 기존 프로젝트를 선택하고, 사용할 AI 도구를 고릅니다. 설정은 파일 변경 계획과 충돌·검증 한계를 먼저 보여 줍니다. 내용을 확인한 뒤 화면에 표시된 정확한 `apply <계획 해시 앞 12자리>` 문구를 입력해야 적용됩니다. 취소하면 파일을 적용하지 않습니다.
 
-   ```powershell
-   npm run preview:live -- --project my-project --checkout C:\work\my-project --binding C:\tools\pure-harness\harness-adapter\binding.local.json
-   ```
+## 새 프로젝트라면
 
-3. 터미널에 **실제로 출력된 localhost 주소**를 브라우저에서 엽니다. 끝나면 같은 터미널에서 `Ctrl+C`로 종료합니다.
+`setup`에서 **새 프로젝트**를 고르세요. 비어 있거나 없는 `project/`에 독립 Git 저장소가 준비됩니다. 별도 프로젝트 ID, checkout, binding 파일을 만들 필요가 없습니다. `project/`에 작업 파일을 만들고 AI 도구도 그 폴더에서 여세요.
 
-이미 설정된 환경에도 `--project`, `--checkout`, `--binding` 세 값이 모두 필요합니다. 화면의 작업 기록은 선택한 프로젝트의 Harness runtime에 저장됩니다. [화면에서 확인할 것](advanced-first-use.md#3-화면에서-첫-작업-확인)과 [문제 해결](advanced-first-use.md#막히면)을 참조하세요.
+## 기존 프로젝트라면
 
-## 2. 새 프로젝트 시작
+`setup`에서 **기존 프로젝트**를 고르고 로컬 Git 저장소의 절대경로 또는 지원되는 Git 원격을 지정하세요. 로컬 원본은 이동하거나 수정하지 않습니다. 계획을 적용하면 원본의 Git 기록과 파일이 고정된 `project/`에 복사됩니다. 로컬 원본의 커밋되지 않은 파일과 무시된 파일도 점검·복사 대상이므로 계획의 충돌과 사적인 데이터를 확인하세요. 원격은 계획 시 파일 내용을 아직 확인할 수 없으므로 적용 전 재검증이 필요합니다. 이미 `project/`에 다른 데이터가 있다면 덮어쓰지 말고 충돌을 해결하세요. 기존 runtime을 삭제하거나 초기화하지 마세요. 기존 파일은 검토 없이 덮어쓰지 않습니다.
 
-1. Harness를 설치하고 **별도의 형제 폴더**에 새 빈 Git 프로젝트를 만듭니다. 두 폴더를 서로 안에 넣지 마세요.
-2. 프로젝트 checkout에 `harness-adapter/project.json`을 만들고, Harness 설치에 로컬 전용 `harness-adapter/binding.local.json`을 만듭니다. 프로젝트 ID는 두 파일에서 같아야 합니다.
-3. Harness 폴더에서 읽기 전용 진단을 통과한 뒤 `init`, `status`, `preview:live` 순서로 실행합니다. 명령과 JSON 예시는 [새 프로젝트 상세 절차](setup-reference.md#새-프로젝트를-처음-시작할-때-windows-powershell-7)에 있습니다.
+## 설정 후 확인
 
-`projects/<id>/tasks`, `memory`, `runtime`은 Harness 안의 **관리 데이터 경로**입니다. 제품 소스 checkout은 별도 Git 폴더입니다. 이미 작업 중인 디렉터리에는 이 새 프로젝트 절차를 실행하지 마세요.
+Harness 폴더에서 다음 명령을 실행합니다. 처음 설정한 뒤에만 `init`을 실행하고, 이후에는 `status`와 `preview:live`를 사용하세요.
 
-## 3. 기존 프로젝트를 안전하게 시험
+```powershell
+npm run init
+npm run status
+npm run preview:live
+```
 
-1. 원본을 보존하고 Harness와 기존 프로젝트를 각각 **새 시험용 Git checkout**으로 복사합니다. 커밋되지 않은 파일과 무시된 데이터는 복사되지 않습니다.
-2. 시험용 프로젝트에만 manifest를 준비하고, 시험용 Harness에만 binding을 만듭니다. 기존 파일은 덮어쓰지 않습니다.
-3. 시험 복사본에서 진단 → `init` → `status` → `preview:live`를 실행합니다. 정확한 복사·검사 명령은 [격리 시험 상세 절차](advanced-first-use.md#2-기존-프로젝트를-격리-복사해-시험하기)를 따르세요.
+`preview:live`가 실제로 출력한 localhost 주소에 `#guide`를 붙여 엽니다. 서버는 `Ctrl+C`로 종료합니다. 이미 설정된 설치에서 AI 도구를 바꿀 때는 `npm run setup`으로 기존 프로젝트의 업데이트 계획을 검토하세요. 도구 파일 설치만으로 네이티브 역할 탐색·Skill 탐색·훅 발송을 확인했다고 간주하지 마세요.
 
-등록과 화면 확인은 AI 도구 설정·훅 설치나 기존 runtime 이관이 아닙니다. 자동 연결이 필요하다면 [전환 게이트](project-isolation-cutover.md)를 먼저 확인하세요. 여러 프로젝트 등록, 도구별 후보 설치, 토큰 가져오기는 처음 실행할 때 필수가 아닙니다.
+문제가 생기면 [설정·운영 참고](setup-reference.md)를 확인하세요. 이전 다중 프로젝트/후보 묶음 흐름을 조사해야 한다면 [레거시 상세 절차](advanced-first-use.md)를 참고하되, 이 고정 프로젝트 설정에 이전 selector 명령을 섞지 마세요.

@@ -21,11 +21,9 @@ export function createGuidePanel({ document, translate }) {
       const body = document.createElement('p');
       body.textContent = translate(`guide.${path}.body`);
       const children = [body];
-      if (path !== 'existing') {
-        const commands = document.createElement('pre');
-        commands.textContent = translate(`guide.${path}.commands`);
-        children.push(commands);
-      }
+      const commands = document.createElement('pre');
+      commands.textContent = translate(`guide.${path}.commands`);
+      children.push(commands);
       result.replaceChildren(...children);
       result.dataset.guideSelected = 'true';
     };

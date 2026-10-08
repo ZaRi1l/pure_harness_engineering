@@ -1,11 +1,25 @@
-# Pure Harness v1.1.1
+# Pure Harness
 
-Pure Harness는 에이전트 역할·Skill을 활용한 작업 흐름과 작업 기록을 위한 도구입니다. Node.js 기반 로컬 대시보드는 선택 사항입니다. 처음에는 **Harness 설치 하나와 프로젝트 하나**면 충분하며, 여러 프로젝트 등록은 나중에 필요할 때 추가할 수 있습니다.
+Pure Harness는 프로젝트의 에이전트 역할·Skill과 작업 기록을 관리하는 도구입니다. Harness 설치 한 개에는 고정된 `project/` 한 개가 있으며, 그 폴더가 독립적인 Git 저장소입니다. 설치 상태와 작업 기록은 Git에서 무시되는 `.harness/`에 보관합니다.
 
-## 시작하기
+## 처음 시작하기
 
-[처음 사용 가이드](docs/first-use.md)에서 현재 상황을 고르세요. 이미 설정된 로컬 프로젝트라면 자신의 경로로 `preview:live`를 실행하고, 출력된 주소를 열어 바로 확인할 수 있습니다. 새 프로젝트 등록이나 기존 프로젝트의 안전한 시험은 가이드의 짧은 순서를 따르세요.
+Node.js 20+와 Git을 준비하고 Harness를 별도 폴더에 clone한 다음, 그 폴더에서 `npm run setup`을 실행하세요. 질문에 따라 다음 중 하나를 고릅니다.
 
-Harness 설치와 제품 소스 checkout은 서로 다른 폴더에 둡니다. Harness의 `projects/<id>/`에는 **작업 명세·메모리·runtime 같은 관리 데이터**가 들어가며 제품 소스가 들어가는 곳이 아닙니다. 프로젝트 등록만으로 AI 도구의 역할·Skill·훅이 설치되거나 자동 연결되지는 않습니다.
+- 새 프로젝트: 빈 `project/`를 만들고 독립 Git 저장소로 시작합니다.
+- 기존 프로젝트: 원본 경로 또는 Git 원격을 지정합니다. 로컬 원본은 변경하지 않고 커밋 기록과 작업 파일을 `project/`로 복사합니다. 기존 파일·설정 충돌은 적용 전에 검토합니다.
 
-자세한 PowerShell 명령과 운영 설명은 [설정·운영 참고](docs/setup-reference.md), 격리 시험·후보 설치·수동 텔레메트리는 [상세 첫 사용 절차](docs/advanced-first-use.md)를 보세요.
+사용할 AI 도구(Codex, Claude Code, OpenCode, Antigravity)를 고르고, 표시된 계획을 검토한 뒤 정확한 확인 문구를 입력해야 적용됩니다. 역할·Skill 파일이 배치되어도 각 도구의 실제 탐색·훅 실행까지 증명된 것은 아닙니다. 도구를 바꿀 때도 `npm run setup`에서 현재 프로젝트 업데이트를 계획·검토하세요.
+
+설정 직후 Harness 폴더에서 `init`을 한 번 실행합니다. 이후 평소에는 아래 두 명령으로 상태와 화면을 확인합니다.
+
+```powershell
+npm run init
+```
+
+```powershell
+npm run status
+npm run preview:live
+```
+
+`init`은 처음 한 번만 실행하세요. `preview:live`가 출력한 localhost 주소를 엽니다. 기존 프로젝트·runtime을 삭제하거나 초기화하지 않습니다. [처음 사용 가이드](docs/first-use.md)와 [설정·운영 참고](docs/setup-reference.md)에 안전한 적용과 검증 범위가 있습니다.

@@ -30,15 +30,16 @@ const selected = root => walk(root).find(node => node.dataset.guideSelected === 
 function translator(locale = 'en') {
   const en = {
     'guide.choose': 'What would you like to do?',
-    'guide.note': 'The dashboard shows selected-project records; connecting an AI tool is a separate setup.',
+    'guide.note': 'The dashboard shows records for this fixed project.',
     'guide.choice.new': 'Start a new project',
     'guide.choice.existing': 'Try an existing project safely',
     'guide.choice.connected': 'Open an already connected project',
-    'guide.new.body': 'Use a new empty Git project, separate from the Harness installation. Create the project manifest and local binding, then run diagnostic, init, status, and preview:live with explicit project paths. Never run init in an existing project.',
-    'guide.existing.body': 'Preserve your current project. Try this only in isolated checkout copies; uncommitted and ignored files are not copied. Use docs/first-use.md for the copy procedure. Do not initialize or migrate the original runtime.',
-    'guide.connected.body': 'If the project manifest and local binding are ready, run the live preview from the Harness installation with your own project ID and paths. Open the localhost URL printed by the server.',
-    'guide.new.commands': 'node scripts/project-diagnostic.mjs --checkout <checkout> --binding <binding> --project <project-id>\nnpm run init -- --project <project-id> --checkout <checkout> --binding <binding>\nnpm run status -- --project <project-id> --checkout <checkout> --binding <binding>\nnpm run preview:live -- --project <project-id> --checkout <checkout> --binding <binding>',
-    'guide.connected.commands': 'npm run preview:live -- --project <project-id> --checkout <checkout> --binding <binding>',
+    'guide.new.body': 'Run setup for a new project and review the plan. Run init once.',
+    'guide.existing.body': 'Preserve the original project and runtime. Setup copies the source into project/ without moving the original.',
+    'guide.connected.body': 'For the configured fixed project, run status and preview:live. Do not run init again.',
+    'guide.new.commands': 'npm run setup\nnpm run init\nnpm run status\nnpm run preview:live',
+    'guide.existing.commands': 'npm run setup\nnpm run init\nnpm run status\nnpm run preview:live',
+    'guide.connected.commands': 'npm run status\nnpm run preview:live',
     'guide.advanced': 'Advanced reference',
     'guide.networkAdvanced': 'Network details',
     'guide.body': '<p>Staged local installation and native smoke unverified.</p>',
@@ -54,7 +55,7 @@ test('first view offers three paths, hides commands and keeps advanced material 
   assert.deepEqual(['new', 'existing', 'connected'].map(name => choice(panel, name).textContent), [
     'Start a new project', 'Try an existing project safely', 'Open an already connected project'
   ]);
-  assert.match(walk(panel).map(node => node.textContent).join(' '), /connecting an AI tool is a separate setup/);
+  assert.match(walk(panel).map(node => node.textContent).join(' '), /records for this fixed project/);
   assert.equal(selected(panel), undefined);
   assert.equal(walk(panel).filter(node => node.tagName === 'PRE').length, 0);
   const advanced = walk(panel).filter(node => node.tagName === 'DETAILS');
@@ -65,14 +66,14 @@ test('first view offers three paths, hides commands and keeps advanced material 
 test('selected path alone reveals relevant instructions and commands', () => {
   const panel = createGuidePanel({ document, translate: translator() });
   choice(panel, 'existing').click();
-  assert.match(selected(panel).textContent, /isolated checkout copies/);
-  assert.equal(walk(selected(panel)).filter(node => node.tagName === 'PRE').length, 0);
+  assert.match(selected(panel).textContent, /without moving the original/);
+  assert.match(walk(selected(panel)).find(node => node.tagName === 'PRE').textContent, /^npm run setup/);
   choice(panel, 'connected').click();
-  assert.match(selected(panel).textContent, /project manifest and local binding/);
-  assert.match(walk(selected(panel)).find(node => node.tagName === 'PRE').textContent, /^npm run preview:live/);
+  assert.match(selected(panel).textContent, /configured fixed project/);
+  assert.match(walk(selected(panel)).find(node => node.tagName === 'PRE').textContent, /^npm run status/);
   assert.doesNotMatch(walk(selected(panel)).find(node => node.tagName === 'PRE').textContent, /npm run init/);
   choice(panel, 'new').click();
-  assert.match(selected(panel).textContent, /Never run init in an existing project/);
+  assert.match(selected(panel).textContent, /Run init once/);
   assert.match(walk(selected(panel)).find(node => node.tagName === 'PRE').textContent, /npm run init/);
   assert.equal(choice(panel, 'new').getAttribute('aria-pressed'), 'true');
   assert.equal(choice(panel, 'connected').getAttribute('aria-pressed'), 'false');
