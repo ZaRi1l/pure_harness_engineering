@@ -281,7 +281,7 @@ test('rollback retry refuses an outside edit to an already-restored path', async
 });
 
 test('target switch shares AGENTS and common Skills without deleting the active target on either rollback order', async t => {
-  for (const [first, second] of [['codex', 'opencode'], ['opencode', 'codex'], ['claude', 'opencode']]) await t.test(`${first} to ${second}`, async t => {
+  for (const [first, second] of [['codex', 'opencode'], ['opencode', 'codex'], ['claude', 'opencode']]) for (const rollbackFirst of [first, second]) await t.test(`${first} to ${second}; rollback ${rollbackFirst} first`, async t => {
     const f = await fixture(t);
     const originalAgents = '# Product-owned instructions\nKeep this text.\n';
     await writeFile(path.join(f.projectRoot, 'AGENTS.md'), originalAgents);
@@ -292,12 +292,37 @@ test('target switch shares AGENTS and common Skills without deleting the active 
     const sharedAgents = await readFile(path.join(f.projectRoot, 'AGENTS.md'));
     const sharedSkill = await readFile(path.join(f.projectRoot, '.agents/skills/testing/SKILL.md'));
     assert.equal((await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: second })).ok, true);
-    await rollbackNativeBridge({ ...f, target: first });
+    await rollbackNativeBridge({ ...f, target: rollbackFirst });
     assert.deepEqual(await readFile(path.join(f.projectRoot, 'AGENTS.md')), sharedAgents);
-    assert.deepEqual(await readFile(path.join(f.projectRoot, '.agents/skills/testing/SKILL.md')), sharedSkill);
-    assert.equal((await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: second })).ok, true);
-    await rollbackNativeBridge({ ...f, target: second });
+    const remaining = rollbackFirst === first ? second : first;
+    if (remaining === 'claude') {
+      await assert.rejects(readFile(path.join(f.projectRoot, '.agents/skills/testing/SKILL.md')));
+      assert.ok(await readFile(path.join(f.projectRoot, '.claude/skills/testing/SKILL.md')));
+    } else assert.deepEqual(await readFile(path.join(f.projectRoot, '.agents/skills/testing/SKILL.md')), sharedSkill);
+    assert.equal((await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: remaining })).ok, true);
+    await rollbackNativeBridge({ ...f, target: remaining });
     assert.equal(await readFile(path.join(f.projectRoot, 'AGENTS.md'), 'utf8'), originalAgents);
     await assert.rejects(readFile(path.join(f.projectRoot, '.agents/skills/testing/SKILL.md')));
   });
+});
+
+test('rollback crash after manifest removal blocks new plan and Apply until journal recovery', async t => {
+  const f = await fixture(t);
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  await assert.rejects(rollbackNativeBridge({ ...f, target: 'claude' }, {
+    afterManifestRemoval() { throw new Error('crash after manifest removal'); },
+  }), /crash after manifest removal/);
+  await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapters/claude.json')));
+  assert.ok(await readFile(path.join(f.harnessRoot, '.harness/adapters/claude.rollback-journal.json')));
+  await assert.rejects(buildBridgePlan({ ...f, target: 'claude' }), /pending.*journal/i);
+  await assert.rejects(planBridgeUpdate({ ...f, target: 'claude' }), /pending.*journal/i);
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan }), /pending.*journal/i);
+  const check = await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: 'claude' });
+  assert.equal(check.ok, false);
+  assert.ok(check.issues.some(issue => /pending.*journal/i.test(issue)));
+  await rollbackNativeBridge({ ...f, target: 'claude' });
+  await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapters/claude.rollback-journal.json')));
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  assert.equal((await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: 'claude' })).ok, true);
 });

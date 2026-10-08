@@ -180,6 +180,14 @@ async function manifest(harnessRoot, target) {
   if (!data) return null;
   try { return JSON.parse(data); } catch { throw new Error('invalid bridge manifest'); }
 }
+async function pendingBridgeJournals(harnessRoot) {
+  const pending = [];
+  for (const target of Object.keys(targets)) for (const kind of ['journal', 'rollback-journal']) {
+    const relative = `.harness/adapters/${target}.${kind}.json`;
+    if (await meta(await safeStatePath(harnessRoot, relative))) pending.push(relative);
+  }
+  return pending;
+}
 async function otherSharedOwners(harnessRoot, projectRoot, setupId, selectedTarget) {
   const shared = new Map();
   for (const otherTarget of Object.keys(targets).filter(id => id !== selectedTarget)) {
@@ -201,6 +209,7 @@ async function otherSharedOwners(harnessRoot, projectRoot, setupId, selectedTarg
 export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = projectRoot, target, setupId, profile = 'core' } = {}) {
   assertRoots(harnessRoot, projectRoot, target, setupId);
   if (!path.isAbsolute(inputRoot) || !['core', 'all'].includes(profile)) throw new Error('invalid bridge input/profile');
+  if ((await pendingBridgeJournals(harnessRoot)).length) throw new Error('pending bridge journal requires recovery before planning');
   const priorManifest = await manifest(harnessRoot, target);
   if (priorManifest && priorManifest.setupId !== setupId) throw new Error('bridge setupId mismatch');
   const shared = await otherSharedOwners(harnessRoot, projectRoot, setupId, target);
@@ -280,8 +289,8 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
   await assertPublishedChild(plan.projectRoot);
   const outputRoot = plan.projectRoot;
   return withLock(harnessRoot, async () => {
+    if ((await pendingBridgeJournals(harnessRoot)).length) throw new Error('pending bridge journal requires recovery before Apply');
     const journalFile = await safeStatePath(harnessRoot, `.harness/adapters/${plan.target}.journal.json`);
-    if (await meta(journalFile)) throw new Error('pending bridge Apply journal requires manual recovery');
     const replay = await buildBridgePlan({ harnessRoot, projectRoot: plan.projectRoot, inputRoot: plan.inputRoot, target: plan.target, setupId: plan.setupId, profile: plan.profile });
     if (replay.planSha256 !== plan.planSha256) throw new Error('bridge source or input changed since planning');
     const desired = planBodies.get(replay);
@@ -372,6 +381,7 @@ export async function checkNativeBridge({ harnessRoot, projectRoot, target } = {
   assertRoots(harnessRoot, projectRoot, target);
   const record = await manifest(harnessRoot, target);
   const issues = [];
+  if ((await pendingBridgeJournals(harnessRoot)).length) issues.push('pending bridge journal requires recovery');
   if (!record || record.projectRoot !== path.resolve(projectRoot) || record.target !== target) issues.push('missing or mismatched adapter manifest');
   else for (const item of record.actions) {
     const current = await bytes(await safePath(projectRoot, item.path, target));
@@ -382,7 +392,7 @@ export async function checkNativeBridge({ harnessRoot, projectRoot, target } = {
 
 export async function planBridgeUpdate(options = {}) { return buildBridgePlan(options); }
 
-export async function rollbackNativeBridge({ harnessRoot, projectRoot, target, setupId } = {}, { beforeWrite } = {}) {
+export async function rollbackNativeBridge({ harnessRoot, projectRoot, target, setupId } = {}, { beforeWrite, afterManifestRemoval } = {}) {
   assertRoots(harnessRoot, projectRoot, target, setupId);
   await assertPublishedChild(projectRoot);
   return withLock(harnessRoot, async () => {
@@ -423,6 +433,7 @@ export async function rollbackNativeBridge({ harnessRoot, projectRoot, target, s
       changedPaths.push(item.path);
     }
     await rm(await safeStatePath(harnessRoot, manifestPath(target)), { force: true });
+    await afterManifestRemoval?.();
     await rm(journalFile, { force: true });
     return bridgeResult({ harnessRoot, projectRoot, target, setupId }, changedPaths);
   });
