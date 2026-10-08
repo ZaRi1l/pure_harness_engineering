@@ -19,7 +19,7 @@ Subagents use role-specific defaults from `.codex/config.toml` and `.codex/agent
 
 Preserve user changes. Do not reset, revert, overwrite, or broadly refactor outside the requested scope. If the expected change budget grows materially, stop implementation and return to planning. Parallel writers must use separate branches/worktrees and must not edit the same files concurrently.
 
-Before writing, claim the intended path with `node scripts/runtime-state.mjs claim <agent-id> <path> [...]`; release it when finished. Prefix-overlapping claims must run sequentially unless isolated in native Git worktrees.
+Before writing engine-owned source, claim exact paths with `node scripts/runtime-state.mjs --core claim <agent-id> <path> [...]` and release with `node scripts/runtime-state.mjs --core release-claim <agent-id>`. For a selected project's checkout or management paths, use `node scripts/runtime-state.mjs --project <id> --checkout <absolute-checkout> --binding <absolute-binding> claim <agent-id> <path> [...]` and the same project flags for `release-claim`. Never use `--core` for project data. Prefix-overlapping claims must run sequentially unless isolated in native Git worktrees.
 
 ## Verification
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -19,6 +19,44 @@ async function editableStore() {
   await store.initialize();
   return store;
 }
+
+test('core CLI claims only engine source paths and releases the same claim', async () => {
+  const engineRoot = await temporaryRoot();
+  const options = { coreEngineRoot: engineRoot };
+  await runCli(['--core', 'claim', 'docs-worker', 'README.md'], options);
+  const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot, runtimeRoot: path.join(engineRoot, '.ai', 'core-runtime', 'context-v1') }));
+  assert.deepEqual((await store.readClaims()).claims.map(claim => claim.scopes), [['README.md']]);
+  await assert.rejects(runCli(['--core', 'claim', 'other-worker', 'README.md'], options), /claim conflict/);
+  await runCli(['--core', 'release-claim', 'docs-worker'], options);
+  assert.deepEqual((await store.readClaims()).claims, []);
+});
+
+test('core CLI rejects project arguments, non-claim commands, and project-managed paths', async () => {
+  const engineRoot = await temporaryRoot();
+  const options = { coreEngineRoot: engineRoot };
+  await assert.rejects(runCli(['--core', '--project', 'alpha', 'claim', 'worker', 'README.md'], options), /core|project/i);
+  await assert.rejects(runCli(['--core', 'goal', 'hidden'], options), /core|claim/i);
+  await assert.rejects(runCli(['--core', 'claim', 'worker', 'projects/alpha/runtime/status.json'], options), /project|scope/i);
+  await assert.rejects(runCli(['--core', 'claim', 'worker', 'PROJECTS/alpha/runtime/status.json'], options), /project|scope/i);
+  await assert.rejects(runCli(['--core', 'claim', 'worker', '.ai/core-runtime/context-v1/status.json'], options), /runtime|scope/i);
+  await assert.rejects(runCli(['--core', 'claim', 'worker', '.AI/core-runtime/context-v1/status.json'], options), /runtime|scope/i);
+  await assert.rejects(runCli(['--core', 'claim', 'worker', '../outside'], options), /scope|outside/i);
+  assert.equal(existsSync(path.join(engineRoot, '.ai', 'core-runtime')), false);
+});
+
+test('core CLI treats case variants of the same Windows source file as conflicting claims', { skip: process.platform !== 'win32' }, async () => {
+  const engineRoot = await temporaryRoot(), options = { coreEngineRoot: engineRoot };
+  await runCli(['--core', 'claim', 'first-worker', 'README.md'], options);
+  await assert.rejects(runCli(['--core', 'claim', 'second-worker', 'readme.md'], options), /claim conflict/);
+});
+
+test('core CLI refuses a symlinked source scope', async t => {
+  const engineRoot = await temporaryRoot(), external = await temporaryRoot();
+  try { await symlink(external, path.join(engineRoot, 'docs'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('symlink creation unavailable'); return; } throw error; }
+  await assert.rejects(runCli(['--core', 'claim', 'docs-worker', 'docs/guide.md'], { coreEngineRoot: engineRoot }), /symlink|scope/i);
+  assert.equal(existsSync(path.join(engineRoot, '.ai', 'core-runtime')), false);
+});
 
 test('telemetry replacement is project scoped, atomic on validation failure, and visible in snapshot', async () => {
   const store = await editableStore();

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isValidatedProjectContext, loadProjectContext } from './project-context.mjs';
 import { TASK_STATUSES, safeTask, taskRevision, validateTaskFields } from './task-records.mjs';
 import { normalizeChildLink, normalizeTelemetry } from './telemetry-schema.mjs';
@@ -413,7 +413,11 @@ export class RuntimeStore {
     if (!normalized.length) throw new Error('claim requires a scope');
     await this.mutate(({ claims, events }) => {
       const others = claims.claims.filter(claim => !this.ownsClaim(claim, agentId));
-      for (const scope of normalized) for (const claim of others) for (const existing of claim.scopes) if ((kind === 'installation' || this.sharesCheckout(claim)) && (claim.scope_kind || (this.context ? 'checkout' : 'legacy')) === kind && scopesOverlap(scope, existing)) throw new Error('claim conflict: ' + scope + ' overlaps ' + existing + ' (' + claim.agent_id + ')');
+      for (const scope of normalized) for (const claim of others) for (const existing of claim.scopes) {
+        const coreOnWindows = this.context?.kind === 'core' && process.platform === 'win32';
+        const overlaps = coreOnWindows ? scopesOverlap(scope.toLowerCase(), existing.toLowerCase()) : scopesOverlap(scope, existing);
+        if ((kind === 'installation' || this.sharesCheckout(claim)) && (claim.scope_kind || (this.context ? 'checkout' : 'legacy')) === kind && overlaps) throw new Error('claim conflict: ' + scope + ' overlaps ' + existing + ' (' + claim.agent_id + ')');
+      }
       claims.claims = others.concat({ agent_id: String(agentId), scopes: normalized, claimed_at: now(), ...(this.context ? { project_id: this.context.projectId, checkout_root: this.context.checkoutRoot, scope_kind: kind } : {}) });
       events.push(this.event('claim', String(agentId) + ' claimed ' + normalized.join(', '), { agent_id: agentId }));
     });
@@ -430,8 +434,32 @@ export async function contextFromArgs(argv) {
   if (!projectId || !checkoutRoot || !bindingPath) throw new Error('project, checkout, and binding are required');
   return { context: await loadProjectContext({ projectId, checkoutRoot, bindingPath }), args: copy };
 }
-export async function runCli(argv = process.argv.slice(2), { legacyFixtureRoot } = {}) {
+export async function runCli(argv = process.argv.slice(2), { legacyFixtureRoot, coreEngineRoot } = {}) {
   const copy = [...argv];
+  if (copy[0] === '--core') {
+    if (legacyFixtureRoot || copy.some(arg => ['--project', '--checkout', '--binding', '--root'].includes(arg))) {
+      throw new Error('core claim cannot mix with project or fixture arguments');
+    }
+    const [command, agentId, ...scopes] = copy.slice(1);
+    if (command !== 'claim' && command !== 'release-claim') throw new Error('core CLI supports claim and release-claim only');
+    if (!agentId || (command === 'claim' && !scopes.length) || (command === 'release-claim' && scopes.length)) throw new Error('invalid core claim arguments');
+    const engineRoot = path.resolve(coreEngineRoot || fileURLToPath(new URL('..', import.meta.url)));
+    const runtimeRoot = path.join(engineRoot, '.ai', 'core-runtime', 'context-v1');
+    const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot, runtimeRoot }));
+    if (command === 'claim') {
+      for (const scope of scopes) {
+        const relative = path.isAbsolute(scope) || path.win32.isAbsolute(scope) ? path.relative(engineRoot, path.resolve(scope)) : scope;
+        const normalized = normalizeScope(relative).toLowerCase();
+        const protectedRoots = ['projects', '.ai', '.git', 'node_modules'];
+        if (protectedRoots.some(root => normalized === root || normalized.startsWith(root + '/')) || normalized === 'harness-adapter/binding.local.json') {
+          throw new Error('core claim scope is not engine source');
+        }
+      }
+      await store.claim(agentId, scopes);
+    } else await store.releaseClaim(agentId);
+    return;
+  }
+  if (copy.includes('--core')) throw new Error('--core must be the first argument');
   const rootIndex = copy.indexOf('--root');
   const root = rootIndex < 0 ? undefined : copy.splice(rootIndex, 2)[1];
   if (root && (!legacyFixtureRoot || path.resolve(root) !== path.resolve(legacyFixtureRoot))) throw new Error('--root is only available to explicit legacy fixtures');
