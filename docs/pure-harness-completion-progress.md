@@ -14,3 +14,16 @@
 순서는 **승인된 변경 전부 통합 → 통합 전체 테스트 → 최종 SHA를 새 일회용 폴더에 복사 → 빈 중립 child의 실제 Codex 앱 E2E → 관찰된 절차로 문서 갱신 → 검증된 작업 Git 정리와 `main` push 확인**이다. 병렬 writer는 각자 분리된 브랜치/worktree와 범위 지정 파일을 소유한다. 같은 checkout의 겹치는 경로는 순차 처리한다. 무관한 사용자 브랜치·데이터와 미커밋/ignored 유용 파일은 보존한다. 출처나 통합 증명이 없으면 삭제하지 않고 blocker로 기록한다.
 
 실제 증거를 추가할 때는 각 행에 테스트 명령, 관찰 결과, 관련 commit/SHA, 실패·미확인 항목을 적는다. 계획서·fixture의 존재, 모델의 주장, 예상 token 숫자만으로 행을 완료로 바꾸지 않는다. `nativeSmoke`와 cutover는 실제 독립 증거와 별도 검토 없이는 `unverified`/fail-closed를 유지한다.
+
+## 고정 컨텍스트 계획 사전 점검 (구현 전)
+
+[고정 컨텍스트 계획](superpowers/plans/2026-10-08-fixed-project-context.md)의 네 작업은 파일 소유권과 인터페이스 의존성을 점검했다. 아래는 **계획 일관성** 기록이지 구현 통과 증거가 아니다. 활성 `/goal`은 통상적인 Skill 인간 검토 대기 없이 범위 내 실행을 허용한다. 명시적인 병렬 구현 요청에 따라 writer는 분리된 worktree/브랜치에 두며, 같은 checkout의 겹치는 파일은 순차 처리한다.
+
+| 작업 | 인터페이스/의존성 확인 | 상태 |
+| --- | --- | --- |
+| T1 고정 컨텍스트 | 정확히 7개 키의 `.harness/config.json` (`version/layout/projectPath/target/setupId/createdAt/updatedAt`), 고정 canonical child와 동일 child Git 정체성 매번 검증, 임의 root 금지; fixture worktree에는 child 최초 commit 필요 | 계획 승인, 구현 대기 |
+| T2 runtime/claim | T1 branded context 소비; 제품 checkout과 `.harness/` 설치 scope 분리, `--core`는 코어만 | T1 후 실행 |
+| T3 reader/catalog | T2 `contextFromArgs` 소비; 작업 링크는 `.harness/tasks`, 역할/Skill catalog의 canonical 소스는 checkout이 아닌 별도 `harnessRoot` | T2 후 실행 |
+| T4 self-check | T1 고정 loader 소비; setup 전 코어 검사와 setup 후 child identity 검사 구분 | T1 후 실행 |
+
+Root가 공유한 기준 실행 결과는 `npm test`: 총 484, 통과 479, 실패 1, skip 4, exit 1이다. 실패는 기존 README 기대값 `tests/preview-server.test.mjs:341-345`이며 승인된 가이드 변경 `60c8c2e` 통합에서 재검증할 항목이다. 이 기록은 실패를 통과로 해석하지 않는다. 화면 통합 T1은 별도 `D:/dev/pure_harness_dashboard_complete` worktree의 `codex/dashboard-completion` 브랜치에서 기준 `2a4b5d2`로 실행 중이라고 Root가 보고했다. 결과와 통합 SHA는 아직 대기다.
