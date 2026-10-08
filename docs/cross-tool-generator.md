@@ -39,7 +39,7 @@ node scripts/install-target.mjs --bundle $BundleRoot --project $TrialRoot --chec
 if ($LASTEXITCODE -ne 0) { throw 'Installed-file check failed' }
 ```
 
-Open `$TrialRoot` in the selected application and follow the [native smoke worksheet](native-smoke-worksheet.md) if you want to test native behavior; the script sequence itself does not launch or validate any tool. When finished, roll back the unchanged installed files:
+This trial checks `core` bundle packaging and installation (five roles and four skills), not the [native smoke worksheet](native-smoke-worksheet.md). Its installed checkout does not meet that worksheet's minimal-fixture precondition. For native behavior, create a separate clean Git consumer for each target and copy only its selected `worker` and `planner` roles, the `testing` skill, and minimum native registration; then follow the worksheet's `probe.txt`, version, model, and permission-recording steps. The script sequence above does not launch or validate any tool. When finished with the installation trial, roll back its unchanged installed files:
 
 ```powershell
 node scripts/install-target.mjs --bundle $BundleRoot --project $TrialRoot --rollback
