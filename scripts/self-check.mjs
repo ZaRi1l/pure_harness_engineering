@@ -55,6 +55,12 @@ function validateCodex(root, text, executableOverride, spawnCodex = spawnSync) {
   if (result.error) return result.error.code === 'EPERM'
     ? [null, `Codex config validation blocked by the current sandbox: ${result.error.message}`]
     : [null, `Codex executable unavailable: ${result.error.message}`];
+  const detail = result.stderr || result.stdout || 'unknown error';
+  const normalized = `${result.stderr || ''}\n${result.stdout || ''}`.replaceAll('\\', '/').toLowerCase();
+  const ownConfig = path.join(root, '.codex', 'config.toml').replaceAll('\\', '/').toLowerCase();
+  const ownPath = normalized.includes(ownConfig) || /(?:^|[\s'"`])(?:\.\/)?\.codex\/config\.toml(?=\b|:)/m.test(normalized);
+  if (ownPath && /(?:error|invalid|failed|rejected)/i.test(normalized))
+    return [false, `Codex config rejected: ${detail.slice(0, 500)}`];
   try {
     const payload = JSON.parse(result.stdout);
     const load = payload.checks?.['config.load'];
@@ -63,11 +69,8 @@ function validateCodex(root, text, executableOverride, spawnCodex = spawnSync) {
       return [null, 'Installed Codex did not verify the project config; native config validation is unverified'];
   }
   catch {}
-  const detail = result.stderr || result.stdout || 'unknown error';
   if (/(?:unrecognized|unknown|unexpected|invalid) (?:subcommand|command|argument|option).*?(?:doctor|--json|--strict-config)/is.test(detail))
     return [null, 'Installed Codex doctor command is unsupported; native config validation is unverified'];
-  const normalized = detail.replaceAll('\\', '/').toLowerCase();
-  const ownConfig = path.join(root, '.codex', 'config.toml').replaceAll('\\', '/').toLowerCase();
   if ((/(?:\/|^)\.codex\/config\.toml/i.test(normalized) || /(?:authentication|authorization|credentials)/i.test(detail)) && !normalized.includes(ownConfig))
     return [null, 'Global Codex config or authentication prevented native validation; project config is unverified'];
   return [false, `Codex config rejected: ${detail.slice(0, 500)}`];

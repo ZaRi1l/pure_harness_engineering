@@ -68,9 +68,9 @@ test('normal CLI self-check anchors to its script installation from unrelated cw
   execFileSync('git', ['init', '-q'], { cwd: unrelated });
   const script = path.resolve('scripts/self-check.mjs');
   const result = spawnSync(process.execPath, [script], { cwd: unrelated, encoding: 'utf8', windowsHide: true });
-  assert.doesNotMatch(result.stdout, /FAIL missing \.codex\/config\.toml/);
-  assert.doesNotMatch(result.stdout, /FAIL missing \.codex\/hooks\.json/);
-  assert.match(result.stdout, /WARN Fixed project setup has not run/);
+  assert.match(result.stdout, /PASS Codex config exists/);
+  assert.match(result.stdout, /PASS Hook config exists/);
+  assert.doesNotMatch(result.stdout, /FAIL missing \.codex\/config\.toml|FAIL missing \.codex\/hooks\.json/);
 });
 
 test('unsupported installed Codex doctor is unverified, not an own-config failure', async () => {
@@ -95,6 +95,16 @@ test('global Codex config failure is unverified while own config failure remains
   const own = await checkRepository(path.resolve('.'), { exerciseRuntime: false, exerciseHttp: false,
     spawnCodex: () => ({ status: 1, stdout: '', stderr: `error in ${path.resolve('.codex/config.toml')}: invalid model` }) });
   assert.ok(own.failures.some(item => /Codex config rejected/.test(item)));
+});
+
+test('own config error defeats ignored or unsupported native validation signals', async () => {
+  for (const ownPath of [path.resolve('.codex/config.toml'), '.codex/config.toml']) {
+    const report = await checkRepository(path.resolve('.'), { exerciseRuntime: false, exerciseHttp: false,
+      spawnCodex: () => ({ status: 1, stdout: '{"checks":{"config.load":{"status":"ignored"}}}',
+        stderr: `error in ${ownPath}: invalid model; unrecognized subcommand 'doctor'` }) });
+    assert.ok(report.failures.some(item => /Codex config rejected/.test(item)), ownPath);
+    assert.ok(!report.warnings.some(item => /native config validation is unverified/.test(item)), ownPath);
+  }
 });
 
 test('routing keeps SMALL light and expands larger work', () => {
