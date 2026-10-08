@@ -11,7 +11,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
 async function fixture(t) {
-  const base = await mkdtemp(path.join(os.tmpdir(), 'silo-inventory-'));
+  const base = await mkdtemp(path.join(os.tmpdir(), 'harness-source-inventory-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const harnessRoot = path.join(base, 'harness');
   const source = path.join(base, 'source');
@@ -200,12 +200,14 @@ test('keeps secret-bearing and mixed configuration out of generic classification
   await writeFile(path.join(source, '.codex', 'settings.json'), '{"access_token":"SECRET_SENTINEL"}\n');
   await writeFile(path.join(source, '.codex', 'AGENTS.md'), 'Agent skill instructions for the customer project\n');
   await writeFile(path.join(source, '.codex', 'workflow.md'), 'Acme deployment workflow\n');
+  await writeFile(path.join(source, '.codex', 'product-workflow.md'), 'Acme product deployment workflow\n');
   const report = await inspectSetupSource({ harnessRoot, mode: 'existing', source });
   const byPath = Object.fromEntries(report.files.map(file => [file.path, file]));
   assert.equal(byPath['.codex/config.toml'].classification, 'private-runtime');
   assert.equal(byPath['.codex/settings.json'].classification, 'private-runtime');
   assert.equal(byPath['.codex/AGENTS.md'].classification, 'mixed');
-  assert.notEqual(byPath['.codex/workflow.md'].classification, 'generic');
+  assert.equal(byPath['.codex/workflow.md'].classification, 'needs-review');
+  assert.equal(byPath['.codex/product-workflow.md'].classification, 'mixed');
   assert.equal(JSON.stringify(report).includes('SECRET_SENTINEL'), false);
 });
 

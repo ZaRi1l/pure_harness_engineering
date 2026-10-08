@@ -86,7 +86,7 @@ async function classify(harnessRoot, relative, body) {
   if (sample.includes('\ufffd') || body.includes(0)) return ['needs-review', 'source-user', 'binary-or-unknown-content'];
   if (lower.startsWith('.ai/') && !/\/(skills|agents|templates)\//.test(lower)) return ['needs-review', 'source-user', 'unclassified-ai-material'];
   if (await canonicalMatch(harnessRoot, relative, body)) return ['generic', 'harness-generated', 'canonical-path-and-content-match'];
-  const product = /\b(project|product|silo|customer|workspace|domain|business)\b/i.test(sample);
+  const product = /\b(project|product|customer|workspace|domain|business)\b/i.test(sample);
   const generic = /\b(agent|skill|workflow|test|review|instruction|tool|model|hook)\b/i.test(sample);
   if (product && generic) return ['mixed', 'source-user', 'generic-and-product-clues'];
   if (product) return ['product', 'source-user', 'product-clues'];

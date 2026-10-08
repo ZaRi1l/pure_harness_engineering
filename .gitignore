@@ -1,6 +1,8 @@
 node_modules/
 .superpowers/
 .worktrees/
+/project/
+/.harness/
 projects/*/project.local.json
 harness-adapter/binding.local.json
 
