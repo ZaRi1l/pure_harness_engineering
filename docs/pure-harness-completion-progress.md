@@ -50,9 +50,22 @@ Root가 공유한 기준 실행 결과는 `npm test`: 총 484, 통과 479, 실�
 | --- | --- | --- |
 | T1 source inventory | 원본 Git/head·파일 해시·범용/제품/데이터/혼합 분류의 읽기 전용 fingerprint를 T2에 제공 | 분리 worktree 착수 예정 |
 | T3 bridge | canonical 역할/Skill에서 생성한 path별 action·before/after digest·충돌 목록을 T2에 제공; 기존 후보/시험 설치 게이트와 별개 | T1과 병렬 분리 worktree 착수 예정 |
-| T2 setup transaction | T1 fingerprint와 T3 bridge plan을 모두 소비한 뒤 staging·검증·고정 child publish·7키 config 마지막 기록 | T1/T3 이후 |
+| T2 setup transaction | T1 fingerprint와 T3 action/digest를 소비; staging의 Git와 원하는 bridge plan을 읽기 전용 검증 → 고정 child 원자 publish → canonical 위치에 bridge Apply → 7키 config 마지막 기록. 실패 시 소유 journal/bytes와 이전 빈 디렉터리 복원 | T1/T3 이후 |
 | T4 setup CLI/hook | T2 setup 계약과 T3 생성 hook 명령을 소비; cwd가 아닌 설치 경로 고정 | T2/T3 이후 |
 | T6 공통 지침 | canonical 경로·제품 AGENTS managed block을 T3와 조정; 지침 수정 뒤 T3 재렌더·digest 재검증 | T3와 조정하며 진행 |
 | T5 독립 수락 | T1–T4와 T6의 결과를 중립 fixture에서 재검증; 기존 원본 보존과 native 미검증 표시 확인 | 선행 작업 이후 |
 
 Root 보고 기준 구현 흐름은 고정 컨텍스트·UI·source inventory·native bridge의 네 분리 worktree/브랜치다. 같은 파일의 동시 writer는 없고 통합은 순차 조정한다. 새 managed bridge Apply가 성공해도 기존 후보 export/disposable-trial 게이트를 해제하지 않으며 `nativeSmoke`는 실제 세션 관찰 전까지 `unverified`다. 비밀값·프롬프트/출력 본문 analytics, 원본 제품 cleanup은 범위 밖이다. 계획 세 개가 완료 기준을 덮고 있다는 것은 범위 확인이지 코드·시험 완료 주장이 아니다.
+
+## 작업별 중간 증거 (Root 전달; 최종 통합 전)
+
+| 작업 | 전달된 commit/검증 | 판정·남은 검증 |
+| --- | --- | --- |
+| UI T1 | `33a2cc8`, 독립 검토 완료, 집중 테스트 38 통과; 앞선 전체 suite 486건 중 482 통과·4 skip | 개별 작업 검토 완료. 최종 통합 DOM/전체 suite는 별도 대기 |
+| 고정 컨텍스트 T1 | `178b14e`, 독립 검토 완료, 45 통과·1 skip | 개별 작업 검토 완료. T2 및 통합 경계 재검증 대기 |
+| source inventory 수정 | `202fd3c`, 집중 테스트 8/8 통과 | 재검토 대기; T2의 source fingerprint 입력으로 승인 전까지 확정하지 않음 |
+| native bridge | `8bd759d`, 집중 테스트 46 통과·2 skip | 독립 검토 대기; managed Apply와 native smoke를 혼동하지 않음 |
+| UI T2 | `87e7ae7`, 집중 테스트 122/122 통과 | 독립 검토 대기; 실제 통합 위젯/HTTP 경계 재확인 필요 |
+| 고정 컨텍스트 T2 | 실행 중, commit/결과 미수신 | runtime/claim 경계 결과 대기 |
+
+이 수치는 Root가 전달한 작업별 결과이지 여기서 재실행한 증거가 아니다. 최종 완료 판단은 통합 브랜치의 정확한 SHA와 재실행 결과, 독립 검토, 중립 복사본 실사용 증거에 따른다. setup T2에서는 public `applyBridgePlan`에 `stagingRoot`를 넘기지 않는다. bridge plan만 staging에서 만들고, 실제 쓰기는 canonical `project/` publish 뒤 실행한다.
