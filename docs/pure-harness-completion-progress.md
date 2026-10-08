@@ -93,3 +93,10 @@ Root 보고 기준 구현 흐름은 고정 컨텍스트·UI·source inventory·n
 - UI/가이드는 개별 독립 검토 승인. 갤러리 `c6573ec`도 runtime 바이트 동일과 독립 9/9 검토 승인이 있으나 이 통합 SHA에는 아직 반영·재시험 대기다.
 - `135608e`의 `npm test`는 607건 중 597 통과·5 실패·5 skip (exit 1)이었다. 실패는 오래된 dashboard `guideCopy` 테스트 1건(단언 3개)과 `NODE_TEST_CONTEXT` 없는 runner에서 실행된 source-inventory remote fixture 4건이다. 따라서 이 SHA의 전체 suite는 **실패**로 기록한다.
 - 따라서 최종 통합 suite/self-check 재실행, 정확한 `CODE_SHA` 고정, remote 없는 중립 복사본, 실제 Codex hello 앱·agent ID·rollout telemetry, 관찰 기반 문서 갱신, `main` push/remote 대조와 작업 브랜치 정리는 모두 **미완료**다. 사용자용 production guide는 이 기록 단계에서 변경하지 않았다.
+
+## clean `CODE_SHA` 전체 시험 통과 (Root 전달; native 게이트 별도)
+
+- 최종 코드 기준은 `7d1a8c9a336aefb59d1a4197989dd7e80bf72285`다. 이 SHA의 `npm test`는 exit 0, 총 616건 중 611 통과·0 실패·5 skip, 실행 시간 321461ms였다. 앞선 `135608e`의 실패 기록은 해당 SHA의 과거 상태로 남기며 최신 통과로 소급 변경하지 않는다.
+- 같은 기준의 `npm run self-check`는 exit 0이다. setup 미실행, hook 미관찰, native/model entitlement 미검증 WARN은 예상된 미검증 상태다. WARN을 실제 native 권한·훅 통과로 해석하지 않는다.
+- `workerproject_setup_task2`가 정확한 코드 복사본에서 중립 cold-start를 진행 중이라고 Root가 전달했다. 아직 실제 setup/앱 실행·테스트·agent ID·rollout telemetry 결과가 도착하지 않아 모두 **대기**다. native ACK 없이 subagent ID를 추정해 기록하지 않는다.
+- 관찰에 기반한 사용자 절차 문서 갱신/재연, 출시 SHA의 재시험, 검증된 작업 브랜치 정리, `main` push 및 remote SHA 대조도 **미완료**다. 이 문서 변경은 native-critical 코드/생성 출력의 동등성을 주장하거나 `nativeSmoke`를 승격하지 않는다.
