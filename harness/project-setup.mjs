@@ -267,12 +267,12 @@ export async function applyProjectSetup({ harnessRoot, plan } = {}, { beforeWrit
             const file = path.join(projectRoot, ...item.path.split('/'));
             if (item.before) await atomic(file, item.before); else await unlink(file);
           }
-          for (const relative of [...createdDirectories].reverse()) {
-            const directory = path.join(projectRoot, ...relative.split('/'));
-            if (await stat(directory)) await rmdir(directory);
-          }
           if (manifestBefore) await atomic(manifestFile, manifestBefore); else await unlink(manifestFile);
         } else if (bridgeApplied) await rollbackNativeBridge({ harnessRoot, projectRoot, target: plan.target, setupId: plan.setupId });
+        if (plan.mode === 'update') for (const relative of [...createdDirectories].reverse()) {
+          const directory = path.join(projectRoot, ...relative.split('/'));
+          if (await stat(directory)) await rmdir(directory);
+        }
         if (published) {
           if (!(await stat(projectRoot))?.isDirectory()) throw new Error('published project drift');
           if (await treeFingerprint(projectRoot, ignoredDirectories) !== stagedFingerprint) throw new Error('published project outside drift');

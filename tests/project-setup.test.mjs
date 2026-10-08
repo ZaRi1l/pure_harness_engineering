@@ -199,3 +199,19 @@ test('outside write after publish blocks rollback without overwriting that write
   const journal = JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/setup-journal.json')));
   assert.equal(journal.phase, 'rollback-blocked');
 });
+
+test('partial bridge failure on target update restores previous child and config without stray directories', async t => {
+  const f = await fixture(t);
+  const first = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan: first });
+  const oldConfig = await readFile(path.join(f.harnessRoot, '.harness/config.json'));
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'update', target: 'opencode' });
+  let bridgeWrites = 0;
+  await assert.rejects(applyProjectSetup({ harnessRoot: f.harnessRoot, plan }, {
+    beforeWrite: phase => { if (phase.startsWith('bridge:') && ++bridgeWrites === 2) throw new Error('injected partial update'); }
+  }), /injected partial update/);
+  assert.deepEqual(await readFile(path.join(f.harnessRoot, '.harness/config.json')), oldConfig);
+  assert.equal(await exists(path.join(f.harnessRoot, '.harness/adapters/opencode.json')), false);
+  assert.equal(await exists(path.join(f.projectRoot, '.opencode')), false);
+  assert.equal(JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/setup-journal.json'))).phase, 'rolled-back');
+});
