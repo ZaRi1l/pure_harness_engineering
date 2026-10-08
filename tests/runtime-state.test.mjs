@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { RuntimeStore, findRoot, runCli } from '../scripts/runtime-state.mjs';
+import { RuntimeStore, contextFromArgs, findRoot, runCli } from '../scripts/runtime-state.mjs';
+import { fixedFixture } from './support/fixed-project-fixture.mjs';
 
 const legacyCli = argv => runCli(argv, { legacyFixtureRoot: argv[argv.indexOf('--root') + 1] });
 
@@ -38,10 +39,77 @@ test('core CLI rejects project arguments, non-claim commands, and project-manage
   await assert.rejects(runCli(['--core', 'goal', 'hidden'], options), /core|claim/i);
   await assert.rejects(runCli(['--core', 'claim', 'worker', 'projects/alpha/runtime/status.json'], options), /project|scope/i);
   await assert.rejects(runCli(['--core', 'claim', 'worker', 'PROJECTS/alpha/runtime/status.json'], options), /project|scope/i);
+  await assert.rejects(runCli(['--core', 'claim', 'worker', 'project/file'], options), /project|scope/i);
+  await assert.rejects(runCli(['--core', 'claim', 'worker', '.harness/runtime/file'], options), /scope/i);
   await assert.rejects(runCli(['--core', 'claim', 'worker', '.ai/core-runtime/context-v1/status.json'], options), /runtime|scope/i);
   await assert.rejects(runCli(['--core', 'claim', 'worker', '.AI/core-runtime/context-v1/status.json'], options), /runtime|scope/i);
   await assert.rejects(runCli(['--core', 'claim', 'worker', '../outside'], options), /scope|outside/i);
   assert.equal(existsSync(path.join(engineRoot, '.ai', 'core-runtime')), false);
+});
+
+test('fixed CLI initializes only installation runtime with fixed project identity', async () => {
+  const f = await fixedFixture();
+  const options = { harnessRoot: f.harnessRoot, cwd: f.harnessRoot };
+  const { context, args } = await contextFromArgs(['init', '--force'], options);
+  assert.equal(context.projectId, 'project');
+  assert.equal(context.checkoutRoot, f.projectRoot);
+  assert.deepEqual(args, ['init', '--force']);
+  await runCli(['init'], options);
+  const runtime = path.join(f.harnessRoot, '.harness', 'runtime');
+  assert.equal(JSON.parse(await readFile(path.join(runtime, 'status.json'), 'utf8')).project_id, 'project');
+  assert.equal(JSON.parse(await readFile(path.join(runtime, 'tasks.json'), 'utf8')).project_id, 'project');
+  assert.equal(existsSync(path.join(f.projectRoot, '.ai', 'runtime')), false);
+  assert.equal(existsSync(path.join(f.harnessRoot, '.ai', 'runtime')), false);
+});
+
+test('fixed CLI keeps checkout and installation claims distinct', async () => {
+  const f = await fixedFixture();
+  const options = { harnessRoot: f.harnessRoot, cwd: f.projectRoot };
+  await runCli(['claim', 'checkout-worker', 'src/app.mjs'], options);
+  await runCli(['claim', 'installation-worker', 'installation:.harness/tasks/example.md'], options);
+  const claimsPath = path.join(f.harnessRoot, '.harness', 'runtime', 'claims.json');
+  const claims = JSON.parse(await readFile(claimsPath, 'utf8')).claims;
+  assert.deepEqual(claims.map(({ agent_id, scopes, scope_kind }) => ({ agent_id, scopes, scope_kind })), [
+    { agent_id: 'checkout-worker', scopes: ['src/app.mjs'], scope_kind: 'checkout' },
+    { agent_id: 'installation-worker', scopes: ['.harness/tasks/example.md'], scope_kind: 'installation' },
+  ]);
+  await runCli(['release-claim', 'checkout-worker'], options);
+  assert.deepEqual(JSON.parse(await readFile(claimsPath, 'utf8')).claims.map(claim => claim.agent_id), ['installation-worker']);
+  await runCli(['release-claim', 'installation-worker'], options);
+  assert.deepEqual(JSON.parse(await readFile(claimsPath, 'utf8')).claims, []);
+  await runCli(['claim', 'absolute-installation-worker', path.join(f.harnessRoot, '.harness', 'tasks', 'example.md')], options);
+  assert.deepEqual(JSON.parse(await readFile(claimsPath, 'utf8')).claims.map(({ scopes, scope_kind }) => ({ scopes, scope_kind })), [
+    { scopes: ['.harness/tasks/example.md'], scope_kind: 'installation' },
+  ]);
+});
+
+test('fixed CLI rejects source and unmarked management claims without changing runtime bytes', async () => {
+  const f = await fixedFixture();
+  const options = { harnessRoot: f.harnessRoot, cwd: f.projectRoot };
+  await runCli(['init'], options);
+  const claimsPath = path.join(f.harnessRoot, '.harness', 'runtime', 'claims.json');
+  const before = await readFile(claimsPath, 'utf8');
+  for (const scope of [path.join(f.harnessRoot, 'scripts', 'runtime-state.mjs'), '.harness/tasks/example.md']) {
+    await assert.rejects(runCli(['claim', 'worker', scope], options), /scope|outside|installation/i);
+    assert.equal(await readFile(claimsPath, 'utf8'), before);
+  }
+});
+
+test('fixed CLI rejects legacy selection flags before touching runtime', async () => {
+  const f = await fixedFixture();
+  const options = { harnessRoot: f.harnessRoot, cwd: f.harnessRoot };
+  await runCli(['init'], options);
+  const statusPath = path.join(f.harnessRoot, '.harness', 'runtime', 'status.json');
+  const before = await readFile(statusPath, 'utf8');
+  for (const args of [
+    ['--project', 'old', '--checkout', f.projectRoot, '--binding', f.configPath, 'goal', 'x'],
+    ['--root', f.projectRoot, 'goal', 'x'],
+    ['goal', 'x', '--project', 'old'],
+    ['goal', 'x', `--checkout=${f.projectRoot}`],
+  ]) {
+    await assert.rejects(runCli(args, options), /project|checkout|binding|root|selection/i);
+    assert.equal(await readFile(statusPath, 'utf8'), before);
+  }
 });
 
 test('core CLI treats case variants of the same Windows source file as conflicting claims', { skip: process.platform !== 'win32' }, async () => {

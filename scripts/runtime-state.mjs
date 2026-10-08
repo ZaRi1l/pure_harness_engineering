@@ -3,8 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { isValidatedProjectContext, loadProjectContext } from './project-context.mjs';
+import { pathToFileURL } from 'node:url';
+import { getScriptHarnessRoot, isValidatedProjectContext, loadFixedProjectContext } from './project-context.mjs';
 import { TASK_STATUSES, safeTask, taskRevision, validateTaskFields } from './task-records.mjs';
 import { normalizeChildLink, normalizeTelemetry } from './telemetry-schema.mjs';
 
@@ -400,9 +400,10 @@ export class RuntimeStore {
       } else relative = scoped;
       const normalized = normalizeScope(relative);
       if (managementScope) {
-        if (!normalized.startsWith(`projects/${this.context.projectId}/`)) throw new Error('installation claim outside selected project');
+        if (!normalized.startsWith('.harness/')) throw new Error('installation claim outside management root');
         return { scope: normalized, kind: 'installation' };
       }
+      if (normalized === '.harness' || normalized.startsWith('.harness/')) throw new Error('management claim requires installation scope');
       return { scope: normalized, kind: 'checkout' };
     });
     const kinds = new Set(entries.map(entry => entry.kind));
@@ -427,14 +428,11 @@ export class RuntimeStore {
 
 export function findRoot(start = process.cwd()) { let current = path.resolve(start), instructionRoot = null; while (true) { if (existsSync(path.join(current, '.git'))) return current; if (!instructionRoot && existsSync(path.join(current, 'AGENTS.md'))) instructionRoot = current; const parent = path.dirname(current); if (parent === current) break; current = parent; } return instructionRoot || path.resolve(start); }
 function option(args, name, fallback = null) { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : fallback; }
-export async function contextFromArgs(argv) {
-  const copy = [...argv];
-  const take = name => { const index = copy.indexOf(name); return index < 0 ? undefined : copy.splice(index, 2)[1]; };
-  const projectId = take('--project'), checkoutRoot = take('--checkout'), bindingPath = take('--binding');
-  if (!projectId || !checkoutRoot || !bindingPath) throw new Error('project, checkout, and binding are required');
-  return { context: await loadProjectContext({ projectId, checkoutRoot, bindingPath }), args: copy };
+export async function contextFromArgs(argv, { harnessRoot = getScriptHarnessRoot(import.meta.url), cwd = process.cwd(), requireSetup = true } = {}) {
+  if (argv.some(arg => /^(--project|--checkout|--binding|--root|--core)(?:=|$)/.test(arg))) throw new Error('project selection flags are not supported');
+  return { context: await loadFixedProjectContext({ harnessRoot, cwd, requireSetup }), args: [...argv] };
 }
-export async function runCli(argv = process.argv.slice(2), { legacyFixtureRoot, coreEngineRoot } = {}) {
+export async function runCli(argv = process.argv.slice(2), { legacyFixtureRoot, coreEngineRoot, harnessRoot, cwd } = {}) {
   const copy = [...argv];
   if (copy[0] === '--core') {
     if (legacyFixtureRoot || copy.some(arg => ['--project', '--checkout', '--binding', '--root'].includes(arg))) {
@@ -443,14 +441,14 @@ export async function runCli(argv = process.argv.slice(2), { legacyFixtureRoot, 
     const [command, agentId, ...scopes] = copy.slice(1);
     if (command !== 'claim' && command !== 'release-claim') throw new Error('core CLI supports claim and release-claim only');
     if (!agentId || (command === 'claim' && !scopes.length) || (command === 'release-claim' && scopes.length)) throw new Error('invalid core claim arguments');
-    const engineRoot = path.resolve(coreEngineRoot || fileURLToPath(new URL('..', import.meta.url)));
+    const engineRoot = path.resolve(coreEngineRoot || getScriptHarnessRoot(import.meta.url));
     const runtimeRoot = path.join(engineRoot, '.ai', 'core-runtime', 'context-v1');
     const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot, runtimeRoot }));
     if (command === 'claim') {
       for (const scope of scopes) {
         const relative = path.isAbsolute(scope) || path.win32.isAbsolute(scope) ? path.relative(engineRoot, path.resolve(scope)) : scope;
         const normalized = normalizeScope(relative).toLowerCase();
-        const protectedRoots = ['projects', '.ai', '.git', 'node_modules'];
+        const protectedRoots = ['project', 'projects', '.harness', '.ai', '.git', 'node_modules'];
         if (protectedRoots.some(root => normalized === root || normalized.startsWith(root + '/')) || normalized === 'harness-adapter/binding.local.json') {
           throw new Error('core claim scope is not engine source');
         }
@@ -462,8 +460,8 @@ export async function runCli(argv = process.argv.slice(2), { legacyFixtureRoot, 
   if (copy.includes('--core')) throw new Error('--core must be the first argument');
   const rootIndex = copy.indexOf('--root');
   const root = rootIndex < 0 ? undefined : copy.splice(rootIndex, 2)[1];
-  if (root && (!legacyFixtureRoot || path.resolve(root) !== path.resolve(legacyFixtureRoot))) throw new Error('--root is only available to explicit legacy fixtures');
-  const resolved = legacyFixtureRoot ? { context: null, args: copy } : await contextFromArgs(copy);
+  if (rootIndex >= 0 && (!legacyFixtureRoot || !root || path.resolve(root) !== path.resolve(legacyFixtureRoot))) throw new Error('--root is only available to explicit legacy fixtures');
+  const resolved = legacyFixtureRoot ? { context: null, args: copy } : await contextFromArgs(copy, { harnessRoot, cwd });
   const store = legacyFixtureRoot ? RuntimeStore.legacyFixture(legacyFixtureRoot) : new RuntimeStore(resolved.context);
   const [command, ...args] = resolved.args;
   const actions = { init: () => store.initialize({ force: args.includes('--force') }), goal: () => store.setGoal(args[0], option(args, '--phase', 'planning')), phase: () => store.setPhase(args[0]), task: () => store.upsertTask(args[0], args[1], args[2], option(args, '--owner')), 'agent-start': () => store.agentStarted(args[0], args[1], option(args, '--task', ''), { task_id: option(args, '--task-id'), source: option(args, '--source') }), 'agent-resume': () => store.agentResumed(args[0], option(args, '--task', ''), option(args, '--summary', ''), { task_id: option(args, '--task-id'), turn_token: option(args, '--turn-token'), source: option(args, '--source') }), 'agent-stop': () => store.agentStopped(args[0], option(args, '--outcome', 'stopped'), { task_id: option(args, '--task-id'), turn_token: option(args, '--turn-token'), source: option(args, '--source') }), verify: () => store.setVerification(args[0], args[1], option(args, '--detail', '')), blocker: () => store.addBlocker(args[0], args[1]), 'clear-blocker': () => store.clearBlocker(args[0]), artifact: () => store.addArtifact(args[0], args[1]), event: () => store.addEvent(args[0], args[1]), signal: () => store.addSignal(args[0], args[1], args[2], args[3], { task_id: option(args, '--task'), status: option(args, '--status'), artifact_href: option(args, '--artifact'), verification_name: option(args, '--verification') }) };
