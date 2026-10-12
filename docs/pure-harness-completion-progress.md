@@ -1,6 +1,18 @@
 # Pure Harness 완성 진행 기록 — 2026-10-08 활성 `/goal`
 
-사용자는 [완성 설계](superpowers/specs/2026-10-08-pure-harness-completion-design.md)에 따른 상세 계획, 구현, 독립 검증, 통합, `main` push 및 검증된 작업 브랜치 정리를 연속 실행하도록 승인했다. 일반 단계마다 추가 승인 대기로 멈추지 않는다. 범위가 실질적으로 커지거나 원본 제품 정리·실제 legacy runtime 전환/이관이 필요하면 별도 결정을 받는다. 이 파일은 상태 표시를 꾸미는 대시보드가 아니라 [완료 확인표](pure-harness-completion-checklist.md)의 증거 색인이다. 아래 `대기`는 통과가 아니다.
+사용자는 [완성 설계](superpowers/specs/2026-10-08-pure-harness-completion-design.md)에 따른 상세 계획, 구현, 독립 검증, 통합, `main` push 및 검증된 작업 브랜치 정리를 연속 실행하도록 승인했다. 2026-10-12에는 구현 업그레이드 게시를 native E2E 수락과 분리해 `main` push하도록 명시 승인했다. 범위가 실질적으로 커지거나 원본 제품 정리·실제 legacy runtime 전환/이관이 필요하면 별도 결정을 받는다. 이 파일은 상태 표시를 꾸미는 대시보드가 아니라 [완료 확인표](pure-harness-completion-checklist.md)의 증거 색인이다. 아래 오래된 `대기` 및 순서 설명은 당시 이력이며 최신 판정은 다음 절을 우선한다.
+
+## 2026-10-12 구현 게시 판정과 native 잔여 게이트
+
+| 구분 | 실제 증거와 현재 판정 |
+| --- | --- |
+| 최종 코드 기준 | `4a599c4c87f57c7432e66abd617a0dfbe793a109`; tracked clean source와 remote 없는 중립 복사본의 core SHA 일치. 이 코드의 전체 `npm test` 실제 exit 0: 622건 중 617 통과·0 실패·5 skip. 출시 문서 commit은 별도 SHA이고, 출시 HEAD 전체 시험 결과 및 native-critical digest 동등성은 게시 게이트에서 따로 확인한다. |
+| native 역할·훅 | Codex CLI 0.161.0, 정확한 프로젝트 계층에서 5개 역할 및 5개 trusted hook 설정 관찰. 실제 root·worker·planner ID와 SessionStart 1, SubagentStart 2, SubagentStop 2, Stop 1, SessionEnd 1 dispatch 관찰. 설정/dispatch 증거이지 명령 실행 성공 증거는 아니다. |
+| 실제 telemetry | 세 rollout 3/3 읽기 전용 파싱: processed token 298617, tool call 11, compaction 0. `links: []` 및 root/parent turn ID 부재로 298617 전부 unattributed(100%); 역할·작업별 귀속 없음. 이전 `0e0bb64`의 child line 2 구조 오류는 당시 실패로 보존하며 `4a599c4` parser 수정과 집중 시험 42/42로 구분한다. 중첩 native 손자 lineage는 지원되지 않아 fail-closed. |
+| 앱 E2E·권한 경계 | native Windows helper 초기화가 `node_repl.exe` `os error 32` / `helper_unknown_error: setup refresh had errors`로 CreateProcess 전에 실패했다. 무해한 echo조차 실제 실행되지 않았고 바깥 `codex exec` exit 0은 CLI 작업 성공이 아니다. Node hello CLI·`node --test`·Skill 소비·read-only planner 경로 **미검증**. post-restart `codex doctor` exit 1, sandboxHelpers fail; native 재시도·전역 설정 변경·sandbox/ACL 우회 없이 중단했다. `nativeSmoke`/cutover는 `unverified`, 다른 세 target도 미검증이다. |
+| 이번 게시 범위 | 사용자는 2026-10-12에 업그레이드 구현 `main` push를 명시 요청했고 실제 native E2E 미완료와 분리했다. 이는 전체 `/goal` 완료 승인이나 작업 브랜치/worktree 삭제 승인이 아니다. 원본 SILO, `.serena/`, 중립 후보 `.harness/`, project의 우발 `.serena/`를 보존한다. `main`/remote SHA 일치 및 release HEAD 전체 시험은 실제 실행 후에만 게시 결과로 보고한다. |
+
+기존 단계별 실패·대기 기록은 소급해 통과로 바꾸지 않는다. 문서 전용 출시 SHA와 코드 SHA가 다르므로 native-critical 파일·생성 출력 digest의 동등성이 확인될 때만 코드 범위 증거를 승계한다. 아직 실행하지 못한 실제 CLI/테스트·Skill 소비는 digest로도 승계되지 않는다.
 
 | 작업 흐름 | 연결된 완료 기준 | 현재 상태 | 필요한 실제 증거 |
 | --- | --- | --- | --- |

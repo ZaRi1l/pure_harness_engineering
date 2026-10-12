@@ -1,6 +1,13 @@
 # Pure Harness 완료 확인표 — 활성 목표 기준
 
-이 표는 2026-10-08 활성 `/goal`의 [완성 설계](superpowers/specs/2026-10-08-pure-harness-completion-design.md)에 대한 관찰 기준이다. [진행 기록](pure-harness-completion-progress.md)에 명령·로그·파일 diff·네이티브 세션 증거를 연결한다. `05c1ba4`는 시작 기준이다. clean `7d1a8c9a336aefb59d1a4197989dd7e80bf72285`의 전체 시험 통과는 과거 증거이며, 생성 AGENTS 명령 결함 발견 뒤 수정 후보 `3693951`의 새 전체 게이트와 native·출시 게이트는 별도로 판단한다.
+이 표는 2026-10-08 활성 `/goal`의 [완성 설계](superpowers/specs/2026-10-08-pure-harness-completion-design.md)에 대한 관찰 기준이다. [진행 기록](pure-harness-completion-progress.md)에 명령·로그·파일 diff·네이티브 세션 증거를 연결한다. `05c1ba4`는 시작 기준이다. 아래 표의 오래된 SHA별 수치는 당시 기록으로 보존하며, **현재 판정은 바로 다음 2026-10-12 절을 우선**한다.
+
+## 2026-10-12 현재 판정: 구현 게시와 native 수락 분리
+
+- 최종 코드 SHA는 `4a599c4c87f57c7432e66abd617a0dfbe793a109`다. 이 SHA에서 전체 `npm test`는 실제 exit 0, 622건 중 617 통과·0 실패·5 skip이었다. 문서 전용 출시 commit의 전체 시험은 별도 실행 결과로 판정한다. 문서 전용 commit에서 native-critical 코드와 생성 출력의 digest가 같을 때에만 기존 코드 시험·중립 복사본 증거를 해당 코드 범위에 승계한다.
+- remote 없는 중립 복사본의 실제 세 롤아웃(root·worker·planner)에서 3/3 thread, processed token 298617, tool call 11, compaction 0을 읽기 전용으로 관찰했다. 연결 정보가 없어 token은 100% unattributed이며 역할별 비용/작업별 귀속을 주장하지 않는다. 실제 역할 ID·5개 프로젝트 hook dispatch는 관찰했지만, 중첩 native 손자 lineage는 지원되지 않아 fail-closed다.
+- 실제 Node hello CLI 생성·실행과 `node --test` 실행, Skill 소비, read-only planner 경로는 **미검증**이다. Windows native 실행 helper가 `node_repl.exe`의 `os error 32`와 `helper_unknown_error: setup refresh had errors`로 명령 시작 전에 실패했다. 바깥 `codex exec` 프로세스 exit 0은 안쪽 명령 성공이 아니다. 따라서 `nativeSmoke`·cutover·전체 `/goal`을 완료로 승격하지 않는다. 다른 세 target도 `unverified`다.
+- 사용자는 2026-10-12에 **검증된 구현 업그레이드의 `main` push와 미완료 native E2E를 분리**해 게시하도록 명시 승인했다. 이 승인은 native 수락 완료나 원본 제품 cleanup, 전역 설정·모델·CLI 설치·sandbox/ACL 변경을 승인한 것이 아니다. 작업 브랜치/worktree와 무관한 사용자 자산은 보존한다.
 
 | 요구 | 현재 사실 | 완료에 필요한 관찰 |
 | --- | --- | --- |
