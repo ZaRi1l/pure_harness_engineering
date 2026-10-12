@@ -40,12 +40,14 @@ function translator(locale = 'en') {
     'guide.new.commands': 'npm run setup\nnpm run init\nnpm run status\nnpm run preview:live',
     'guide.existing.commands': 'npm run setup\nnpm run init\nnpm run status\nnpm run preview:live',
     'guide.connected.commands': 'npm run status\nnpm run preview:live',
+    'guide.switch.title': 'Switch AI tools',
+    'guide.switch.body': '<ol><li>Run npm run setup in update mode.</li></ol>',
     'guide.advanced': 'Advanced reference',
     'guide.networkAdvanced': 'Network details',
     'guide.body': '<p>Staged local installation and native smoke unverified.</p>',
     'guide.networkBody': '<p>Reported-running records only.</p>'
   };
-  const ko = { ...en, 'guide.choose': '무엇을 하시겠어요?', 'guide.choice.new': '새 프로젝트 시작', 'guide.choice.existing': '기존 프로젝트 안전하게 시험', 'guide.choice.connected': '이미 연결된 프로젝트 열기' };
+  const ko = { ...en, 'guide.choose': '무엇을 하시겠어요?', 'guide.choice.new': '새 프로젝트 시작', 'guide.choice.existing': '기존 프로젝트 안전하게 시험', 'guide.choice.connected': '이미 연결된 프로젝트 열기', 'guide.switch.title': 'AI 도구 전환' };
   return key => (locale === 'ko' ? ko : en)[key] ?? key;
 }
 
@@ -58,6 +60,9 @@ test('first view offers three paths, hides commands and keeps advanced material 
   assert.match(walk(panel).map(node => node.textContent).join(' '), /records for this fixed project/);
   assert.equal(selected(panel), undefined);
   assert.equal(walk(panel).filter(node => node.tagName === 'PRE').length, 0);
+  const switchSection = walk(panel).find(node => node.className === 'guide-tool-switch');
+  assert.equal(switchSection.children[0].textContent, 'Switch AI tools');
+  assert.match(switchSection.children[1].innerHTML, /npm run setup in update mode/);
   const advanced = walk(panel).filter(node => node.tagName === 'DETAILS');
   assert.equal(advanced.length, 2);
   assert.ok(advanced.every(node => !node.open));
@@ -83,4 +88,5 @@ test('new panel uses supplied locale for the decision labels', () => {
   const panel = createGuidePanel({ document, translate: translator('ko') });
   assert.match(walk(panel).map(node => node.textContent).join(' '), /무엇을 하시겠어요/);
   assert.equal(choice(panel, 'existing').textContent, '기존 프로젝트 안전하게 시험');
+  assert.equal(walk(panel).find(node => node.className === 'guide-tool-switch').children[0].textContent, 'AI 도구 전환');
 });

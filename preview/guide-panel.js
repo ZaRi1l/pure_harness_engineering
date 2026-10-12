@@ -36,6 +36,15 @@ export function createGuidePanel({ document, translate }) {
   note.textContent = translate('guide.note');
   root.append(heading, choices, note, result);
 
+  const switchSection = document.createElement('section');
+  switchSection.className = 'guide-tool-switch';
+  const switchHeading = document.createElement('h2');
+  switchHeading.textContent = translate('guide.switch.title');
+  const switchBody = document.createElement('div');
+  switchBody.innerHTML = translate('guide.switch.body');
+  switchSection.append(switchHeading, switchBody);
+  root.append(switchSection);
+
   for (const [labelKey, bodyKey] of [
     ['guide.advanced', 'guide.body'],
     ['guide.networkAdvanced', 'guide.networkBody']
