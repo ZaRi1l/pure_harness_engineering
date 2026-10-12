@@ -48,6 +48,84 @@ const aggregate = files => fixture(files, paths => aggregateCodexRollouts(paths,
 const link = (child, parent, task = 'task-1', root = 'root-1', role = 'worker') => ({ child_agent_id: child, parent_agent_id: parent, task_id: task, root_turn_id: root, role, fork_turns: 'all' });
 const observed = (id, parent = null, root = 'root-1', input = 4, output = 2) => ({ thread_id: id, parent_thread_id: parent, root_turn_id: root, status: 'observed', totals: { input, output, processed: input + output, cached_input: 0, reasoning_output: 0, responses: 1, tool_calls: 0 } });
 
+const nativeChildMeta = (ordinal = 6, overrides = {}) => record('session_meta', {
+  id: 'child-1', session_id: 'parent-1', parent_thread_id: 'parent-1', forked_from_id: 'parent-1',
+  source: { subagent: { thread_spawn: { parent_thread_id: 'parent-1', agent_path: '/root/worker', agent_role: 'worker' } } },
+  subagent_history_start_ordinal: ordinal, ...overrides,
+}, 20);
+const inheritedChild = (metaRecord = nativeChildMeta()) => [
+  metaRecord, record('session_meta', { id: 'parent-1', session_id: 'parent-1' }), cumulative(100, 10, 0, 0, 1),
+  tool('function_call', 'parent-call', { name: 'exec' }, 2),
+  tool('function_call_output', 'parent-call', { output: 'PARENT_PRIVATE_BODY' }, 3),
+  record('event_msg', { type: 'context_compacted' }, 4),
+  record('event_msg', { type: 'thread_settings_applied', thread_id: 'child-1' }, 21),
+  cumulative(4, 2, 0, 0, 22),
+  tool('function_call', 'child-call', { name: 'exec' }, 23),
+  tool('function_call_output', 'child-call', { output: 'CHILD_PRIVATE_BODY' }, 24),
+  record('event_msg', { type: 'context_compacted' }, 25),
+];
+
+test('native child ordinal excludes inherited usage, tools, compactions, and interval', async () => {
+  const result = await aggregate([inheritedChild()]);
+  assert.equal(result.status, 'observed');
+  assert.equal(result.totals.processed, 6);
+  assert.equal(result.totals.tool_calls, 1);
+  assert.equal(result.compactions, 1);
+  assert.equal(result.coverage.tool_outputs_measured, 1);
+  assert.equal(result.start_at, at(20));
+  assert.equal(result.end_at, at(25));
+  assert.doesNotMatch(JSON.stringify(result), /PARENT_PRIVATE_BODY|CHILD_PRIVATE_BODY/);
+});
+
+test('native child and separate parent file count each owner once', async () => {
+  const parent = [meta('parent-1'), cumulative(100, 10), tool('function_call', 'parent-call', { name: 'exec' }), tool('function_call_output', 'parent-call', { output: 'PARENT_PRIVATE_BODY' }), record('event_msg', { type: 'context_compacted' })];
+  const result = await aggregate([parent, inheritedChild()]);
+  assert.equal(result.status, 'observed');
+  assert.equal(result.totals.processed, 116);
+  assert.equal(result.totals.tool_calls, 2);
+  assert.equal(result.compactions, 2);
+  assert.equal(result.coverage.threads, 2);
+});
+
+test('native child missing or invalid history boundary and conflicting lineage fail closed', async () => {
+  const cases = [
+    nativeChildMeta(undefined, { subagent_history_start_ordinal: null }),
+    nativeChildMeta(-1), nativeChildMeta(2.5), nativeChildMeta(99),
+    nativeChildMeta(6, { parent_thread_id: 'child-1', forked_from_id: 'child-1', session_id: 'child-1', source: { subagent: { thread_spawn: { parent_thread_id: 'child-1' } } } }),
+    nativeChildMeta(6, { forked_from_id: 'other-parent' }),
+    nativeChildMeta(6, { source: { subagent: { thread_spawn: { parent_thread_id: 'other-parent', agent_path: '/root/worker', agent_role: 'worker' } } } }),
+  ];
+  for (const childMeta of cases) {
+    await assert.rejects(aggregate([inheritedChild(childMeta)]), /invalid rollout structure/);
+  }
+  const conflictingParent = inheritedChild();
+  conflictingParent[1] = record('session_meta', { id: 'parent-1', session_id: 'parent-1', parent_thread_id: 'other-parent' });
+  await assert.rejects(aggregate([conflictingParent]), /invalid rollout structure/);
+  await assert.rejects(aggregate([[meta('child-1'), meta('unrelated-1'), cumulative(4, 2)]]), /invalid rollout structure/);
+});
+
+test('inherited prefix rejects an explicit unrelated thread or session ID', async () => {
+  for (const field of ['thread_id', 'session_id']) {
+    const lines = inheritedChild();
+    lines[2] = { ...lines[2], payload: { ...lines[2].payload, [field]: 'unrelated-1' } };
+    await assert.rejects(aggregate([lines]), /invalid rollout structure/);
+  }
+});
+
+test('unverified nested native ancestor history is rejected instead of reported observed', async () => {
+  const lines = inheritedChild(nativeChildMeta(7, {
+    id: 'grandchild-1', session_id: 'root-1', parent_thread_id: 'child-1', forked_from_id: 'child-1',
+    source: { subagent: { thread_spawn: { parent_thread_id: 'child-1', agent_path: '/root/worker/grandchild', agent_role: 'worker' } } },
+  }));
+  lines[1] = nativeChildMeta(6, {
+    id: 'child-1', session_id: 'root-1', parent_thread_id: 'root-1', forked_from_id: 'root-1',
+    source: { subagent: { thread_spawn: { parent_thread_id: 'root-1', agent_path: '/root/worker', agent_role: 'worker' } } },
+  });
+  lines.splice(2, 0, record('session_meta', { id: 'root-1', session_id: 'root-1' }));
+  lines[7] = record('event_msg', { type: 'thread_settings_applied', thread_id: 'grandchild-1' }, 21);
+  await assert.rejects(aggregate([lines]), /invalid rollout structure/);
+});
+
 test('exact child, parent, root and task links yield task, role and agent rows', () => {
   const result = attributeThreads([observed('child-1', 'parent-1')], [link('child-1', 'parent-1')]);
   assert.equal(result.tasks[0].task_id, 'task-1');

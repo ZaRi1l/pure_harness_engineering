@@ -201,20 +201,38 @@ export async function aggregateCodexRollouts(paths, { projectId, links } = {}) {
   const states = new Map();
   let startAt = null, endAt = null;
   for (const file of paths) {
-    let current = null, lineNumber = 0;
+    let current = null, lineNumber = 0, recordOrdinal = -1, nativeChild = null;
     const stream = createReadStream(file, { encoding: 'utf8' });
     const lines = createInterface({ input: stream, crlfDelay: Infinity });
     try {
       for await (const line of lines) {
         lineNumber++;
         if (!line.trim()) continue;
+        recordOrdinal++;
         let record;
         try { record = JSON.parse(line); } catch { structural(lineNumber); }
         if (!object(record) || typeof record.type !== 'string' || !object(record.payload) || typeof record.timestamp !== 'string' || !Number.isFinite(Date.parse(record.timestamp))) structural(lineNumber);
+        const payload = record.payload;
+        if (recordOrdinal === 0 && record.type === 'session_meta' && (payload.forked_from_id != null || payload.subagent_history_start_ordinal != null || payload.source?.subagent?.thread_spawn != null)) {
+          const parent = payload.parent_thread_id, spawn = payload.source?.subagent?.thread_spawn;
+          const boundary = payload.subagent_history_start_ordinal;
+          if (!safeId(parent) || parent === payload.id || payload.forked_from_id !== parent || payload.session_id !== parent || !object(spawn) || spawn.parent_thread_id !== parent || !Number.isSafeInteger(boundary) || boundary < 2) structural(lineNumber);
+          nativeChild = { parent, boundary };
+        }
+        if (nativeChild) {
+          if (recordOrdinal === 1) {
+            if (record.type !== 'session_meta' || payload.id !== nativeChild.parent || payload.session_id !== nativeChild.parent || payload.parent_thread_id != null) structural(lineNumber);
+            continue;
+          }
+          if (recordOrdinal > 1 && recordOrdinal < nativeChild.boundary) {
+            if (record.type === 'session_meta' || (payload.thread_id != null && payload.thread_id !== nativeChild.parent) || (payload.session_id != null && payload.session_id !== nativeChild.parent)) structural(lineNumber);
+            continue;
+          }
+          if (recordOrdinal === nativeChild.boundary && (record.type !== 'event_msg' || payload.type !== 'thread_settings_applied' || payload.thread_id !== current.id)) structural(lineNumber);
+        }
         const stamp = Date.parse(record.timestamp);
         startAt = startAt === null ? stamp : Math.min(startAt, stamp);
         endAt = endAt === null ? stamp : Math.max(endAt, stamp);
-        const payload = record.payload;
         if (record.type === 'session_meta') {
           if (!safeId(payload.id)) structural(lineNumber);
           if (payload.session_id != null && !safeId(payload.session_id)) structural(lineNumber);
@@ -260,6 +278,7 @@ export async function aggregateCodexRollouts(paths, { projectId, links } = {}) {
         }
         else if (usageBearing(record.type, payload)) mark(current, 'unsupported');
       }
+      if (nativeChild && recordOrdinal < nativeChild.boundary) structural(lineNumber);
     } catch (error) {
       if (error.lineNumber) throw error;
       throw new Error('rollout import failed');
