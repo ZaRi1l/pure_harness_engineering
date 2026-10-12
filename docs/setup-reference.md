@@ -63,7 +63,7 @@ Main의 모델은 사용자가 선택하거나 현재 설정을 상속합니다.
 
 정본 역할·Skill은 Harness의 `harness/agents/`와 `.agents/skills/`에 있습니다. 설정·업데이트 계획은 선택한 도구의 관리 대상 파일만 `project/`에 배치합니다. Codex는 `.codex/agents/*.toml`, `.codex/config.toml`, 선택적 `.codex/hooks.json`, `.agents/skills/*`를 사용합니다. Claude Code는 `.claude/agents/*.md`와 `.claude/skills/*`, OpenCode는 `.opencode/agents/*.md`와 `.agents/skills/*`, Antigravity는 `.agents/agents/*/agent.md`와 `.agents/skills/*`를 사용합니다. 기존 사용자 파일은 소유권·해시·충돌 검사를 통과해야 하며, 관리 대상 밖의 파일은 변경하지 않습니다.
 
-파일 배치와 기본 CLI 점검은 도구의 네이티브 역할 탐색, Skill 탐색, 권한, 훅 발송을 증명하지 않습니다. 실제 Codex 위임과 훅 발송은 아직 관찰·검증되지 않았고, Claude Code, OpenCode, Antigravity에도 네이티브 성공을 주장하지 않습니다. [네이티브 스모크 절차](native-smoke-worksheet.md)는 검증 절차이지 통과 기록이 아닙니다.
+파일 배치와 기본 CLI 점검만으로 도구의 네이티브 역할 탐색, Skill 소비, 실행 권한, 훅 발송을 증명할 수는 없습니다. 2026-10-12 중립 Codex 세션에서 실제 root·worker·planner 역할 ID와 프로젝트 훅 5종의 발송은 관찰했습니다. 그러나 Windows 실행 helper 오류로 Node hello CLI·`node --test`의 실제 실행, Skill 소비, 명령 실행 권한의 실효성은 미검증이며 `nativeSmoke`는 승격하지 않습니다. Claude Code, OpenCode, Antigravity의 네이티브 동작도 미검증입니다. [네이티브 스모크 절차](native-smoke-worksheet.md)는 검증 절차이지 통과 기록이 아닙니다.
 
 Codex에서 처음 `project/`를 열면 폴더의 신뢰 여부를 검토하고, 신뢰할 수 있다고 판단되면 승인하세요. `/hooks`에서 현재 설치된 훅의 정확한 정의·실행 명령을 살펴본 뒤 각각 신뢰 여부를 결정하세요. 파일 생성이나 Node 기반 설정 점검만으로 실제 실행 권한이 승인되지는 않습니다. 신뢰 단계를 우회하는 옵션을 기본 설정으로 사용하지 마세요.
 

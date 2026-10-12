@@ -9,7 +9,7 @@
 - 실제 Node hello CLI 생성·실행과 `node --test` 실행, Skill 소비, read-only planner 경로는 **미검증**이다. Windows native 실행 helper가 `node_repl.exe`의 `os error 32`와 `helper_unknown_error: setup refresh had errors`로 명령 시작 전에 실패했다. 바깥 `codex exec` 프로세스 exit 0은 안쪽 명령 성공이 아니다. 따라서 `nativeSmoke`·cutover·전체 `/goal`을 완료로 승격하지 않는다. 다른 세 target도 `unverified`다.
 - 사용자는 2026-10-12에 **검증된 구현 업그레이드의 `main` push와 미완료 native E2E를 분리**해 게시하도록 명시 승인했다. 이 승인은 native 수락 완료나 원본 제품 cleanup, 전역 설정·모델·CLI 설치·sandbox/ACL 변경을 승인한 것이 아니다. 작업 브랜치/worktree와 무관한 사용자 자산은 보존한다.
 
-| 요구 | 현재 사실 | 완료에 필요한 관찰 |
+| 요구 | 당시 사실(2026-10-08 기록) | 완료에 필요한 관찰 |
 | --- | --- | --- |
 | 화면·가이드 통합 | UI/가이드·갤러리 통합 뒤 `7d1a8c9` 전체 `npm test` 통과; 과거 `135608e`의 오래된 `guideCopy` 테스트 1건(단언 3개) 실패는 진행 기록에 보존 | 실제 위젯/모듈 연결 DOM 테스트, 탭·오류·차단 경로, 관련 전체 suite 및 가이드 링크 통과 |
 | 고정 단일 배치·Git 경계 | 고정 컨텍스트·runtime 통합 뒤 `7d1a8c9` 전체 `npm test` 통과; clean 중립 복사본 실제 경계 시험은 진행 중 | Harness의 유일한 `project/`에 자체 Git·제품 소스, `.harness/`에 로컬 상태; 코어 ignore가 양쪽 제외; child `.git` 부재 시 부모 Git fallback 거부, symlink/reparse·두 번째 프로젝트 거부 |
