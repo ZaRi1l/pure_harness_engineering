@@ -40,7 +40,7 @@ function allowed(relative, target) {
   const role = target === 'antigravity' ? /^\.agents\/agents\/[a-z][a-z0-9-]*\/agent\.md$/.test(relative)
     : target === 'codex' ? /^\.codex\/agents\/[a-z][a-z0-9-]*\.toml$/.test(relative)
     : new RegExp(`^\\.${target}/agents/[a-z][a-z0-9-]*\\.md$`).test(relative);
-  return skill || role || relative === 'AGENTS.md' || (target === 'codex' && ['.codex/config.toml', '.codex/hooks.json'].includes(relative));
+  return skill || role || relative === 'AGENTS.md' || (target === 'codex' && ['.codex/config.toml', '.codex/hooks.json'].includes(relative)) || (target === 'claude' && relative === '.claude/settings.json');
 }
 async function safePath(root, relative, target) {
   if (!allowed(relative, target)) throw new Error(`bridge path not allowlisted: ${relative}`);
@@ -146,6 +146,35 @@ function mergeHooks(prior, harnessRoot) {
   }
   return `${JSON.stringify(document, null, 2)}\n`;
 }
+function claudeHookEntry(harnessRoot) {
+  return { hooks: [{ type: 'command', command: 'node', args: [path.join(harnessRoot, 'scripts/hook-runtime.mjs')], timeout: 5 }] };
+}
+function mergeClaudeHooks(prior, harnessRoot) {
+  let document;
+  try { document = prior ? JSON.parse(prior) : {}; } catch { return null; }
+  if (!document || typeof document !== 'object' || Array.isArray(document)
+      || (document.hooks !== undefined && (!document.hooks || typeof document.hooks !== 'object' || Array.isArray(document.hooks)))) return null;
+  document.hooks ??= {};
+  for (const event of ['SubagentStart', 'SubagentStop']) {
+    if (document.hooks[event] !== undefined && !Array.isArray(document.hooks[event])) return null;
+    document.hooks[event] ??= [];
+    document.hooks[event].push(claudeHookEntry(harnessRoot));
+  }
+  return `${JSON.stringify(document, null, 2)}\n`;
+}
+function stripOwnedClaudeHooks(prior, harnessRoot) {
+  try {
+    const data = JSON.parse(prior);
+    const owned = JSON.stringify(claudeHookEntry(harnessRoot));
+    for (const event of ['SubagentStart', 'SubagentStop']) {
+      if (!Array.isArray(data.hooks?.[event])) return null;
+      const last = data.hooks[event].length - 1;
+      if (last < 0 || JSON.stringify(data.hooks[event][last]) !== owned) return null;
+      data.hooks[event].pop();
+    }
+    return JSON.stringify(data);
+  } catch { return null; }
+}
 function stripOwnedHooks(prior, harnessRoot) {
   try {
     const data = JSON.parse(prior);
@@ -237,6 +266,12 @@ export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = pr
     if (prior.has('.codex/hooks.json')) hookInput = stripOwnedHooks(hookInput, harnessRoot);
     const hooks = hookInput === null ? null : mergeHooks(hookInput, harnessRoot);
     add('.codex/hooks.json', hooks ?? '', hooks === null ? 'conflict' : 'hooks');
+  }
+  if (target === 'claude') {
+    let hookInput = (await bytes(await safePath(inputRoot, '.claude/settings.json', target)))?.toString('utf8') ?? '';
+    if (prior.has('.claude/settings.json')) hookInput = stripOwnedClaudeHooks(hookInput, harnessRoot);
+    const hooks = hookInput === null ? null : mergeClaudeHooks(hookInput, harnessRoot);
+    add('.claude/settings.json', hooks ?? '', hooks === null ? 'conflict' : 'hooks');
   }
   let agentsInput = (await bytes(await safePath(inputRoot, 'AGENTS.md', target)))?.toString('utf8') ?? '';
   if (prior.has('agents.md') || shared.has('AGENTS.md')) agentsInput = stripOwnedAgents(agentsInput);

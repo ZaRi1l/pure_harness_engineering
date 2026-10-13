@@ -29,9 +29,9 @@ export async function handleHook(payload, context) {
   const taskId = isOpaqueTaskId(payload.task_id) ? payload.task_id : undefined;
   const turnToken = nativeId(payload.turn_token) ?? undefined;
   await store.initialize();
-  await store.addEvent('hook_dispatch', `Codex hook dispatched: ${event}`, { hook_event: event });
-  if (event === 'SessionStart') await store.addEvent('session_started', 'Codex session started');
-  else if (event === 'SessionEnd') await store.addEvent('session_ended', 'Codex session ended');
+  await store.addEvent('hook_dispatch', `Native hook dispatched: ${event}`, { hook_event: event });
+  if (event === 'SessionStart') await store.addEvent('session_started', 'Native session started');
+  else if (event === 'SessionEnd') await store.addEvent('session_ended', 'Native session ended');
   else if (event === 'SubagentStart' && id) {
     await store.agentStarted(id, role, '', { task_id: taskId, turn_token: turnToken, source: 'hook' });
     const parentId = nativeId(payload.parent_thread_id), spawnedAt = stamp(payload.spawned_at);
@@ -49,7 +49,7 @@ export async function handleHook(payload, context) {
     const completedAt = stamp(payload.completed_at);
     if (store.context && completedAt && (await store.readChildLinks()).some(link => link.child_agent_id === id)) await store.completeChildLink(id, completedAt);
   }
-  else if (event === 'Stop') await store.addEvent('turn_stopped', 'Codex turn stopped');
+  else if (event === 'Stop') await store.addEvent('turn_stopped', 'Native turn stopped');
 }
 export async function runHook(payload, { harnessRoot = getScriptHarnessRoot(import.meta.url), diagnostic = message => console.log(JSON.stringify({ systemMessage: message })) } = {}) {
   try {

@@ -96,6 +96,53 @@ test('Codex preserves user TOML, hook ordering, and product AGENTS while adding 
   assert.equal(await readFile(path.join(f.projectRoot, 'AGENTS.md'), 'utf8'), '# Product rules\nKeep this.\n');
 });
 
+test('Claude installs two executable subagent hooks while preserving user settings and rollback bytes', async t => {
+  const f = await fixture(t);
+  await mkdir(path.join(f.projectRoot, '.claude'));
+  const original = '{\n  "permissions": {"allow": ["Read"]},\n  "hooks": {"SubagentStart": [{"hooks": [{"type": "command", "command": "echo user"}]}], "CustomEvent": []}\n}\n';
+  const file = path.join(f.projectRoot, '.claude/settings.json');
+  await writeFile(file, original);
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  assert.equal(plan.actions.find(item => item.path === '.claude/settings.json')?.action, 'append-managed-block');
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  const settings = JSON.parse(await readFile(file, 'utf8'));
+  assert.deepEqual(settings.permissions, { allow: ['Read'] });
+  assert.equal(settings.hooks.SubagentStart[0].hooks[0].command, 'echo user');
+  assert.deepEqual(Object.keys(settings.hooks), ['SubagentStart', 'CustomEvent', 'SubagentStop']);
+  for (const event of ['SubagentStart', 'SubagentStop']) {
+    const hook = settings.hooks[event].at(-1).hooks[0];
+    assert.equal(hook.type, 'command');
+    assert.equal(hook.command, 'node');
+    assert.deepEqual(hook.args, [path.join(f.harnessRoot, 'scripts/hook-runtime.mjs')]);
+    assert.equal('commandWindows' in hook, false);
+  }
+  assert.equal(settings.hooks.SubagentStart.length, 2);
+  assert.equal(settings.hooks.SubagentStop.length, 1);
+  assert.equal(settings.hooks.SessionStart, undefined);
+  assert.equal((await planBridgeUpdate({ ...f, target: 'claude' })).actions.find(item => item.path === '.claude/settings.json').action, 'unchanged');
+  assert.equal((await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: 'claude' })).ok, true);
+  await rollbackNativeBridge({ ...f, target: 'claude' });
+  assert.equal(await readFile(file, 'utf8'), original);
+});
+
+test('Claude settings with no hooks are accepted and post-install user edits block updates', async t => {
+  const f = await fixture(t);
+  await mkdir(path.join(f.projectRoot, '.claude'));
+  const file = path.join(f.projectRoot, '.claude/settings.json');
+  await writeFile(file, '{"permissions":{"allow":["Read"]}}\n');
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  assert.equal(plan.actions.find(item => item.path === '.claude/settings.json')?.action, 'append-managed-block');
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  const settings = JSON.parse(await readFile(file, 'utf8'));
+  assert.deepEqual(Object.keys(settings.hooks), ['SubagentStart', 'SubagentStop']);
+  settings.hooks.SubagentStop.push({ hooks: [{ type: 'command', command: 'echo later user change' }] });
+  await writeFile(file, JSON.stringify(settings));
+  const update = await planBridgeUpdate({ ...f, target: 'claude' });
+  assert.equal(update.actions.find(item => item.path === '.claude/settings.json').action, 'conflict');
+  await assert.rejects(rollbackNativeBridge({ ...f, target: 'claude' }), /drift/);
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).hooks.SubagentStop.at(-1).hooks[0].command, 'echo later user change');
+});
+
 test('planning marks conflicting role registration and malformed configuration for review', async t => {
   const f = await fixture(t);
   await mkdir(path.join(f.projectRoot, '.codex'));

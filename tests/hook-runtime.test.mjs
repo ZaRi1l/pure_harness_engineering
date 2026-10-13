@@ -25,6 +25,28 @@ test('anchored hook reaches fixed child runtime and ignores outside checkout wit
   assert.equal(JSON.stringify(await store.readSnapshot()), before);
 });
 
+test('Claude project hooks record native start and stop without inferring a resume or storing prompt bodies', async () => {
+  const f = await fixedFixture();
+  const cwd = f.projectRoot;
+  await runHook({ hook_event_name: 'SubagentStart', cwd, agent_id: 'claude-native-1', agent_type: 'Explore', prompt: 'SECRET_PROMPT' }, { harnessRoot: f.harnessRoot });
+  await runHook({ hook_event_name: 'SubagentStart', cwd, agent_id: 'claude-native-1', agent_type: 'Explore', prompt: 'SECRET_PROMPT' }, { harnessRoot: f.harnessRoot });
+  const store = new RuntimeStore(await (await import('../scripts/project-context.mjs')).loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd }));
+  const active = await store.readSnapshot();
+  assert.deepEqual(active.status.active_agents.map(agent => agent.id), ['claude-native-1']);
+  assert.equal(active.status.agents[0].role, 'unknown');
+  assert.equal(active.events.filter(event => event.type === 'agent_started').length, 1);
+  await runHook({ hook_event_name: 'SubagentStop', cwd, agent_id: 'claude-native-1', agent_type: 'Explore', agent_transcript_path: 'SECRET_OUTPUT' }, { harnessRoot: f.harnessRoot });
+  await runHook({ hook_event_name: 'SubagentStop', cwd, agent_id: 'claude-native-1', agent_type: 'Explore' }, { harnessRoot: f.harnessRoot });
+  const stopped = await store.readSnapshot();
+  assert.equal(stopped.status.agents[0].status, 'stopped');
+  assert.deepEqual(stopped.status.active_agents, []);
+  assert.equal(stopped.events.filter(event => event.type === 'agent_stopped').length, 1);
+  assert.deepEqual(stopped.status.signals.map(signal => signal.kind), ['delegate', 'result']);
+  assert.doesNotMatch(JSON.stringify(stopped), /SECRET_PROMPT|SECRET_OUTPUT/);
+  assert.equal(stopped.status.agents[0].resumed_at, undefined);
+  assert.ok(stopped.events.filter(event => event.type === 'hook_dispatch').every(event => !event.message.includes('Codex')));
+});
+
 test('hook without native child or parent IDs does not fabricate a confirmed link', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
   const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
