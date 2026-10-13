@@ -21,9 +21,9 @@ function archiveEntries(tar) {
   return entries;
 }
 
-test('tracked engine export excludes development Task Specs and memory', () => {
+test('tracked engine export excludes legacy projects, development Task Specs and memory', () => {
   const tree = git('write-tree').toString('utf8').trim();
   const entries = archiveEntries(git('archive', '--format=tar', tree));
-  assert.ok(entries.includes('projects/example/project.json'), 'export contains the neutral project example');
+  assert.deepEqual(entries.filter(name => name.startsWith('projects/')), []);
   assert.deepEqual(entries.filter(name => /^\.ai\/(tasks|memory)\//.test(name)), []);
 });
