@@ -79,6 +79,21 @@ test('fixed config rejects a stale project path and malformed metadata without r
   }
 });
 
+test('fixed config accepts valid optional profile and rejects unknown profile', async () => {
+  const f = await fixedFixture();
+  const valid = JSON.parse(await readFile(f.configPath, 'utf8'));
+  for (const profile of ['core', 'all']) {
+    await writeFile(f.configPath, JSON.stringify({ ...valid, profile }));
+    assert.equal((await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot })).projectId, 'project');
+  }
+  for (const profile of ['unknown', null, 1]) {
+    await writeFile(f.configPath, JSON.stringify({ ...valid, profile }));
+    await assert.rejects(loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot }), /config/i);
+  }
+  await writeFile(f.configPath, JSON.stringify({ ...valid, profile: 'core', unexpected: true }));
+  await assert.rejects(loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot }), /config/i);
+});
+
 test('setup preview rejects an existing non-file config rather than treating it as absent', async () => {
   const f = await fixedFixture();
   await rename(f.configPath, `${f.configPath}-original`);

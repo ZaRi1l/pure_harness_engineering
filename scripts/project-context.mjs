@@ -142,7 +142,8 @@ async function gitIdentity(cwd, field) {
 
 function validateFixedConfig(config) {
   const keys = ['version', 'layout', 'projectPath', 'target', 'setupId', 'createdAt', 'updatedAt'];
-  if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).length !== keys.length || keys.some(key => !Object.hasOwn(config, key))) fail('INVALID_CONFIG', 'config');
+  if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).some(key => ![...keys, 'profile'].includes(key)) || keys.some(key => !Object.hasOwn(config, key)) ||
+      (Object.hasOwn(config, 'profile') && !['core', 'all'].includes(config.profile))) fail('INVALID_CONFIG', 'config');
   if (config.version !== 1 || config.layout !== 'single-project' || config.projectPath !== 'project' || !['codex', 'claude', 'opencode', 'antigravity'].includes(config.target)) fail('INVALID_CONFIG', 'config');
   if (typeof config.setupId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(config.setupId)) fail('INVALID_CONFIG', 'config');
   for (const name of ['createdAt', 'updatedAt']) {

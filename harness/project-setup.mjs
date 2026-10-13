@@ -10,6 +10,7 @@ const configName = '.harness/config.json';
 const journalName = '.harness/setup-journal.json';
 const targets = new Set(['codex', 'claude', 'opencode', 'antigravity']);
 const configKeys = ['version', 'layout', 'projectPath', 'target', 'setupId', 'createdAt', 'updatedAt'];
+const profiles = new Set(['core', 'all']);
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const iso = value => typeof value === 'string' && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
 
@@ -61,7 +62,7 @@ function git(cwd, args, { remote = false, allowFailure = false } = {}) {
 }
 function digest(plan) { const { planSha256, ...body } = plan; return hash(JSON.stringify(body)); }
 function bridgeSummary(plan) {
-  return { nativeSmoke: 'unverified', actions: plan.actions.map(({ path: file, action, beforeSha256, afterSha256 }) => ({ path: file, action, beforeSha256, afterSha256 })),
+  return { nativeSmoke: 'unverified', profile: plan.profile, actions: plan.actions.map(({ path: file, action, beforeSha256, afterSha256 }) => ({ path: file, action, beforeSha256, afterSha256 })),
     sourceHashes: plan.sourceHashes, conflicts: plan.actions.filter(item => item.action === 'conflict').map(item => item.path) };
 }
 async function readConfig(harnessRoot) {
@@ -69,7 +70,8 @@ async function readConfig(harnessRoot) {
   if (!bytes) return null;
   let data;
   try { data = JSON.parse(bytes); } catch { throw new Error('invalid setup config'); }
-  if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).length !== configKeys.length || configKeys.some(key => !Object.hasOwn(data, key)) ||
+  if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).some(key => ![...configKeys, 'profile'].includes(key)) || configKeys.some(key => !Object.hasOwn(data, key)) ||
+      (Object.hasOwn(data, 'profile') && !profiles.has(data.profile)) ||
       data.version !== 1 || data.layout !== 'single-project' || data.projectPath !== 'project' || !targets.has(data.target) || !uuid(data.setupId) || !iso(data.createdAt) || !iso(data.updatedAt)) throw new Error('invalid setup config');
   return { data, bytes };
 }
@@ -84,6 +86,7 @@ function checkedJournal(harnessRoot, journal) {
       !['preparing', 'displacing-empty', 'publishing', 'published', 'bridge-applied', 'rollback-blocked', 'recovering', 'rolled-back'].includes(journal.phase) ||
       journal.projectRoot !== path.join(path.resolve(harnessRoot), 'project') ||
       !['absent', 'empty', 'configured'].includes(journal.destinationState) || !targets.has(journal.target) ||
+      (journal.profile !== undefined && !profiles.has(journal.profile)) ||
       typeof journal.transaction !== 'string' || path.dirname(journal.transaction) !== stagingRoot ||
       !path.basename(journal.transaction).startsWith(`${journal.setupId}-`) || !uuid(path.basename(journal.transaction).slice(journal.setupId.length + 1)) ||
       journal.staged !== path.join(journal.transaction, 'project') || journal.displaced !== path.join(journal.transaction, 'empty-project') ||
@@ -208,7 +211,7 @@ async function lock(harnessRoot, fn, { recoverStale = false } = {}) {
   try { return await fn(); } finally { await handle.close(); await unlink(file); }
 }
 function assertPlan(plan, harnessRoot) {
-  if (!plan || plan.schemaVersion !== 1 || plan.planSha256 !== digest(plan) || plan.harnessRoot !== path.resolve(harnessRoot) || plan.projectRoot !== path.join(path.resolve(harnessRoot), 'project') || !targets.has(plan.target) || !['new', 'existing', 'update'].includes(plan.mode)) throw new Error('invalid or modified setup plan');
+  if (!plan || plan.schemaVersion !== 1 || plan.planSha256 !== digest(plan) || plan.harnessRoot !== path.resolve(harnessRoot) || plan.projectRoot !== path.join(path.resolve(harnessRoot), 'project') || !targets.has(plan.target) || !profiles.has(plan.profile) || !['new', 'existing', 'update'].includes(plan.mode)) throw new Error('invalid or modified setup plan');
 }
 async function childGit(root) {
   const dotGit = await stat(path.join(root, '.git'));
@@ -219,13 +222,14 @@ async function inventory({ harnessRoot, mode, source }) {
   return mode === 'existing' ? inspectSetupSource({ harnessRoot, mode, source }) : null;
 }
 
-export async function planProjectSetup({ harnessRoot, mode, source, target } = {}) {
-  if (typeof harnessRoot !== 'string' || !path.isAbsolute(harnessRoot) || !targets.has(target) || !['new', 'existing', 'update'].includes(mode)) throw new Error('invalid setup request');
+export async function planProjectSetup({ harnessRoot, mode, source, target, profile } = {}) {
+  if (typeof harnessRoot !== 'string' || !path.isAbsolute(harnessRoot) || !targets.has(target) || !['new', 'existing', 'update'].includes(mode) || (profile !== undefined && !profiles.has(profile))) throw new Error('invalid setup request/profile');
   const projectRoot = path.join(path.resolve(harnessRoot), 'project');
   await assertSafeSetupDestination({ harnessRoot, destination: projectRoot });
   await assertNoPendingJournal(harnessRoot);
   const prior = await readConfig(harnessRoot);
   if (mode === 'update' ? !prior : !!prior) throw new Error(mode === 'update' ? 'setup config required for update' : 'setup already exists; use update');
+  profile ??= mode === 'update' ? prior.data.profile ?? 'core' : 'all';
   if (mode !== 'existing' && source !== undefined) throw new Error('source only allowed for existing mode');
   let destinationState;
   if (mode === 'update') { await childGit(projectRoot); destinationState = 'configured'; }
@@ -241,9 +245,9 @@ export async function planProjectSetup({ harnessRoot, mode, source, target } = {
   const createdAt = prior?.data.createdAt ?? new Date().toISOString();
   const updatedAt = mode === 'update' ? new Date().toISOString() : createdAt;
   const inputRoot = mode === 'existing' && sourceReport.kind === 'local' ? sourceReport.canonicalSource : projectRoot;
-  const bridge = mode === 'existing' && sourceReport.kind === 'remote' ? { nativeSmoke: 'unverified', actions: [], sourceHashes: null, conflicts: [], warnings: ['remote-content-not-yet-inspected'] }
-    : bridgeSummary(await buildBridgePlan({ harnessRoot, projectRoot, inputRoot, target, setupId }));
-  const plan = { schemaVersion: 1, harnessRoot: path.resolve(harnessRoot), projectRoot, mode, target, setupId, createdAt, updatedAt,
+  const bridge = mode === 'existing' && sourceReport.kind === 'remote' ? { nativeSmoke: 'unverified', profile, actions: [], sourceHashes: null, conflicts: [], warnings: ['remote-content-not-yet-inspected'] }
+    : bridgeSummary(await buildBridgePlan({ harnessRoot, projectRoot, inputRoot, target, setupId, profile }));
+  const plan = { schemaVersion: 1, harnessRoot: path.resolve(harnessRoot), projectRoot, mode, target, profile, setupId, createdAt, updatedAt,
     source: sourceReport, destinationState, configSha256: prior ? hash(prior.bytes) : null, bridge,
     conflicts: [...sourceConflicts, ...bridge.conflicts], expectedHashes: { sourceFingerprint: sourceReport?.fingerprint ?? null, configSha256: prior ? hash(prior.bytes) : null,
       destinationState, destinationFingerprint: mode === 'update' ? await treeFingerprint(projectRoot) : null } };
@@ -267,7 +271,7 @@ async function revalidate(harnessRoot, plan) {
   }
   if (plan.mode !== 'existing' || plan.source.kind === 'local') {
     const inputRoot = plan.mode === 'existing' ? plan.source.canonicalSource : projectRoot;
-    const fresh = bridgeSummary(await buildBridgePlan({ harnessRoot, projectRoot, inputRoot, target: plan.target, setupId: plan.setupId }));
+    const fresh = bridgeSummary(await buildBridgePlan({ harnessRoot, projectRoot, inputRoot, target: plan.target, setupId: plan.setupId, profile: plan.profile }));
     if (JSON.stringify(fresh) !== JSON.stringify(plan.bridge)) throw new Error('bridge source or destination changed since planning');
   }
 }
@@ -398,7 +402,7 @@ export async function applyProjectSetup({ harnessRoot, plan } = {}, { beforeWrit
     const staged = path.join(transaction, 'project');
     const displaced = path.join(transaction, 'empty-project');
     const journal = { schemaVersion: 1, setupId: plan.setupId, mode: plan.mode, phase: 'preparing', projectRoot,
-      destinationState: plan.destinationState, target: plan.target, transaction, staged, displaced, stagedFingerprint: null, ignoredDirectories: [] };
+      destinationState: plan.destinationState, target: plan.target, profile: plan.profile, transaction, staged, displaced, stagedFingerprint: null, ignoredDirectories: [] };
     let published = false, bridgeApplied = false, emptyMoved = false, configWritten = false;
     let stagedFingerprint = null, ignoredDirectories = new Set(), bridgeBefore = [], createdDirectories = [], manifestBefore = null, manifestAfterHash = null;
     await mkdir(transaction, { recursive: true });
@@ -423,11 +427,11 @@ export async function applyProjectSetup({ harnessRoot, plan } = {}, { beforeWrit
           if (git(staged, ['rev-parse', 'HEAD']) !== plan.source.git.head) throw new Error('remote HEAD changed since planning');
           git(staged, [...safeGit, '-c', `core.hooksPath=${emptyTemplate}`, 'checkout', '--detach', plan.source.git.head], { remote: true });
         }
-        stageBridge = await buildBridgePlan({ harnessRoot, projectRoot, inputRoot: staged, target: plan.target, setupId: plan.setupId });
+        stageBridge = await buildBridgePlan({ harnessRoot, projectRoot, inputRoot: staged, target: plan.target, setupId: plan.setupId, profile: plan.profile });
         ignoredDirectories = managedDirectories(stageBridge.actions);
         if (stageBridge.actions.some(item => item.action === 'conflict')) throw new Error('staged bridge review conflict; plan from a local checkout');
         if (plan.mode !== 'existing' || plan.source.kind === 'local') {
-          if (!equalBridgeActions(stageBridge, { actions: plan.bridge.actions, sourceHashes: plan.bridge.sourceHashes })) throw new Error('staged bridge differs from reviewed plan');
+          if (!equalBridgeActions(stageBridge, plan.bridge)) throw new Error('staged bridge differs from reviewed plan');
         }
         await beforeWrite?.('after-staging');
         await revalidate(harnessRoot, plan);
@@ -443,9 +447,9 @@ export async function applyProjectSetup({ harnessRoot, plan } = {}, { beforeWrit
         journal.phase = 'published'; await atomic(journalFile, JSON.stringify(journal));
         await beforeWrite?.('after-publish');
       }
-      const canonical = await buildBridgePlan({ harnessRoot, projectRoot, target: plan.target, setupId: plan.setupId });
+      const canonical = await buildBridgePlan({ harnessRoot, projectRoot, target: plan.target, setupId: plan.setupId, profile: plan.profile });
       if (stageBridge && !equalBridgeActions(stageBridge, canonical)) throw new Error('canonical bridge differs from staged preview');
-      if (!stageBridge && !equalBridgeActions(canonical, { actions: plan.bridge.actions, sourceHashes: plan.bridge.sourceHashes })) throw new Error('bridge changed since planning');
+      if (!stageBridge && !equalBridgeActions(canonical, plan.bridge)) throw new Error('bridge changed since planning');
       if (plan.mode === 'update') {
         for (const item of canonical.actions.filter(item => item.action !== 'unchanged')) {
           bridgeBefore.push({ path: item.path, before: await content(path.join(projectRoot, ...item.path.split('/'))), afterSha256: item.afterSha256 });
@@ -459,7 +463,7 @@ export async function applyProjectSetup({ harnessRoot, plan } = {}, { beforeWrit
       bridgeApplied = true;
       if (plan.mode === 'update') manifestAfterHash = hash(await readFile(path.join(harnessRoot, `.harness/adapters/${plan.target}.json`)));
       journal.phase = 'bridge-applied'; await atomic(journalFile, JSON.stringify(journal));
-      const config = { version: 1, layout: 'single-project', projectPath: 'project', target: plan.target, setupId: plan.setupId, createdAt: plan.createdAt, updatedAt: plan.updatedAt };
+      const config = { version: 1, layout: 'single-project', projectPath: 'project', target: plan.target, profile: plan.profile, setupId: plan.setupId, createdAt: plan.createdAt, updatedAt: plan.updatedAt };
       await beforeWrite?.('before-config');
       if (plan.mode === 'update') await atomic(path.join(transaction, 'prior-config'), (await readConfig(harnessRoot)).bytes);
       await atomic(path.join(harnessRoot, configName), `${JSON.stringify(config, null, 2)}\n`);
@@ -476,7 +480,7 @@ export async function applyProjectSetup({ harnessRoot, plan } = {}, { beforeWrit
         if (configWritten) {
           const configFile = path.join(harnessRoot, configName);
           const current = await content(configFile);
-          const expected = hash(Buffer.from(`${JSON.stringify({ version: 1, layout: 'single-project', projectPath: 'project', target: plan.target, setupId: plan.setupId, createdAt: plan.createdAt, updatedAt: plan.updatedAt }, null, 2)}\n`));
+          const expected = hash(Buffer.from(`${JSON.stringify({ version: 1, layout: 'single-project', projectPath: 'project', target: plan.target, profile: plan.profile, setupId: plan.setupId, createdAt: plan.createdAt, updatedAt: plan.updatedAt }, null, 2)}\n`));
           if (!current || hash(current) !== expected) throw new Error('config drift during rollback');
           if (plan.mode === 'update') {
             await atomic(configFile, await readFile(path.join(transaction, 'prior-config')));

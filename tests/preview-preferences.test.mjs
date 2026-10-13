@@ -212,6 +212,8 @@ test('AI tool switching guide gives the existing-project update path in both loc
     assert.match(preferences.t('guide.switch.title'), locale === 'en' ? /Switch AI tools/ : /AI 도구 전환/);
     for (const expected of ['npm run setup', 'codex', 'claude', 'opencode', 'antigravity', 'apply &lt;12', 'project/', 'npm run init']) assert.ok(body.includes(expected), `${locale}: ${expected}`);
     assert.match(body, locale === 'en' ? /configured project enters update mode.*Review the plan and conflicts.*Do not run.*init.*again/s : /설정한 프로젝트는 업데이트 모드.*계획과 충돌을 검토.*init.*다시 실행하지 마세요/s);
+    assert.match(body, /--profile core\|all/);
+    assert.match(body, locale === 'en' ? /Legacy configs without a profile use core.*does not automatically delete previously installed extras/s : /이전 설정에 프로필이 없으면 core.*전에 설치된 추가 파일은 자동 삭제하지 않습니다/s);
     assert.match(body, locale === 'en' ? /does not remove product source or runtime data.*native behavior.*remains unverified/s : /제품 소스나 runtime 데이터를 삭제하지 않습니다.*네이티브 동작.*미검증/s);
   }
 });

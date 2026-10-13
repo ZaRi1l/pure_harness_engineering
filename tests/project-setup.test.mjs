@@ -7,6 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { planProjectSetup, applyProjectSetup, recoverProjectSetup } from '../harness/project-setup.mjs';
+import { loadFixedProjectContext } from '../scripts/project-context.mjs';
+import { RuntimeStore, runCli } from '../scripts/runtime-state.mjs';
+import { renderStatus } from '../scripts/status.mjs';
 
 const engine = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -54,9 +57,80 @@ test('new plan is read-only, metadata-only, and apply creates isolated child Git
   assert.equal(git(f.projectRoot, 'remote'), '');
   assert.equal(result.nativeSmoke, 'unverified');
   const config = JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/config.json')));
-  assert.deepEqual(Object.keys(config), ['version', 'layout', 'projectPath', 'target', 'setupId', 'createdAt', 'updatedAt']);
+  assert.deepEqual(Object.keys(config), ['version', 'layout', 'projectPath', 'target', 'profile', 'setupId', 'createdAt', 'updatedAt']);
+  assert.equal(config.profile, 'all');
   assert.equal(config.projectPath, 'project');
   assert.equal(config.setupId, plan.setupId);
+});
+
+test('applied profile config remains loadable as fixed project context', async t => {
+  const f = await fixture(t);
+  git(f.harnessRoot, 'init', '-q');
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'codex', profile: 'all' });
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan });
+  const context = await loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.harnessRoot });
+  assert.equal(context.projectRoot.toLowerCase(), f.projectRoot.toLowerCase());
+  await runCli(['init'], { harnessRoot: f.harnessRoot, cwd: f.harnessRoot });
+  assert.match(renderStatus(await new RuntimeStore(context).readSnapshot()), /Pure Harness/);
+});
+
+test('all profile applies to every target and core downgrade retains owned extras', async t => {
+  for (const target of ['codex', 'claude', 'opencode', 'antigravity']) {
+    const f = await fixture(t);
+    const first = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target, profile: 'all' });
+    assert.equal(first.profile, 'all');
+    assert.equal(Object.keys(first.bridge.sourceHashes.roles).length, 15);
+    await applyProjectSetup({ harnessRoot: f.harnessRoot, plan: first });
+    const manifestPath = path.join(f.harnessRoot, `.harness/adapters/${target}.json`);
+    const before = JSON.parse(await readFile(manifestPath));
+    const extras = before.actions.filter(item => item.path.includes('researcher') || item.path.includes('context-curation/SKILL.md'));
+    assert.equal(extras.length, 2);
+    const extraBytes = new Map(await Promise.all(extras.map(async item => [item.path, await readFile(path.join(f.projectRoot, ...item.path.split('/')))])));
+    const core = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'update', target, profile: 'core' });
+    assert.equal(Object.keys(core.bridge.sourceHashes.roles).length, 5);
+    await applyProjectSetup({ harnessRoot: f.harnessRoot, plan: core });
+    const after = JSON.parse(await readFile(manifestPath));
+    for (const item of extras) {
+      const retained = after.actions.find(entry => entry.path === item.path);
+      assert.deepEqual(retained, item);
+      assert.equal(retained.ownership, 'harness-managed');
+      assert.equal(sha(await readFile(path.join(f.projectRoot, ...item.path.split('/')))), item.afterSha256);
+      assert.deepEqual(await readFile(path.join(f.projectRoot, ...item.path.split('/'))), extraBytes.get(item.path));
+    }
+    assert.equal(JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/config.json'))).profile, 'core');
+  }
+});
+
+test('legacy config without profile plans a core update', async t => {
+  const f = await fixture(t);
+  const first = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'codex', profile: 'core' });
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan: first });
+  const file = path.join(f.harnessRoot, '.harness/config.json');
+  const legacy = JSON.parse(await readFile(file));
+  delete legacy.profile;
+  await writeFile(file, `${JSON.stringify(legacy, null, 2)}\n`);
+  const update = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'update', target: 'codex' });
+  assert.equal(update.profile, 'core');
+  assert.equal(Object.keys(update.bridge.sourceHashes.roles).length, 5);
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan: update });
+  assert.equal(JSON.parse(await readFile(file)).profile, 'core');
+});
+
+test('profile tampering and invalid profile fail before writes', async t => {
+  const f = await fixture(t);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'codex', profile: 'all' });
+  await assert.rejects(applyProjectSetup({ harnessRoot: f.harnessRoot, plan: { ...plan, profile: 'core' } }), /plan|modified/i);
+  await assert.rejects(planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'codex', profile: 'bad' }), /profile|request/i);
+  assert.equal(await exists(f.projectRoot), false);
+});
+
+test('all profile source drift is rejected before child publish', async t => {
+  const f = await fixture(t);
+  const sourceFile = path.join(f.harnessRoot, 'harness/agents/context-curator.md');
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude', profile: 'all' });
+  await writeFile(sourceFile, `${await readFile(sourceFile, 'utf8')}\nchanged after plan\n`);
+  await assert.rejects(applyProjectSetup({ harnessRoot: f.harnessRoot, plan }), /bridge source|changed since planning/i);
+  assert.equal(await exists(f.projectRoot), false);
 });
 
 test('existing local apply preserves complete Git metadata, dirty, untracked, ignored, and source bytes', async t => {
@@ -260,6 +334,7 @@ test('crash after publish requires explicit recovery and refuses outside drift',
   const journalPath = path.join(f.harnessRoot, '.harness/setup-journal.json');
   const journal = JSON.parse(await readFile(journalPath));
   assert.equal(journal.phase, 'published');
+  assert.equal(journal.profile, 'all');
   assert.equal(await exists(journal.displaced), true);
   assert.equal(await exists(f.projectRoot), true);
   await assert.rejects(planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' }), /journal|recover/i);

@@ -31,6 +31,9 @@ test('plan-only emits one metadata JSON plan without creating management or chil
   const plan = JSON.parse(f.output.stdout);
   assert.equal(plan.mode, 'new');
   assert.equal(plan.target, 'codex');
+  assert.equal(plan.profile, 'all');
+  assert.equal(Object.keys(plan.bridge.sourceHashes.roles).length, 15);
+  assert.equal(Object.keys(plan.bridge.sourceHashes.skills).filter(key => key.endsWith('/SKILL.md')).length, 8);
   assert.match(plan.planSha256, /^[a-f0-9]{64}$/);
   assert.equal(await exists(path.join(f.harnessRoot, '.harness')), false);
   assert.equal(await exists(path.join(f.harnessRoot, 'project')), false);
@@ -64,8 +67,34 @@ test('configured target-only plan is update and invalid or legacy flags fail clo
   f.output.stdout = '';
   assert.equal(await main(['--target', 'claude', '--plan'], f.io), 0);
   assert.equal(JSON.parse(f.output.stdout).mode, 'update');
+  assert.equal(JSON.parse(f.output.stdout).profile, 'all');
+  assert.equal(await main(['--profile', 'invalid', '--plan'], f.io), 1);
+  assert.equal(await main(['--profile', 'core', '--profile', 'all', '--plan'], f.io), 1);
   assert.equal(await main(['--project', 'other', '--plan'], f.io), 1);
   assert.equal(await main(['--mode', 'new', '--source', 'anything', '--plan'], f.io), 1);
+});
+
+test('explicit core profile persists and update keeps it unless overridden', async t => {
+  const f = await fixture(t);
+  assert.equal(await main(['--mode', 'new', '--profile', 'core', '--plan'], f.io), 0);
+  const first = JSON.parse(f.output.stdout);
+  assert.equal(first.profile, 'core');
+  assert.equal(Object.keys(first.bridge.sourceHashes.roles).length, 5);
+  const file = path.join(path.dirname(f.harnessRoot), 'core-plan.json');
+  await writeFile(file, JSON.stringify(first));
+  assert.equal(await main(['--apply', file], f.io), 0);
+  assert.equal(JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/config.json'))).profile, 'core');
+  f.output.stdout = '';
+  assert.equal(await main(['--plan'], f.io), 0);
+  assert.equal(JSON.parse(f.output.stdout).profile, 'core');
+  f.output.stdout = '';
+  assert.equal(await main(['--profile', 'all', '--plan'], f.io), 0);
+  const update = JSON.parse(f.output.stdout);
+  assert.equal(update.profile, 'all');
+  await writeFile(file, JSON.stringify(update));
+  f.output.stdout = '';
+  assert.equal(await main(['--apply', file], f.io), 0);
+  assert.doesNotMatch(f.output.stdout, /npm run init/);
 });
 
 test('interactive setup displays reviewed plan and writes only after exact hash confirmation', async t => {
@@ -76,6 +105,7 @@ test('interactive setup displays reviewed plan and writes only after exact hash 
     output += value;
     if (value.includes('Project mode')) input.write('new\n');
     else if (value.includes('Target [')) input.write('\n');
+    else if (value.includes('AI profile [')) input.write('\n');
     else if (value.includes('Confirmation:')) {
       const hash = /"planSha256": "([a-f0-9]{64})"/.exec(output)?.[1];
       input.write(`apply ${hash?.slice(0, 12)}\n`);
@@ -86,6 +116,28 @@ test('interactive setup displays reviewed plan and writes only after exact hash 
   assert.match(output, /Verification limit:/);
   assert.equal(JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/config.json'))).target, 'codex');
   assert.match(output, /npm run init/);
+});
+
+test('interactive update offers saved profile and can change it', async t => {
+  const f = await fixture(t);
+  assert.equal(await main(['--mode', 'new', '--profile', 'core', '--plan'], f.io), 0);
+  const file = path.join(path.dirname(f.harnessRoot), 'initial.json');
+  await writeFile(file, f.output.stdout);
+  assert.equal(await main(['--apply', file], f.io), 0);
+  const input = new PassThrough();
+  let output = '';
+  const io = { harnessRoot: f.harnessRoot, stdin: input, stderr: f.io.stderr, stdout: { write(value) {
+    output += value;
+    if (value.includes('Target [')) input.write('codex\n');
+    else if (value.includes('AI profile [')) input.write('all\n');
+    else if (value.includes('Confirmation:')) {
+      const digest = /"planSha256": "([a-f0-9]{64})"/.exec(output)?.[1];
+      input.write(`apply ${digest?.slice(0, 12)}\n`);
+    }
+  } } };
+  assert.equal(await main([], io), 0);
+  assert.match(output, /AI profile \[all\/core\] \(core\):/);
+  assert.equal(JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/config.json'))).profile, 'all');
 });
 
 test('interactive existing source is prompted and unconfirmed plan remains read-only', async t => {
@@ -105,6 +157,7 @@ test('interactive existing source is prompted and unconfirmed plan remains read-
     if (value.includes('Project mode')) input.write('existing\n');
     else if (value.includes('Existing local path')) input.write(`${source}\n`);
     else if (value.includes('Target [')) input.write('claude\n');
+    else if (value.includes('AI profile [')) input.write('core\n');
     else if (value.includes('Confirmation:')) input.write('no\n');
   } } };
   assert.equal(await main([], io), 1);

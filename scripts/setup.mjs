@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline/promises';
 import { getScriptHarnessRoot } from './project-context.mjs';
 import { applyProjectSetup, planProjectSetup, recoverProjectSetup } from '../harness/project-setup.mjs';
 
-const flags = new Set(['--mode', '--source', '--target', '--apply']);
+const flags = new Set(['--mode', '--source', '--target', '--profile', '--apply']);
 const targets = new Set(['codex', 'claude', 'opencode', 'antigravity']);
 function parse(argv) {
   const options = Object.create(null);
@@ -29,13 +29,14 @@ function parse(argv) {
   if (options.recover && Object.keys(options).length !== 1) throw new Error('--recover cannot be combined with setup options');
   if (options['--mode'] && !['new', 'existing'].includes(options['--mode'])) throw new Error('invalid mode');
   if (options['--target'] && !targets.has(options['--target'])) throw new Error('invalid target');
+  if (options['--profile'] && !['core', 'all'].includes(options['--profile'])) throw new Error('invalid profile');
   if (options['--source'] && options['--mode'] !== 'existing') throw new Error('source requires --mode existing');
   if (options.plan && options['--mode'] === 'existing' && !options['--source']) throw new Error('existing mode requires source');
   return options;
 }
 async function configured(harnessRoot) {
-  try { await readFile(path.join(harnessRoot, '.harness/config.json')); return true; }
-  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  try { return JSON.parse(await readFile(path.join(harnessRoot, '.harness/config.json'), 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 function describe(plan) {
   return [
@@ -45,8 +46,8 @@ function describe(plan) {
     `To apply, enter exactly: apply ${plan.planSha256.slice(0, 12)}`,
   ].join('\n');
 }
-function nextSteps(io) {
-  io.stdout.write('From the Harness root, run once: npm run init\nThen use: npm run status\nFor the live dashboard: npm run preview:live\n');
+function nextSteps(io, mode) {
+  io.stdout.write(`${mode === 'update' ? 'Existing runtime is preserved; do not rerun init.\n' : 'From the Harness root, run once: npm run init\n'}Then use: npm run status\nFor the live dashboard: npm run preview:live\n`);
 }
 
 export async function main(argv = process.argv.slice(2), io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }) {
@@ -67,18 +68,19 @@ export async function main(argv = process.argv.slice(2), io = { stdin: process.s
       const plan = JSON.parse(await readFile(path.resolve(options['--apply']), 'utf8'));
       const result = await applyProjectSetup({ harnessRoot, plan });
       io.stdout.write(`${JSON.stringify(result)}\n`);
-      nextSteps(io);
+      nextSteps(io, plan.mode);
       return 0;
     }
     let mode = options['--mode'];
     let source = options['--source'];
     let target = options['--target'];
+    let profile = options['--profile'];
     const alreadyConfigured = await configured(harnessRoot);
     if (!mode && alreadyConfigured) mode = 'update';
     if (options.plan) {
       mode ??= 'new';
       target ??= 'codex';
-      const plan = await planProjectSetup({ harnessRoot, mode, source, target });
+      const plan = await planProjectSetup({ harnessRoot, mode, source, target, profile });
       io.stdout.write(`${JSON.stringify(plan)}\n`);
       return 0;
     }
@@ -91,14 +93,18 @@ export async function main(argv = process.argv.slice(2), io = { stdin: process.s
       }
       if (mode === 'existing' && !source) source = (await prompt.question('Existing local path or remote URL: ')).trim();
       if (!target) target = (await prompt.question('Target [codex/claude/opencode/antigravity] (codex): ')).trim().toLowerCase() || 'codex';
-      const plan = await planProjectSetup({ harnessRoot, mode, source, target });
+      if (!profile) {
+        const fallback = mode === 'update' ? alreadyConfigured?.profile ?? 'core' : 'all';
+        profile = (await prompt.question(`AI profile [all/core] (${fallback}): `)).trim().toLowerCase() || fallback;
+      }
+      const plan = await planProjectSetup({ harnessRoot, mode, source, target, profile });
       io.stdout.write(`${describe(plan)}\n`);
       if (plan.conflicts.length) return 1;
       const answer = (await prompt.question('Confirmation: ')).trim();
       if (answer !== `apply ${plan.planSha256.slice(0, 12)}`) { io.stderr.write('Setup not applied: confirmation did not match.\n'); return 1; }
       const result = await applyProjectSetup({ harnessRoot, plan });
       io.stdout.write(`${JSON.stringify(result)}\n`);
-      nextSteps(io);
+      nextSteps(io, plan.mode);
       return 0;
     } finally { prompt.close(); }
   } catch (error) {
