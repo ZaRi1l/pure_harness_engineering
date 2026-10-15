@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { handleHook, runHook } from '../scripts/hook-runtime.mjs';
@@ -9,6 +10,82 @@ import { RuntimeStore } from '../scripts/runtime-state.mjs';
 import { fixedFixture } from './support/fixed-project-fixture.mjs';
 
 const legacyHook = (payload, root) => handleHook(payload, RuntimeStore.legacyFixture(root));
+
+test('explicit source tags dispatch without trusting payload source or body; invalid sources stay unknown', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  const payload = { hook_event_name: 'SubagentStart', agent_id: 'child-1', agent_type: 'impact-analyzer', source: 'codex', prompt: 'SECRET_PROMPT' };
+  await handleHook(payload, store, { source: 'claude' });
+  await handleHook({ ...payload, hook_event_name: 'SubagentStop' }, store, { source: 'codex' });
+  await handleHook({ ...payload, hook_event_name: 'SessionEnd' }, store, { source: 'SECRET_SOURCE' });
+  const snapshot = await store.readSnapshot();
+  assert.equal(snapshot.status.agents[0].role, 'impact-analyzer');
+  assert.deepEqual(snapshot.events.filter(event => event.type === 'hook_dispatch').map(event => event.data.source_tool), ['claude', 'codex', 'unknown']);
+  assert.equal(snapshot.events.find(event => event.type === 'agent_started').data.source_tool, 'claude');
+  assert.equal(snapshot.events.find(event => event.type === 'agent_stopped').data.source_tool, 'codex');
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET_PROMPT|SECRET_SOURCE/);
+});
+
+test('conflicting native lifecycle IDs cannot start a child or stop one and release its claim', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  await handleHook({ hook_event_name: 'SubagentStart', agent_id: 'parent-id', subagent_id: 'child-id', prompt: 'SECRET_PROMPT' }, store);
+  assert.deepEqual((await store.readStatus()).agents, []);
+  await handleHook({ hook_event_name: 'SubagentStart', subagent_id: 'parent-id' }, store);
+  await store.claim('parent-id', ['src/parent']);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'parent-id', subagent_id: 'child-id', agent_transcript_path: 'SECRET_PATH' }, store);
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.status.active_agents.map(agent => agent.id), ['parent-id']);
+  assert.deepEqual(snapshot.claims.claims.map(claim => claim.agent_id), ['parent-id']);
+  assert.equal(snapshot.events.filter(event => event.type === 'agent_started').length, 1);
+  assert.equal(snapshot.events.filter(event => event.type === 'agent_stopped').length, 0);
+  assert.deepEqual(snapshot.events.filter(event => event.type === 'hook_lifecycle_diagnostic').map(event => [event.data.hook_event, event.data.disposition]),
+    [['SubagentStart', 'missing_or_ambiguous']]);
+  assert.deepEqual(snapshot.events.filter(event => event.type === 'hook_stop_diagnostic').map(event => [event.data.disposition, event.data.agent_id]),
+    [['missing_or_ambiguous', undefined]]);
+  assert.doesNotMatch(JSON.stringify(snapshot), /child-id|SECRET_PROMPT|SECRET_PATH/);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'parent-id', subagent_id: 'parent-id' }, store);
+  assert.deepEqual((await store.readSnapshot()).claims.claims, []);
+});
+
+test('Antigravity camelCase tool payloads write diagnostics only, never lifecycle or private prompt fields', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  for (const [event, name] of [['PreToolUse', 'invoke_subagent'], ['PostToolUse', 'manage_subagents']])
+    await handleHook({ hookEventName: event, toolCall: { name, args: { Subagents: [{ Model: 'SECRET_MODEL', Prompt: 'SECRET_PROMPT', Role: 'SECRET_ROLE', TypeName: 'SECRET_TYPE' }] } },
+      agentId: 'candidate-id', subagentId: 'candidate-child', cwd: root }, store, { source: 'antigravity' });
+  await handleHook({ hookEventName: 'PreToolUse', toolCall: { name: 'read_file', args: { Prompt: 'SECRET_PROMPT' } }, cwd: root }, store, { source: 'antigravity' });
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.status.agents, []);
+  assert.deepEqual(snapshot.events.filter(event => event.type === 'hook_lifecycle_diagnostic').map(event => [event.data.hook_event, event.data.tool_category, event.data.disposition]), [
+    ['PreToolUse', 'invoke_subagent', 'unverified_payload'], ['PostToolUse', 'manage_subagents', 'unverified_payload'],
+  ]);
+  assert.equal(snapshot.events.some(event => event.type === 'agent_started' || event.type === 'agent_stopped'), false);
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET_|candidate-id|candidate-child/);
+});
+
+test('Codex close and interrupt callbacks remain categorical and cannot stop active agents', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  await store.agentStarted('child-1', 'worker', '', { source: 'hook' });
+  for (const tool_name of ['close_agent', 'interrupt_agent'])
+    await handleHook({ hook_event_name: 'PostToolUse', tool_name, tool_input: { agent_id: 'child-1', prompt: 'SECRET_PROMPT' },
+      tool_response: { agent_id: 'child-1', output: 'SECRET_OUTPUT' } }, store, { source: 'codex' });
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.status.active_agents.map(agent => agent.id), ['child-1']);
+  assert.deepEqual(snapshot.events.filter(event => event.type === 'hook_lifecycle_diagnostic').map(event => event.data.tool_category), ['close_agent', 'interrupt_agent']);
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET_PROMPT|SECRET_OUTPUT/);
+});
+
+test('runtime hook recognizes every canonical role ID', async () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const all = await (await import('../harness/inventory.mjs')).loadRoles(root, 'all');
+  for (const role of all) {
+    const runtime = RuntimeStore.legacyFixture(await mkdtemp(path.join(tmpdir(), 'pure-hook-role-')));
+    await handleHook({ hook_event_name: 'SubagentStart', agent_id: `role-${role.id}`, agent_type: role.id }, runtime);
+    assert.equal((await runtime.readStatus()).agents[0].role, role.id);
+  }
+});
 
 test('anchored hook reaches fixed child runtime and ignores outside checkout without leaking prompt', async () => {
   const f = await fixedFixture();
@@ -45,6 +122,80 @@ test('Claude project hooks record native start and stop without inferring a resu
   assert.doesNotMatch(JSON.stringify(stopped), /SECRET_PROMPT|SECRET_OUTPUT/);
   assert.equal(stopped.status.agents[0].resumed_at, undefined);
   assert.ok(stopped.events.filter(event => event.type === 'hook_dispatch').every(event => !event.message.includes('Codex')));
+});
+
+test('synthetic Claude Agent callback joins exact native child and session, including after a stop', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  const start = (agent_id, session_id) => handleHook({ hook_event_name: 'SubagentStart', agent_id, session_id,
+    prompt: 'PRIVATE_PROMPT_BODY' }, store, { source: 'claude' });
+  const callback = (agentId, session_id, description = 'Review graph clarity') => handleHook({
+    hook_event_name: 'PostToolUse', tool_name: 'Agent', session_id,
+    tool_input: { description, prompt: 'PRIVATE_INPUT_BODY' },
+    tool_response: { agentId, output: 'PRIVATE_RESPONSE_BODY' }
+  }, store, { source: 'claude' });
+  await start('child-1', 'session-1');
+  await callback('child-1', 'session-1');
+  assert.equal((await store.readStatus()).active_agents[0].short_title, 'Review graph clarity');
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'child-1' }, store, { source: 'claude' });
+  await callback('child-1', 'session-1', 'Final graph review');
+  const snapshot = await store.readSnapshot();
+  assert.equal(snapshot.status.agents[0].short_title, 'Final graph review');
+  assert.deepEqual(snapshot.status.active_agents, []);
+  assert.equal(snapshot.events.filter(event => event.type === 'agent_started').length, 1);
+  assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE_PROMPT_BODY|PRIVATE_INPUT_BODY|PRIVATE_RESPONSE_BODY/);
+});
+
+test('synthetic Agent title callback rejects mismatched, missing, secret-looking, and cross-source data', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  const start = (agent_id, session_id, source = 'claude') => handleHook({ hook_event_name: 'SubagentStart', agent_id, session_id }, store, { source });
+  await start('child-1', 'session-1');
+  await start('child-2', 'session-2');
+  await start('codex-child', 'session-1', 'codex');
+  for (const [agentId, sessionId, description, source] of [
+    ['unknown', 'session-1', 'Unmatched', 'claude'], ['child-1', 'session-2', 'Wrong session', 'claude'],
+    [undefined, 'session-1', 'Missing child', 'claude'], ['INVALID ID', 'session-1', 'Invalid child', 'claude'],
+    ['child-1', undefined, 'Missing session', 'claude'], ['child-1', 'INVALID ID', 'Invalid session', 'claude'],
+    ['child-1', 'session-1', 'password=PRIVATE_PASSWORD', 'claude'],
+    ['child-1', 'session-1', 'PRIVATE\nMULTILINE', 'claude'],
+    ['child-1', 'session-1', 'L'.repeat(61), 'claude'],
+    ['child-1', 'session-1', 'Codex title', 'codex'], ['codex-child', 'session-1', 'Non-Claude title', 'claude']
+  ]) await handleHook({ hook_event_name: 'PostToolUse', tool_name: 'Agent', session_id: sessionId,
+    tool_input: { description, prompt: 'PRIVATE_INPUT' }, tool_response: { agentId, output: 'PRIVATE_OUTPUT' } }, store, { source });
+  const snapshot = await store.readSnapshot();
+  assert.ok(snapshot.status.agents.every(agent => !agent.short_title));
+  assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE_INPUT|PRIVATE_OUTPUT|PRIVATE_PASSWORD|Wrong session|Unmatched|Codex title|Non-Claude title/);
+});
+
+test('synthetic Claude SessionEnd marks only its session unverified without stop or claim release', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  const hook = (payload, source = 'claude') => handleHook(payload, store, { source });
+  await hook({ hook_event_name: 'SubagentStart', agent_id: 'child-1', session_id: 'session-1' });
+  await hook({ hook_event_name: 'SubagentStart', agent_id: 'child-2', session_id: 'session-2' });
+  await hook({ hook_event_name: 'SubagentStart', agent_id: 'codex-child', session_id: 'session-1' }, 'codex');
+  await store.claim('child-1', ['src/one']);
+  await hook({ hook_event_name: 'SessionEnd', session_id: 'INVALID ID' });
+  await hook({ hook_event_name: 'SessionEnd', session_id: 'session-1' }, 'codex');
+  await hook({ hook_event_name: 'SessionEnd', session_id: 'session-1' });
+  const first = await store.readSnapshot();
+  assert.equal(first.status.active_agents.length, 3);
+  assert.equal(first.status.active_agents.find(agent => agent.id === 'child-1').status, 'running');
+  assert.ok(first.status.active_agents.find(agent => agent.id === 'child-1').session_ended_at);
+  assert.ok(first.status.active_agents.filter(agent => agent.id !== 'child-1').every(agent => !agent.session_ended_at));
+  assert.equal(first.status.signals.filter(signal => signal.kind === 'result').length, 0);
+  assert.equal(first.events.filter(event => event.type === 'agent_stopped').length, 0);
+  assert.deepEqual(first.claims.claims.map(claim => claim.agent_id), ['child-1']);
+  const endedAt = first.status.agents.find(agent => agent.id === 'child-1').session_ended_at;
+  await hook({ hook_event_name: 'SessionEnd', session_id: 'session-1' });
+  assert.equal((await store.readStatus()).agents.find(agent => agent.id === 'child-1').session_ended_at, endedAt);
+  await hook({ hook_event_name: 'SubagentStop', agent_id: 'child-1', session_id: 'session-1' });
+  const stopped = await store.readSnapshot();
+  assert.equal(stopped.status.agents.find(agent => agent.id === 'child-1').status, 'stopped');
+  assert.deepEqual(stopped.status.active_agents.map(agent => agent.id).sort(), ['child-2', 'codex-child']);
+  assert.deepEqual(stopped.claims.claims, []);
+  assert.equal(stopped.status.signals.filter(signal => signal.kind === 'result').length, 1);
 });
 
 test('stop dispatch distinguishes missing, unknown, stale, mismatched, stopped, and duplicate without payload bodies', async () => {
@@ -98,7 +249,7 @@ test('TaskStop callback diagnostic stores only categorical facts and never stops
       message: 'Successfully stopped task: a1aed61c61cefb817 (SECRET_RESPONSE)' } }, store);
   const snapshot = await store.readSnapshot();
   assert.deepEqual(snapshot.events.filter(event => event.type === 'taskstop_callback_diagnostic').map(event => event.data), [{
-    hook_event: 'PostToolUse', input_id: 'valid', response_id: 'missing_or_invalid', task_type: 'local_agent', success_marker: 'other_or_missing',
+    hook_event: 'PostToolUse', source_tool: 'unknown', input_id: 'valid', response_id: 'missing_or_invalid', task_type: 'local_agent', success_marker: 'other_or_missing',
   }]);
   assert.deepEqual(snapshot.status.active_agents.map(agent => agent.id), ['a1aed61c61cefb817']);
   assert.doesNotMatch(JSON.stringify(snapshot), /SECRET_INPUT|SECRET_RESPONSE/);

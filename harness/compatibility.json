@@ -11,14 +11,14 @@
   },
   "targets": {
     "codex": {
-      "testedCliVersion": "codex-cli 0.153.4", "nativeSmoke": "unverified",
+      "testedCliVersion": "codex-cli 0.161.0", "nativeSmoke": "unverified",
       "renderedFields": ["name", "description", "model", "model_reasoning_effort", "sandbox_mode", "developer_instructions"],
       "renderedSyntax": "TOML string assignments in .codex/agents/<id>.toml; config registration remains separate migration",
       "agentDocs": "https://developers.openai.com/codex/multi-agent/",
       "supportedFields": ["config [agents.<id>] description", "config_file", "agent TOML name", "description", "model", "model_reasoning_effort", "sandbox_mode", "developer_instructions"],
       "skillDocs": "https://developers.openai.com/codex/skills/",
       "skillDiscovery": "Documented repository .agents/skills directory for pinned CLI; native smoke unverified.",
-      "skillDiscoveryEvidence": {"status": "documented-native", "version": "codex-cli 0.153.4", "directory": ".agents/skills", "source": "https://developers.openai.com/codex/skills/"},
+      "skillDiscoveryEvidence": {"status": "documented-native", "version": "codex-cli 0.161.0", "directory": ".agents/skills", "source": "https://developers.openai.com/codex/skills/"},
       "caveat": "Prompt wording alone does not enforce read-only behavior; current config and hooks remain hand-owned."
     },
     "claude": {
@@ -43,14 +43,14 @@
       "caveat": "No executable found locally; native loading and tool behavior unverified."
     },
     "antigravity": {
-      "testedCliVersion": null, "nativeSmoke": "unverified",
+      "testedCliVersion": "agy 1.3.5", "nativeSmoke": "unverified", "hooks": "opt-in/unverified; Windows issue #257",
       "renderedFields": ["name", "description", "subagent", "mainAgent", "model", "tools"],
       "renderedSyntax": "YAML frontmatter in .agents/agents/<id>/agent.md",
       "agentDocs": "https://www.antigravity.google/docs/subagents/",
       "supportedFields": ["name", "description", "tools", "subagent", "mainAgent", "model: inherit|flash|pro", "commandExecutionPolicy", "skills"],
       "skillDocs": "https://www.antigravity.google/docs/skills/",
       "skillDiscovery": "Documentation lists workspace .agents/skills/<skill-folder>/; no local CLI smoke.",
-      "caveat": "No executable found locally; native loading and tool behavior unverified."
+      "caveat": "agy 1.3.5 on Windows dispatched PreToolUse for invoke_subagent/manage_subagents; no native subagent ID or confirmed PostToolUse captured. Lifecycle remains diagnostic-only and unverified (Windows issue #257)."
     }
   }
 }

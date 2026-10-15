@@ -79,6 +79,23 @@ test('configured target-only plan is update and invalid or legacy flags fail clo
   assert.equal(await main(['--mode', 'new', '--source', 'anything', '--plan'], f.io), 1);
 });
 
+test('Antigravity hook option is explicit, target-specific, and discoverable in a reviewed plan', async t => {
+  const f = await fixture(t);
+  assert.equal(await main(['--target', 'antigravity', '--mode', 'new', '--antigravity-hooks', 'on', '--plan'], f.io), 0);
+  const plan = JSON.parse(f.output.stdout);
+  assert.equal(plan.antigravityHooks, true);
+  assert.equal(plan.bridge.actions.find(item => item.path === '.agents/hooks.json').action, 'create');
+  assert.equal(plan.bridge.nativeSmoke, 'unverified');
+  assert.equal(await exists(path.join(f.harnessRoot, 'project')), false);
+  assert.equal(await main(['--target', 'codex', '--mode', 'new', '--antigravity-hooks', 'on', '--plan'], f.io), 1);
+  assert.equal(await main(['--target', 'antigravity', '--mode', 'new', '--antigravity-hooks', 'maybe', '--plan'], f.io), 1);
+  const file = path.join(path.dirname(f.harnessRoot), 'antigravity-plan.json');
+  await writeFile(file, JSON.stringify(plan));
+  assert.equal(await main(['--apply', file, '--antigravity-hooks', 'off'], f.io), 1);
+  assert.equal(await main(['--apply', file], f.io), 0);
+  assert.equal(JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/config.json'))).antigravityHooks, true);
+});
+
 test('explicit core profile persists and update keeps it unless overridden', async t => {
   const f = await fixture(t);
   assert.equal(await main(['--mode', 'new', '--profile', 'core', '--plan'], f.io), 0);

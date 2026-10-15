@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { cp, mkdtemp, mkdir, readFile, writeFile, rm, symlink, readdir } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,6 +58,77 @@ test('each target plans and installs canonical role and skill bytes without engi
       for (const forbidden of ['harness', 'scripts', '.ai']) await assert.rejects(readFile(path.join(f.projectRoot, forbidden, 'runtime-state.mjs')));
     });
   }
+});
+
+test('Codex validates runtime script, bounds SessionEnd, and executes generated commands with one JSON ack', async t => {
+  const f = await fixture(t, 'native bridge space ');
+  for (const name of ['runtime-state.mjs', 'project-context.mjs', 'task-records.mjs', 'telemetry-schema.mjs'])
+    await cp(path.join(source, 'scripts', name), path.join(f.harnessRoot, 'scripts', name));
+  execFileSync('git', ['init', '--initial-branch=main', f.harnessRoot], { stdio: 'ignore' });
+  await mkdir(path.join(f.harnessRoot, '.harness'));
+  await writeFile(path.join(f.harnessRoot, '.harness/config.json'), JSON.stringify({ version: 1, layout: 'single-project', projectPath: 'project',
+    target: 'codex', setupId: f.setupId, createdAt: '2026-10-08T00:00:00.000Z', updatedAt: '2026-10-08T00:00:00.000Z' }));
+  const plan = await buildBridgePlan({ ...f, target: 'codex' });
+  assert.equal(plan.sourceHashes.hookRuntime, sha(await readFile(hookScript(f))));
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  const hooks = JSON.parse(await readFile(path.join(f.projectRoot, '.codex/hooks.json'), 'utf8')).hooks;
+  for (const [event, entries] of Object.entries(hooks)) {
+    const hook = entries[0].hooks[0];
+    assert.equal(hook.timeout, event === 'SessionEnd' ? 3 : 5);
+    assert.match(hook.command, /--source=codex$/);
+    const result = process.platform === 'win32'
+      ? spawnSync('powershell.exe', ['-NoProfile', '-Command', hook.commandWindows.slice('powershell -NoProfile -Command "'.length, -1)], { cwd: f.projectRoot, input: JSON.stringify({ hook_event_name: event, cwd: f.projectRoot }), encoding: 'utf8' })
+      : spawnSync('sh', ['-c', hook.command], { cwd: f.projectRoot, input: JSON.stringify({ hook_event_name: event, cwd: f.projectRoot }), encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim().split(/\r?\n/).length, 1);
+    assert.deepEqual(JSON.parse(result.stdout), {});
+  }
+  await writeFile(hookScript(f), 'not the reviewed script');
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan }), /source or input changed/);
+});
+
+test('Codex upgrades an exact legacy hook set while preserving user hooks and restores prior bytes on rollback', async t => {
+  const f = await fixture(t);
+  const file = path.join(f.projectRoot, '.codex/hooks.json');
+  const script = hookScript(f);
+  const legacy = { hooks: [{ type: 'command', command: `node '${script}'`, commandWindows: `powershell -NoProfile -Command "& node '${script}'"`, timeout: 5, statusMessage: 'Pure Harness lifecycle (candidate; native dispatch unverified)' }] };
+  const user = { hooks: [{ type: 'command', command: 'echo user' }] };
+  const events = ['SessionStart', 'SessionEnd', 'SubagentStart', 'SubagentStop', 'Stop'];
+  const previous = { hooks: Object.fromEntries(events.map(event => [event, [user, legacy]])) };
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(previous, null, 2)}\n`);
+  const original = `${JSON.stringify({ hooks: Object.fromEntries(events.map(event => [event, [user]])) }, null, 2)}\n`;
+  const backup = path.join(f.harnessRoot, '.harness/backups', f.setupId, 'codex', sha(Buffer.from('.codex/hooks.json')));
+  await mkdir(path.dirname(backup), { recursive: true });
+  await writeFile(backup, original);
+  // Simulate the earlier bridge manifest without changing any product bytes outside this fixture.
+  const manifestFile = path.join(f.harnessRoot, '.harness/adapters/codex.json');
+  await mkdir(path.dirname(manifestFile), { recursive: true });
+  await writeFile(manifestFile, JSON.stringify({ schemaVersion: 1, setupId: f.setupId, target: 'codex', projectRoot: f.projectRoot,
+    actions: [{ path: '.codex/hooks.json', kind: 'hooks', beforeSha256: sha(original), afterSha256: sha(await readFile(file)), backupSha256: sha(original), ownership: 'harness-managed' }] }));
+  const upgrade = await buildBridgePlan({ ...f, target: 'codex' });
+  assert.equal(upgrade.actions.find(item => item.path === '.codex/hooks.json').action, 'replace-owned');
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: upgrade });
+  const updated = JSON.parse(await readFile(file));
+  for (const event of events) {
+    assert.deepEqual(updated.hooks[event][0], user);
+    assert.equal(updated.hooks[event].length, 2);
+    assert.match(updated.hooks[event][1].hooks[0].command, /--source=codex$/);
+  }
+  assert.equal(updated.hooks.SessionEnd[1].hooks[0].timeout, 3);
+  assert.equal((await planBridgeUpdate({ ...f, target: 'codex' })).actions.find(item => item.path === '.codex/hooks.json').action, 'unchanged');
+  await rollbackNativeBridge({ ...f, target: 'codex' });
+  assert.equal(await readFile(file, 'utf8'), original);
+});
+
+test('Codex rejects a hook runtime reached through a scripts junction', async t => {
+  const f = await fixture(t);
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'hook-junction-'));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await cp(hookScript(f), path.join(outside, 'hook-runtime.mjs'));
+  await rm(path.join(f.harnessRoot, 'scripts'), { recursive: true });
+  await symlink(outside, path.join(f.harnessRoot, 'scripts'), 'junction');
+  await assert.rejects(buildBridgePlan({ ...f, target: 'codex' }), /symlink|junction/);
 });
 
 test('Codex preserves user TOML, hook ordering, and product AGENTS while adding bounded content', async t => {
@@ -126,6 +197,74 @@ async function legacyClaude(f, { initial = null, taskStop = false } = {}) {
   return { file, rendered, manifestFile };
 }
 
+test('Antigravity stays off by default and opt-in preserves user entries through update and disable', async t => {
+  const f = await fixture(t);
+  const file = path.join(f.projectRoot, '.agents/hooks.json');
+  const user = '{\r\n  "my-hook": {"enabled": true, "PreToolUse": [{"matcher": "read_file", "hooks": [{"type": "command", "command": "echo user"}]}]}\r\n}\r\n';
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, user);
+  const off = await buildBridgePlan({ ...f, target: 'antigravity' });
+  assert.equal(off.actions.some(item => item.path === '.agents/hooks.json'), false);
+  assert.equal(off.sourceHashes.hookRuntime, undefined);
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: off });
+  assert.equal(await readFile(file, 'utf8'), user);
+  assert.match((await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: 'antigravity' })).hookNote, /off.*--antigravity-hooks on/);
+  const on = await planBridgeUpdate({ ...f, target: 'antigravity', antigravityHooks: true });
+  assert.equal(on.actions.find(item => item.path === '.agents/hooks.json').action, 'append-managed-block');
+  assert.equal(on.sourceHashes.hookRuntime, sha(await readFile(hookScript(f))));
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: on });
+  const installed = JSON.parse(await readFile(file));
+  assert.deepEqual(installed['my-hook'], JSON.parse(user)['my-hook']);
+  assert.equal(installed['pure-harness-lifecycle'].enabled, true);
+  for (const event of ['PreToolUse', 'PostToolUse']) {
+    assert.equal(installed['pure-harness-lifecycle'][event][0].matcher, 'invoke_subagent|manage_subagents');
+    assert.match(installed['pure-harness-lifecycle'][event][0].hooks[0].command, /--source=antigravity$/);
+  }
+  assert.match((await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: 'antigravity' })).hookNote, /on\/unverified/);
+  assert.ok((await planBridgeUpdate({ ...f, target: 'antigravity', antigravityHooks: true })).actions.every(item => item.action === 'unchanged'));
+  const disabled = await planBridgeUpdate({ ...f, target: 'antigravity', antigravityHooks: false });
+  assert.equal(disabled.actions.find(item => item.path === '.agents/hooks.json').action, 'retire-owned');
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: disabled });
+  assert.equal(await readFile(file, 'utf8'), user);
+  const manifest = JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/adapters/antigravity.json')));
+  assert.equal(manifest.actions.some(item => item.path === '.agents/hooks.json'), false);
+  const retained = manifest.retiredBackups.find(item => item.path === '.agents/hooks.json');
+  const backup = path.join(f.harnessRoot, '.harness/backups', f.setupId, 'antigravity', sha(Buffer.from('.agents/hooks.json')));
+  assert.equal(retained.backupSha256, sha(Buffer.from(user)));
+  assert.equal(await readFile(backup, 'utf8'), user);
+  await writeFile(backup, 'tampered backup');
+  await assert.rejects(planBridgeUpdate({ ...f, target: 'antigravity', antigravityHooks: true }), /backup drift/);
+  await writeFile(backup, user);
+  await writeFile(file, '{"changed":true}');
+  assert.equal((await planBridgeUpdate({ ...f, target: 'antigravity', antigravityHooks: true })).actions.find(item => item.path === '.agents/hooks.json').action, 'conflict');
+  await writeFile(file, user);
+  const reenabled = await planBridgeUpdate({ ...f, target: 'antigravity', antigravityHooks: true });
+  assert.equal(reenabled.actions.find(item => item.path === '.agents/hooks.json').action, 'append-managed-block');
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: reenabled });
+  assert.equal(await readFile(backup, 'utf8'), user);
+  await rollbackNativeBridge({ ...f, target: 'antigravity' });
+  assert.equal(await readFile(file, 'utf8'), user);
+  assert.equal(await readFile(backup, 'utf8'), user);
+});
+
+test('Antigravity hook ownership fails closed on drift and restores opt-in after interrupted disable', async t => {
+  const f = await fixture(t);
+  const file = path.join(f.projectRoot, '.agents/hooks.json');
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: await buildBridgePlan({ ...f, target: 'antigravity', antigravityHooks: true }) });
+  const installed = await readFile(file);
+  const disable = await planBridgeUpdate({ ...f, target: 'antigravity', antigravityHooks: false });
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan: disable }, { beforeWrite(relative) {
+    if (relative === '.agents/hooks.json') throw new Error('injected disable failure');
+  } }), /injected disable failure/);
+  assert.deepEqual(await readFile(file), installed);
+  await writeFile(file, JSON.stringify({ other: { enabled: true } }));
+  assert.equal((await planBridgeUpdate({ ...f, target: 'antigravity', antigravityHooks: false })).actions.find(item => item.path === '.agents/hooks.json').action, 'conflict');
+  await assert.rejects(rollbackNativeBridge({ ...f, target: 'antigravity' }), /drift/);
+  await writeFile(file, installed);
+  await rollbackNativeBridge({ ...f, target: 'antigravity' });
+  await assert.rejects(readFile(file), { code: 'ENOENT' });
+});
+
 test('Claude fresh install writes project plugin, not settings, and rollback preserves user settings bytes', async t => {
   const f = await fixture(t);
   const file = path.join(f.projectRoot, '.claude/settings.json');
@@ -138,13 +277,15 @@ test('Claude fresh install writes project plugin, not settings, and rollback pre
   assert.equal(await readFile(file, 'utf8'), original);
   assert.equal(JSON.parse(await readFile(path.join(f.projectRoot, pluginManifest), 'utf8')).name, 'pure-harness-lifecycle');
   const data = JSON.parse(await readFile(path.join(f.projectRoot, pluginHooks), 'utf8'));
-  assert.deepEqual(Object.keys(data.hooks), ['SubagentStart', 'SubagentStop', 'PostToolUse']);
-  assert.deepEqual(data.hooks.PostToolUse.map(entry => entry.matcher), ['TaskStop']);
-  for (const event of ['SubagentStart', 'SubagentStop', 'PostToolUse']) {
-    const hook = data.hooks[event][0].hooks[0];
-    assert.equal(hook.command, 'node');
-    assert.deepEqual(hook.args, [hookScript(f)]);
-    assert.equal('commandWindows' in hook, false);
+  assert.deepEqual(Object.keys(data.hooks), ['SubagentStart', 'SubagentStop', 'SessionEnd', 'PostToolUse']);
+  assert.deepEqual(data.hooks.PostToolUse.map(entry => entry.matcher), ['TaskStop', 'Agent']);
+  for (const event of ['SubagentStart', 'SubagentStop', 'SessionEnd', 'PostToolUse']) {
+    for (const entry of data.hooks[event]) {
+      const hook = entry.hooks[0];
+      assert.equal(hook.command, 'node');
+      assert.deepEqual(hook.args, [hookScript(f), '--source=claude']);
+      assert.equal('commandWindows' in hook, false);
+    }
   }
   const update = await planBridgeUpdate({ ...f, target: 'claude' });
   assert.ok(update.actions.every(item => item.action === 'unchanged'));
@@ -187,6 +328,9 @@ test('Claude migrates hash-clean two- and three-hook settings, restores exact us
     const ownership = JSON.parse(await readFile(manifestFile, 'utf8'));
     assert.equal(ownership.actions.some(action => action.path === '.claude/settings.json'), false);
     assert.equal(ownership.actions.some(action => action.path === pluginHooks), true);
+    const hooks = JSON.parse(await readFile(path.join(f.projectRoot, pluginHooks), 'utf8')).hooks;
+    assert.equal(hooks.SessionEnd.length, 1);
+    assert.deepEqual(hooks.PostToolUse.map(entry => entry.matcher), ['TaskStop', 'Agent']);
     const update = await planBridgeUpdate({ ...f, target: 'claude' });
     assert.ok(update.actions.every(item => item.action === 'unchanged'));
     await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: update });
@@ -202,8 +346,8 @@ test('Claude plugin Node arguments preserve an absolute Windows path containing 
   assert.ok(path.isAbsolute(hookScript(f)));
   await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
   const hooks = JSON.parse(await readFile(path.join(f.projectRoot, pluginHooks), 'utf8')).hooks;
-  for (const event of ['SubagentStart', 'SubagentStop', 'PostToolUse'])
-    assert.deepEqual(hooks[event][0].hooks[0].args, [hookScript(f)]);
+  for (const event of ['SubagentStart', 'SubagentStop', 'SessionEnd', 'PostToolUse'])
+    for (const entry of hooks[event]) assert.deepEqual(entry.hooks[0].args, [hookScript(f), '--source=claude']);
 });
 
 test('Claude rejects a hook runtime reached through a scripts junction during plan and Apply', async t => {
@@ -326,6 +470,50 @@ test('Claude refuses a prior manifest pointing to unlisted plugin files', async 
     afterSha256: sha(Buffer.from('foreign')), backupSha256: null, ownership: 'harness-managed' });
   await writeFile(manifestFile, JSON.stringify(record));
   await assert.rejects(buildBridgePlan({ ...f, target: 'claude' }), /allowlisted/);
+});
+
+test('Claude detects duplicate legacy registration despite Windows slash, drive case, and path quotes', async t => {
+  const f = await fixture(t);
+  const script = hookScript(f);
+  const equivalent = process.platform === 'win32' ? `"${script.replaceAll('\\', '/').toUpperCase()}"` : `"${script}"`;
+  const settings = path.join(f.projectRoot, '.claude/settings.json');
+  await mkdir(path.dirname(settings), { recursive: true });
+  await writeFile(settings, JSON.stringify({ hooks: { SubagentStart: [{ hooks: [{ type: 'command', command: 'node', args: [equivalent] }] }] } }));
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  assert.equal(plan.actions.find(item => item.path === '.claude/settings.json').action, 'conflict');
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan }), /conflict/);
+});
+
+test('Antigravity Windows command dispatches through cmd from a spaced path', { skip: process.platform !== 'win32' }, async t => {
+  const f = await fixture(t, 'agy hook space ');
+  for (const name of ['runtime-state.mjs', 'project-context.mjs', 'task-records.mjs', 'telemetry-schema.mjs'])
+    await cp(path.join(source, 'scripts', name), path.join(f.harnessRoot, 'scripts', name));
+  execFileSync('git', ['init', '--initial-branch=main', f.harnessRoot], { stdio: 'ignore' });
+  await mkdir(path.join(f.harnessRoot, '.harness'));
+  await writeFile(path.join(f.harnessRoot, '.harness/config.json'), JSON.stringify({ version: 1, layout: 'single-project', projectPath: 'project',
+    target: 'antigravity', setupId: f.setupId, createdAt: '2026-10-08T00:00:00.000Z', updatedAt: '2026-10-08T00:00:00.000Z' }));
+  const plan = await buildBridgePlan({ ...f, target: 'antigravity', antigravityHooks: true });
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  const command = JSON.parse(await readFile(path.join(f.projectRoot, '.agents/hooks.json')))['pure-harness-lifecycle'].PreToolUse[0].hooks[0].command;
+  assert.match(command, /^node "[^"]*agy hook space [^"]*" --source=antigravity$/);
+  const result = spawnSync('cmd.exe', ['/d', '/c', command], { cwd: f.projectRoot, input: '{}', encoding: 'utf8', windowsVerbatimArguments: true });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {});
+});
+
+test('Antigravity check reports unknown when manifest is missing or owned hooks drift', async t => {
+  const f = await fixture(t);
+  const missing = await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: 'antigravity' });
+  assert.equal(missing.hooks, 'unknown/unverified');
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: await buildBridgePlan({ ...f, target: 'antigravity', antigravityHooks: true }) });
+  await writeFile(path.join(f.projectRoot, '.agents/hooks.json'), '{}');
+  const drift = await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: 'antigravity' });
+  assert.equal(drift.hooks, 'unknown/unverified');
+  assert.equal(drift.ok, false);
+  await writeFile(path.join(f.harnessRoot, '.harness/adapters/antigravity.json'), '{bad');
+  const invalid = await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: 'antigravity' });
+  assert.equal(invalid.hooks, 'unknown/unverified');
+  assert.equal(invalid.ok, false);
 });
 
 test('Claude refuses duplicate runtime registration in user settings and pre-existing plugin files', async t => {

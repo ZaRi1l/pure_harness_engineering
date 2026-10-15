@@ -406,6 +406,45 @@ test('repeated hook and orchestration starts reconcile one native agent instance
   assert.equal(events.filter(event => event.type === 'agent_started').length, 1);
 });
 
+test('Claude session association validates metadata and title cannot rewrite lifecycle evidence', async () => {
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
+  await store.agentStarted('child-1', 'worker', '', { source: 'hook', source_tool: 'claude', session_id: 'session-1' });
+  await store.claim('child-1', ['src/one']);
+  await store.agentTitled('child-1', 'session-2', 'Wrong session');
+  await store.agentTitled('child-1', 'session-1', 'API key: PRIVATE_KEY');
+  await store.agentTitled('child-1', 'session-1', 'Safe graph title');
+  await store.sessionEnded('session-2');
+  const before = await store.readSnapshot();
+  assert.equal(before.status.agents[0].short_title, 'Safe graph title');
+  assert.equal(before.status.signals[0].summary, 'Start worker');
+  assert.equal(before.status.agents[0].session_ended_at, undefined);
+  await store.sessionEnded('session-1');
+  const during = await store.readSnapshot();
+  assert.equal(during.status.active_agents[0].status, 'running');
+  assert.equal(during.status.agents[0].session_ended_at, during.status.active_agents[0].session_ended_at);
+  assert.equal(during.claims.claims.length, 1);
+  assert.equal(during.status.signals.length, 1);
+  assert.equal(during.events.some(event => event.type === 'agent_stopped'), false);
+  await store.agentStopped('child-1', 'stopped', { source: 'hook' });
+  const after = await store.readSnapshot();
+  assert.equal(after.status.agents[0].status, 'stopped');
+  assert.deepEqual(after.claims.claims, []);
+  assert.doesNotMatch(JSON.stringify(after), /PRIVATE_KEY|Wrong session/);
+});
+
+test('resumed agent drops prior session title and rejects a late title callback', async () => {
+  const store = RuntimeStore.legacyFixture(await temporaryRoot());
+  await store.agentStarted('child-1', 'worker', 'First task', { source: 'hook', source_tool: 'claude', session_id: 'session-1' });
+  await store.agentTitled('child-1', 'session-1', 'Prior invocation title');
+  await store.agentStopped('child-1', 'stopped', { source: 'hook' });
+  await store.agentResumed('child-1', 'Follow-up task', 'Follow-up accepted', { turn_token: 'turn-2', source: 'orchestration' });
+  await store.agentTitled('child-1', 'session-1', 'Late prior title');
+  const status = await store.readStatus();
+  assert.equal(status.agents[0].short_title, undefined);
+  assert.equal(status.active_agents[0].short_title, undefined);
+  assert.equal(status.agents[0].current_task, 'Follow-up task');
+});
+
 test('repeated stops are idempotent and a hook stop becomes canonical', async () => {
   const store = RuntimeStore.legacyFixture(await temporaryRoot());
   await store.initialize();

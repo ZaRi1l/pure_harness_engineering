@@ -12,6 +12,12 @@ export { TASK_STATUSES } from './task-records.mjs';
 export const VERIFICATION_STATUSES = new Set(['not_run', 'running', 'passed', 'failed', 'blocked']);
 const SIGNAL_METADATA_FIELDS = ['task_id', 'status', 'artifact_href', 'verification_name'];
 const LIFECYCLE_SOURCES = new Set(['hook', 'orchestration']);
+const SOURCE_TOOLS = new Set(['claude', 'codex', 'antigravity']);
+const sourceTool = value => SOURCE_TOOLS.has(value) ? value : 'unknown';
+const opaqueSessionId = value => typeof value === 'string' && value.length <= 128 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value);
+const shortTitle = value => typeof value === 'string' && value.length > 0 && value.length <= 60 && value.trim() === value
+  && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value)
+  && !/(?:password|passwd|secret|credential|api[_ -]?key|access[_ -]?token|bearer|sk-[A-Za-z0-9])/i.test(value);
 const coreContexts = new WeakSet();
 export const isCoreContext = value => value !== null && typeof value === 'object' && coreContexts.has(value);
 function signalMetadata(value = {}) {
@@ -307,6 +313,7 @@ export class RuntimeStore {
     });
   }
   async agentStarted(id, role, task = '', metadata = {}) { await this.mutate(({ status, events }) => {
+    const sessionId = metadata.source === 'hook' && metadata.source_tool === 'claude' && opaqueSessionId(metadata.session_id) ? metadata.session_id : null;
     const source = lifecycleSource(metadata.source), active = status.active_agents.find(agent => this.ownsAgent(agent, id));
     let existing = status.agents.find(agent => this.ownsAgent(agent, id));
     if (!existing && active) { existing = { ...active }; status.agents = status.agents.concat(existing).slice(-30); }
@@ -315,23 +322,45 @@ export class RuntimeStore {
       const startSource = preferredLifecycleSource(existing.start_source, source);
       if (startSource) existing.start_source = startSource;
       if (source === 'hook') {
+        if (sessionId && existing.session_id && existing.session_id !== sessionId) return;
         existing.role = role;
+        if (sessionId && !existing.stopped_at && !existing.resumed_at && !existing.session_ended_at) existing.session_id = sessionId;
         if (task) existing.current_task = String(task).slice(0, 300);
         const signal = existing.start_signal_id ? status.signals.find(item => item.id === existing.start_signal_id) : undefined;
         if (signal) { signal.summary = existing.current_task || `Start ${role}`; if (metadata.task_id) signal.task_id = String(metadata.task_id).slice(0, 500); }
         const event = events.findLast(item => item.type === 'agent_started' && this.ownsLifecycleEvent(item, id));
-        if (event) { event.message = `${role} started`; event.data = { ...event.data, source: 'hook' }; }
+        if (event) { event.message = `${role} started`; event.data = { ...event.data, source: 'hook', source_tool: sourceTool(metadata.source_tool) }; }
       } else if (!existing.current_task && task) existing.current_task = String(task).slice(0, 300);
       for (const active of status.active_agents) if (this.ownsAgent(active, id)) Object.assign(active, existing);
       return;
     }
-    const agent = { id, ...this.checkoutMetadata(), role, status: 'running', current_task: String(task).slice(0, 300), started_at: now(), stopped_at: null, ...(source ? { start_source: source } : {}) };
+    const agent = { id, ...this.checkoutMetadata(), role, status: 'running', current_task: String(task).slice(0, 300), started_at: now(), stopped_at: null, ...(source ? { start_source: source } : {}),
+      ...(sessionId ? { session_id: sessionId } : {}) };
     const signal = appendSignal(status, { time: now(), from: 'main', to: id, kind: 'delegate', summary: agent.current_task || `Start ${role}`, ...signalMetadata({ task_id: metadata.task_id }) });
     agent.start_signal_id = signal.id;
     status.active_agents = status.active_agents.filter(item => !this.ownsAgent(item, id)).concat(agent);
     status.agents = status.agents.filter(item => !this.ownsAgent(item, id)).concat({ ...agent }).slice(-30);
-    events.push(this.event('agent_started', `${role} started`, { agent_id: id, ...this.checkoutMetadata(), source }));
+    events.push(this.event('agent_started', `${role} started`, { agent_id: id, ...this.checkoutMetadata(), source, ...(source === 'hook' ? { source_tool: sourceTool(metadata.source_tool) } : {}) }));
   }); }
+  async agentTitled(id, sessionId, title) { if (!opaqueSessionId(id) || !opaqueSessionId(sessionId) || !shortTitle(title)) return;
+    await this.mutate(({ status }) => {
+      const agent = status.agents.find(item => this.ownsAgent(item, id));
+      const active = status.active_agents.find(item => this.ownsAgent(item, id));
+      if (!agent || agent.session_id !== sessionId || agent.resumed_at || (active && active.session_id !== sessionId)) return;
+      agent.short_title = title;
+      if (active) active.short_title = title;
+    });
+  }
+  async sessionEnded(sessionId) { if (!opaqueSessionId(sessionId)) return;
+    await this.mutate(({ status }) => {
+      for (const active of status.active_agents) {
+        if (active.session_id !== sessionId || active.stopped_at || active.session_ended_at || (this.context && !this.ownsAgent(active, active.id))) continue;
+        active.session_ended_at = now();
+        const agent = status.agents.find(item => this.ownsAgent(item, active.id));
+        if (agent && !agent.stopped_at && agent.session_id === sessionId) agent.session_ended_at = active.session_ended_at;
+      }
+    });
+  }
   async agentResumed(id, task = '', summary = '', metadata = {}) { if (!String(summary).trim()) throw new Error('resume summary required'); if (!String(metadata.turn_token || '').trim()) throw new Error('resume turn token required'); await this.mutate(({ status, events }) => {
     const agent = status.agents.find(item => this.ownsAgent(item, id));
     if (!agent) throw new Error(`unknown agent: ${id}`);
@@ -343,6 +372,7 @@ export class RuntimeStore {
       start_signal_id: signal.id, task_id: metadata.task_id, start_source: source, resumed_at: startedAt,
       turn_token: metadata.turn_token, resume_tokens: [...(agent.resume_tokens || []), metadata.turn_token] });
     delete agent.stop_signal_id; delete agent.stop_source; delete agent.stop_claim_token;
+    delete agent.session_id; delete agent.session_ended_at; delete agent.short_title;
     status.active_agents = status.active_agents.filter(item => !this.ownsAgent(item, id)).concat({ ...agent });
     events.push(this.event('agent_started', `${agent.role || 'agent'} resumed`, { agent_id: id, ...this.checkoutMetadata(), source }));
   }); }
@@ -350,7 +380,8 @@ export class RuntimeStore {
     const source = lifecycleSource(metadata.source), active = status.active_agents.find(item => this.ownsAgent(item, id));
     const diagnose = disposition => {
       if (source === 'hook') events.push(this.event('hook_stop_diagnostic', 'Native stop hook assessed', {
-        hook_event: metadata.hook_event === 'PostToolUse:TaskStop' ? 'PostToolUse:TaskStop' : 'SubagentStop',
+        hook_event: ['PostToolUse:TaskStop', 'SubagentStop'].includes(metadata.hook_event) ? metadata.hook_event : 'other',
+        source_tool: sourceTool(metadata.source_tool),
         ...(typeof id === 'string' && id.length <= 128 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(id) ? { agent_id: id } : {}),
         disposition,
       }));
@@ -373,6 +404,7 @@ export class RuntimeStore {
         }
         delete agent.stop_claim_token;
         agent.status = outcome;
+        delete agent.session_ended_at;
         const signal = agent.stop_signal_id ? status.signals.find(item => item.id === agent.stop_signal_id) : undefined;
         if (signal) {
           signal.summary = String(outcome).slice(0, 300);
@@ -380,7 +412,7 @@ export class RuntimeStore {
           if (metadata.task_id) signal.task_id = String(metadata.task_id).slice(0, 500);
         }
         const event = events.findLast(item => item.type === 'agent_stopped' && this.ownsLifecycleEvent(item, id));
-        if (event) { event.message = `${agent.role || 'agent'} ${outcome}`; event.data = { ...event.data, source: 'hook' }; }
+        if (event) { event.message = `${agent.role || 'agent'} ${outcome}`; event.data = { ...event.data, source: 'hook', source_tool: sourceTool(metadata.source_tool) }; }
       }
       return source === 'hook' ? agent.stop_signal_id ?? null : null;
     }
@@ -390,9 +422,10 @@ export class RuntimeStore {
     if (source === 'orchestration' && held?.claim_token) agent.stop_claim_token = held.claim_token;
     status.active_agents = status.active_agents.filter(item => !this.ownsAgent(item, id));
     Object.assign(agent, { status: outcome, stopped_at: stoppedAt, ...(stopSource ? { stop_source: stopSource } : {}) });
+    delete agent.session_ended_at;
     const signal = appendSignal(status, { time: stoppedAt, from: id, to: 'main', kind: 'result', summary: String(outcome).slice(0, 300), ...signalMetadata({ task_id: metadata.task_id, status: outcome !== 'stopped' ? outcome : undefined }) });
     agent.stop_signal_id = signal.id;
-    events.push(this.event('agent_stopped', `${agent.role || 'agent'} ${outcome}`, { agent_id: id, ...this.checkoutMetadata(), source }));
+    events.push(this.event('agent_stopped', `${agent.role || 'agent'} ${outcome}`, { agent_id: id, ...this.checkoutMetadata(), source, ...(source === 'hook' ? { source_tool: sourceTool(metadata.source_tool) } : {}) }));
     if (source === 'hook') {
       claims.claims = claims.claims.filter(claim => !this.ownsClaim(claim, id));
       events.push(this.event('claim_released', `${id} released claims`, { agent_id: id, ...this.checkoutMetadata() }));

@@ -59,7 +59,7 @@ test('new plan is read-only, metadata-only, and apply creates isolated child Git
   assert.equal(git(f.projectRoot, 'remote'), '');
   assert.equal(result.nativeSmoke, 'unverified');
   const config = JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/config.json')));
-  assert.deepEqual(Object.keys(config), ['version', 'layout', 'projectPath', 'target', 'profile', 'setupId', 'createdAt', 'updatedAt']);
+  assert.deepEqual(Object.keys(config), ['version', 'layout', 'projectPath', 'target', 'profile', 'antigravityHooks', 'setupId', 'createdAt', 'updatedAt']);
   assert.equal(config.profile, 'all');
   assert.equal(config.projectPath, 'project');
   assert.equal(config.setupId, plan.setupId);
@@ -101,6 +101,34 @@ test('all profile applies to every target and core downgrade retains owned extra
     }
     assert.equal(JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/config.json'))).profile, 'core');
   }
+});
+
+test('Antigravity setup keeps hooks off by default, persists opt-in, and rolls back an interrupted disable', async t => {
+  const f = await fixture(t);
+  const first = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'antigravity' });
+  assert.equal(first.antigravityHooks, false);
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan: first });
+  const hooks = path.join(f.projectRoot, '.agents/hooks.json');
+  const config = path.join(f.harnessRoot, '.harness/config.json');
+  assert.equal(await exists(hooks), false);
+  assert.equal(JSON.parse(await readFile(config)).antigravityHooks, false);
+  const on = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'update', target: 'antigravity', antigravityHooks: true });
+  assert.equal(on.bridge.actions.find(item => item.path === '.agents/hooks.json').action, 'create');
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan: on });
+  assert.equal(JSON.parse(await readFile(config)).antigravityHooks, true);
+  const installed = await readFile(hooks);
+  assert.equal(JSON.parse(installed)['pure-harness-lifecycle'].enabled, true);
+  assert.equal((await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'update', target: 'antigravity' })).antigravityHooks, true);
+  const off = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'update', target: 'antigravity', antigravityHooks: false });
+  assert.equal(off.bridge.actions.find(item => item.path === '.agents/hooks.json').action, 'retire-owned');
+  await assert.rejects(applyProjectSetup({ harnessRoot: f.harnessRoot, plan: off }, {
+    beforeWrite: phase => { if (phase === 'before-config') throw new Error('injected config failure'); }
+  }), /injected config failure/);
+  assert.deepEqual(await readFile(hooks), installed);
+  assert.equal(JSON.parse(await readFile(config)).antigravityHooks, true);
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan: off });
+  assert.equal(await exists(hooks), false);
+  assert.equal(JSON.parse(await readFile(config)).antigravityHooks, false);
 });
 
 test('legacy config without profile plans a core update', async t => {

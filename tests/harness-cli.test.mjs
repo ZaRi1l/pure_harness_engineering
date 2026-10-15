@@ -172,7 +172,7 @@ test('unavailable skill discovery is an explicit issue with current version evid
   const report = JSON.parse(result.stdout);
   assert.ok(report.issues.some(issue => issue.target === 'claude' && issue.sourceField === 'skills' && /unverified|not verified/i.test(issue.reason)));
   assert.equal(report.inventory.targets.opencode.testedCliVersion, 'unverified');
-  assert.equal(report.inventory.targets.codex.testedCliVersion, 'codex-cli 0.153.4');
+  assert.equal(report.inventory.targets.codex.testedCliVersion, 'codex-cli 0.161.0');
   assert.deepEqual([...report.issues].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), report.issues);
   assert.deepEqual([...new Set(report.capabilities.map(row => row.target))].sort(), ['antigravity', 'claude', 'codex', 'opencode']);
 });

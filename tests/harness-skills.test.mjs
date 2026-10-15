@@ -73,7 +73,7 @@ test('skill availability does not mistake source presence for native target disc
   const compatibility = JSON.parse(await readFile(path.join(root, 'harness/compatibility.json'), 'utf8'));
   const pinned = skillAvailability('codex', compatibility);
   assert.equal(pinned.status, 'native');
-  assert.equal(pinned.version, 'codex-cli 0.153.4');
+  assert.equal(pinned.version, 'codex-cli 0.161.0');
   for (const target of ['claude', 'opencode', 'antigravity']) {
     const result = skillAvailability(target, compatibility);
     assert.equal(result.status, 'unsupported', target);

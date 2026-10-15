@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline/promises';
 import { getScriptHarnessRoot } from './project-context.mjs';
 import { applyProjectSetup, planProjectSetup, recoverProjectSetup } from '../harness/project-setup.mjs';
 
-const flags = new Set(['--mode', '--source', '--target', '--profile', '--apply']);
+const flags = new Set(['--mode', '--source', '--target', '--profile', '--antigravity-hooks', '--apply']);
 const targets = new Set(['codex', 'claude', 'opencode', 'antigravity']);
 function parse(argv) {
   const options = Object.create(null);
@@ -30,6 +30,7 @@ function parse(argv) {
   if (options['--mode'] && !['new', 'existing'].includes(options['--mode'])) throw new Error('invalid mode');
   if (options['--target'] && !targets.has(options['--target'])) throw new Error('invalid target');
   if (options['--profile'] && !['core', 'all'].includes(options['--profile'])) throw new Error('invalid profile');
+  if (options['--antigravity-hooks'] && (!['on', 'off'].includes(options['--antigravity-hooks']) || options['--target'] !== 'antigravity')) throw new Error('Antigravity hook option requires --target antigravity and on|off');
   if (options['--source'] && options['--mode'] !== 'existing') throw new Error('source requires --mode existing');
   if (options.plan && options['--mode'] === 'existing' && !options['--source']) throw new Error('existing mode requires source');
   return options;
@@ -75,12 +76,13 @@ export async function main(argv = process.argv.slice(2), io = { stdin: process.s
     let source = options['--source'];
     let target = options['--target'];
     let profile = options['--profile'];
+    const antigravityHooks = options['--antigravity-hooks'] === undefined ? undefined : options['--antigravity-hooks'] === 'on';
     const alreadyConfigured = await configured(harnessRoot);
     if (!mode && alreadyConfigured) mode = 'update';
     if (options.plan) {
       mode ??= 'new';
       target ??= 'codex';
-      const plan = await planProjectSetup({ harnessRoot, mode, source, target, profile });
+      const plan = await planProjectSetup({ harnessRoot, mode, source, target, profile, antigravityHooks });
       io.stdout.write(`${JSON.stringify(plan)}\n`);
       return 0;
     }
@@ -97,7 +99,7 @@ export async function main(argv = process.argv.slice(2), io = { stdin: process.s
         const fallback = mode === 'update' ? alreadyConfigured?.profile ?? 'core' : 'all';
         profile = (await prompt.question(`AI profile [all/core] (${fallback}): `)).trim().toLowerCase() || fallback;
       }
-      const plan = await planProjectSetup({ harnessRoot, mode, source, target, profile });
+      const plan = await planProjectSetup({ harnessRoot, mode, source, target, profile, antigravityHooks });
       io.stdout.write(`${describe(plan)}\n`);
       if (plan.conflicts.length) return 1;
       const answer = (await prompt.question('Confirmation: ')).trim();

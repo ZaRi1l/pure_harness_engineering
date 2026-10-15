@@ -499,6 +499,12 @@ function executeStatic(html) {
   return { host: document.host, preferencesHost: document.preferencesHost, document, context };
 }
 test('status CLI renders claims and watchdog warnings', () => { const text = renderStatus(snapshot); assert.match(text, /src\/backend/); assert.match(text, /Needs review/); });
+test('Antigravity status renders off and on-unverified guidance', () => {
+  const off = renderStatus(snapshot, { hookNote: 'Antigravity hooks: off (enable: npm run setup -- --target antigravity --antigravity-hooks on --plan)' });
+  const on = renderStatus(snapshot, { hookNote: 'Antigravity hooks: on/unverified (Windows issue #257)' });
+  assert.match(off, /hooks: off.*--antigravity-hooks on/);
+  assert.match(on, /hooks: on\/unverified.*#257/);
+});
 test('flagless status and static preview read only fixed child runtime', async () => {
   const f = await fixedFixture();
   await cp(path.resolve('scripts'), path.join(f.harnessRoot, 'scripts'), { recursive: true });

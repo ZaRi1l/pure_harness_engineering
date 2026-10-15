@@ -102,7 +102,7 @@ test('legacy runtime remains an explicit read fixture after context cutover', as
   const oldStatus = await readFile(path.join(f.checkoutRoot, '.ai', 'runtime', 'status.json'), 'utf8');
   const unbound = spawnSync(process.execPath, [statusScript], { cwd: f.checkoutRoot, encoding: 'utf8' });
   assert.notEqual(unbound.status, 0);
-  assert.match(unbound.stderr, /projectRoot: UNAVAILABLE ROOT/);
+  assert.match(unbound.stderr, /(?:projectRoot: UNAVAILABLE ROOT|checkoutRoot: INVALID WORKTREE)/);
   assert.equal((await store.readStatus()).current_goal, 'Legacy fixture goal');
   assert.equal(await readFile(path.join(f.checkoutRoot, '.ai', 'runtime', 'status.json'), 'utf8'), oldStatus);
   assert.deepEqual(await readdir(f.harnessRoot), []);

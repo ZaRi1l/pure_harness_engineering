@@ -43,6 +43,7 @@ function allowed(relative, target) {
     : target === 'codex' ? /^\.codex\/agents\/[a-z][a-z0-9-]*\.toml$/.test(relative)
     : new RegExp(`^\\.${target}/agents/[a-z][a-z0-9-]*\\.md$`).test(relative);
   return skill || role || relative === 'AGENTS.md' || (target === 'codex' && ['.codex/config.toml', '.codex/hooks.json'].includes(relative))
+    || (target === 'antigravity' && ['.agents/hooks.json', '.agents/rules/pure-harness-hooks.md'].includes(relative))
     || (target === 'claude' && ['.claude/settings.json', '.claude/skills/pure-harness-lifecycle/.claude-plugin/plugin.json', '.claude/skills/pure-harness-lifecycle/hooks/hooks.json'].includes(relative));
 }
 async function safePath(root, relative, target) {
@@ -132,11 +133,13 @@ function stripOwnedToml(prior) {
   const match = /\n# BEGIN PURE HARNESS MANAGED ROLES\n[\s\S]*?# END PURE HARNESS MANAGED ROLES\n$/.exec(prior);
   return match ? prior.slice(0, match.index) : prior;
 }
-function hookEntry(harnessRoot) {
+function hookEntry(harnessRoot, event, legacy = false) {
   const script = path.join(harnessRoot, 'scripts/hook-runtime.mjs');
   const posix = `'${script.replaceAll("'", "'\\''")}'`;
   const powershell = `'${script.replaceAll("'", "''")}'`;
-  return { hooks: [{ type: 'command', command: `node ${posix}`, commandWindows: `powershell -NoProfile -Command "& node ${powershell}"`, timeout: 5, statusMessage: 'Pure Harness lifecycle (candidate; native dispatch unverified)' }] };
+  return { hooks: [{ type: 'command', command: `node ${posix}${legacy ? '' : ' --source=codex'}`,
+    commandWindows: `powershell -NoProfile -Command "& node ${powershell}${legacy ? '' : ' --source=codex'}"`,
+    timeout: event === 'SessionEnd' && !legacy ? 3 : 5, statusMessage: 'Pure Harness lifecycle (candidate; native dispatch unverified)' }] };
 }
 function mergeHooks(prior, harnessRoot) {
   let document;
@@ -145,9 +148,32 @@ function mergeHooks(prior, harnessRoot) {
   for (const event of events) {
     if (document.hooks[event] !== undefined && !Array.isArray(document.hooks[event])) return null;
     document.hooks[event] ??= [];
-    document.hooks[event].push(hookEntry(harnessRoot));
+    document.hooks[event].push(hookEntry(harnessRoot, event));
   }
   return `${JSON.stringify(document, null, 2)}\n`;
+}
+const antigravityHookName = 'pure-harness-lifecycle';
+const antigravityEvents = ['PreToolUse', 'PostToolUse'];
+function antigravityHookEntry(harnessRoot) {
+  const script = path.join(harnessRoot, 'scripts/hook-runtime.mjs');
+  const quoted = process.platform === 'win32' ? `"${slash(script).replaceAll('"', '\\"')}"` : `'${slash(script).replaceAll("'", "'\\''")}'`;
+  return { matcher: 'invoke_subagent|manage_subagents', hooks: [{ type: 'command', command: `node ${quoted} --source=antigravity`, timeout: 5 }] };
+}
+function mergeAntigravityHooks(prior, harnessRoot) {
+  let document;
+  try { document = prior ? JSON.parse(prior) : {}; } catch { return null; }
+  if (!document || typeof document !== 'object' || Array.isArray(document) || Object.hasOwn(document, antigravityHookName)) return null;
+  document[antigravityHookName] = { enabled: true, ...Object.fromEntries(antigravityEvents.map(event => [event, [antigravityHookEntry(harnessRoot)]])) };
+  return `${JSON.stringify(document, null, 2)}\n`;
+}
+function stripAntigravityHooks(prior, harnessRoot) {
+  try {
+    const document = JSON.parse(prior), owned = document[antigravityHookName];
+    if (!document || typeof document !== 'object' || Array.isArray(document) || !owned || owned.enabled !== true
+        || Object.keys(owned).length !== 3 || antigravityEvents.some(event => JSON.stringify(owned[event]) !== JSON.stringify([antigravityHookEntry(harnessRoot)]))) return null;
+    delete document[antigravityHookName];
+    return JSON.stringify(document);
+  } catch { return null; }
 }
 const claudePluginRoot = '.claude/skills/pure-harness-lifecycle';
 const claudeSettings = '.claude/settings.json';
@@ -155,14 +181,15 @@ const claudePluginFiles = [
   `${claudePluginRoot}/.claude-plugin/plugin.json`,
   `${claudePluginRoot}/hooks/hooks.json`,
 ];
-function claudeHookEntry(script) {
-  return { hooks: [{ type: 'command', command: 'node', args: [script], timeout: 5 }] };
+function claudeHookEntry(script, legacy = false) {
+  return { hooks: [{ type: 'command', command: 'node', args: legacy ? [script] : [script, '--source=claude'], timeout: 5 }] };
 }
 function claudePluginHooks(script) {
   return { hooks: {
     SubagentStart: [claudeHookEntry(script)],
     SubagentStop: [claudeHookEntry(script)],
-    PostToolUse: [{ matcher: 'TaskStop', ...claudeHookEntry(script) }],
+    SessionEnd: [claudeHookEntry(script)],
+    PostToolUse: [{ matcher: 'TaskStop', ...claudeHookEntry(script) }, { matcher: 'Agent', ...claudeHookEntry(script) }],
   } };
 }
 function legacyClaudeSettings(body, script, taskStop) {
@@ -170,13 +197,21 @@ function legacyClaudeSettings(body, script, taskStop) {
   data.hooks ??= {};
   for (const event of ['SubagentStart', 'SubagentStop']) {
     data.hooks[event] ??= [];
-    data.hooks[event].push(claudeHookEntry(script));
+    data.hooks[event].push(claudeHookEntry(script, true));
   }
   if (taskStop) {
     data.hooks.PostToolUse ??= [];
-    data.hooks.PostToolUse.push({ matcher: 'TaskStop', ...claudeHookEntry(script) });
+    data.hooks.PostToolUse.push({ matcher: 'TaskStop', ...claudeHookEntry(script, true) });
   }
   return Buffer.from(`${JSON.stringify(data, null, 2)}\n`);
+}
+function sameHookScript(value, script) {
+  if (typeof value !== 'string') return false;
+  const canonical = text => {
+    const normalized = text.replace(/^['"]|['"]$/g, '').replaceAll('\\', '/');
+    return /^(?:[a-z]:\/|\/\/[^/]+\/[^/]+\/)/i.test(normalized) ? normalized.toLowerCase() : normalized;
+  };
+  return canonical(value) === canonical(script);
 }
 function hasClaudeHookConflict(body, script) {
   if (!body?.length) return false;
@@ -187,7 +222,8 @@ function hasClaudeHookConflict(body, script) {
     const entries = data.hooks?.[event];
     if (entries !== undefined && !Array.isArray(entries)) return true;
     if (entries?.some(entry => Array.isArray(entry?.hooks) && entry.hooks.some(hook => hook?.type === 'command'
-        && (hook.args?.includes?.(script) || hook.command?.includes?.(script))))) return true;
+        && (hook.args?.some?.(arg => sameHookScript(arg, script)) || (typeof hook.command === 'string'
+          && (hook.command.match(/['"][^'"]+['"]|[^\s]+/g) ?? []).some(part => sameHookScript(part, script))))))) return true;
   }
   return false;
 }
@@ -211,13 +247,14 @@ async function retiredClaudeSettings(harnessRoot, setupId, previous, script) {
 function stripOwnedHooks(prior, harnessRoot) {
   try {
     const data = JSON.parse(prior);
-    const owned = JSON.stringify(hookEntry(harnessRoot));
-    for (const event of events) {
+    const shape = events.map(event => {
       if (!Array.isArray(data.hooks?.[event])) return null;
-      const last = data.hooks[event].length - 1;
-      if (last < 0 || JSON.stringify(data.hooks[event][last]) !== owned) return null;
-      data.hooks[event].pop();
-    }
+      const last = data.hooks[event].at(-1);
+      return JSON.stringify(last) === JSON.stringify(hookEntry(harnessRoot, event)) ? 'current'
+        : JSON.stringify(last) === JSON.stringify(hookEntry(harnessRoot, event, true)) ? 'legacy' : null;
+    });
+    if (shape.includes(null) || new Set(shape).size !== 1) return null;
+    for (const event of events) data.hooks[event].pop();
     return JSON.stringify(data);
   } catch { return null; }
 }
@@ -266,17 +303,26 @@ async function otherSharedOwners(harnessRoot, projectRoot, setupId, selectedTarg
   return shared;
 }
 
-export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = projectRoot, target, setupId, profile = 'core' } = {}) {
+export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = projectRoot, target, setupId, profile = 'core', antigravityHooks = false } = {}) {
   assertRoots(harnessRoot, projectRoot, target, setupId);
-  if (!path.isAbsolute(inputRoot) || !['core', 'all'].includes(profile)) throw new Error('invalid bridge input/profile');
+  if (!path.isAbsolute(inputRoot) || !['core', 'all'].includes(profile) || typeof antigravityHooks !== 'boolean'
+      || (antigravityHooks && target !== 'antigravity')) throw new Error('invalid bridge input/profile/hooks');
   if ((await pendingBridgeJournals(harnessRoot)).length) throw new Error('pending bridge journal requires recovery before planning');
   const priorManifest = await manifest(harnessRoot, target);
   if (priorManifest && (priorManifest.setupId !== setupId || priorManifest.projectRoot !== path.resolve(projectRoot))) throw new Error('bridge setupId/project mismatch');
-  if (priorManifest?.actions.some(item => !allowed(item.path, target))) throw new Error('bridge prior path not allowlisted');
+  if (priorManifest?.actions.some(item => !allowed(item.path, target))
+      || (priorManifest?.retiredBackups && (!Array.isArray(priorManifest.retiredBackups)
+        || target !== 'antigravity' || priorManifest.retiredBackups.some(item => item.path !== '.agents/hooks.json'
+          || !item.backupSha256 || item.beforeSha256 !== item.backupSha256)))) throw new Error('bridge prior path not allowlisted');
   const shared = await otherSharedOwners(harnessRoot, projectRoot, setupId, target);
   const compatibility = JSON.parse(await readFile(path.join(harnessRoot, 'harness/compatibility.json'), 'utf8'));
   const roles = await loadRoles(harnessRoot, profile), skills = await listSkills(harnessRoot, profile);
   const prior = new Map((priorManifest?.actions ?? []).map(item => [item.path.toLowerCase(), item]));
+  const retiredHookBackup = priorManifest?.retiredBackups?.find(item => item.path === '.agents/hooks.json');
+  if (retiredHookBackup) {
+    const backup = await bytes(await backupPath(harnessRoot, setupId, target, retiredHookBackup.path));
+    if (!backup || sha(backup) !== retiredHookBackup.backupSha256) throw new Error('bridge backup drift: .agents/hooks.json');
+  }
   const sourceHashes = { roles: {}, skills: {} };
   const desired = new Map();
   function add(relative, body, kind, sourcePath) {
@@ -293,6 +339,10 @@ export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = pr
   for (const skill of skills) await collectSkill(harnessRoot, skill.id, add, sourceHashes, target);
   let configInput = target === 'codex' ? (await bytes(await safePath(inputRoot, '.codex/config.toml', target)))?.toString('utf8') ?? '' : null;
   if (target === 'codex') {
+    const script = await checkedPath(harnessRoot, 'scripts/hook-runtime.mjs');
+    const runtime = await bytes(script);
+    if (!runtime) throw new Error('missing verified Codex hook runtime script');
+    sourceHashes.hookRuntime = sha(runtime);
     if (prior.has('.codex/config.toml')) configInput = stripOwnedToml(configInput);
     const merged = mergeToml(configInput, roles);
     add('.codex/config.toml', merged ?? '', merged === null ? 'conflict' : 'registry');
@@ -300,6 +350,32 @@ export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = pr
     if (prior.has('.codex/hooks.json')) hookInput = stripOwnedHooks(hookInput, harnessRoot);
     const hooks = hookInput === null ? null : mergeHooks(hookInput, harnessRoot);
     add('.codex/hooks.json', hooks ?? '', hooks === null ? 'conflict' : 'hooks');
+  }
+  if (target === 'antigravity') {
+    const rule = `---\ntrigger: always_on\n---\nPure Harness Antigravity lifecycle hooks are ${antigravityHooks ? 'on (unverified)' : 'off'}. To enable them, run from the Harness root: npm run setup -- --target antigravity --antigravity-hooks on --plan, review and save the JSON plan to a file, then apply it with npm run setup -- --apply <plan-file>. These hooks record only categorical diagnostics, not agent starts or stops. On Windows, PreToolUse dispatch has been observed in agy 1.3.5, but lifecycle handling remains unverified (issue #257).\n`;
+    add('.agents/rules/pure-harness-hooks.md', rule, 'instructions');
+    const hookPath = '.agents/hooks.json';
+    const existing = prior.get(hookPath);
+    if (antigravityHooks) {
+      const script = await checkedPath(harnessRoot, 'scripts/hook-runtime.mjs');
+      const runtime = await bytes(script);
+      if (!runtime) throw new Error('missing verified Antigravity hook runtime script');
+      sourceHashes.hookRuntime = sha(runtime);
+      let input = (await bytes(await safePath(inputRoot, hookPath, target)))?.toString('utf8') ?? '';
+      if (existing) input = stripAntigravityHooks(input, harnessRoot);
+      if (!existing && retiredHookBackup && sha(Buffer.from(input)) !== retiredHookBackup.beforeSha256) input = null;
+      const merged = input === null ? null : mergeAntigravityHooks(input, harnessRoot);
+      add(hookPath, merged ?? '', merged === null ? 'conflict' : 'hooks');
+    } else if (existing) {
+      const current = await bytes(await safePath(inputRoot, hookPath, target));
+      if (!current || stripAntigravityHooks(current.toString('utf8'), harnessRoot) === null) {
+        desired.set(hookPath, { path: hookPath, body: null, kind: 'conflict', sourcePath: null });
+      } else {
+        const backup = existing.backupSha256 ? await bytes(await backupPath(harnessRoot, setupId, target, hookPath)) : null;
+        if (existing.backupSha256 && (!backup || sha(backup) !== existing.backupSha256)) throw new Error('bridge backup drift: .agents/hooks.json');
+        desired.set(hookPath, { path: hookPath, body: backup, kind: 'retire', sourcePath: null });
+      }
+    }
   }
   if (target === 'claude') {
     const script = await checkedPath(harnessRoot, 'scripts/hook-runtime.mjs');
@@ -332,11 +408,15 @@ export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = pr
       : owned && owned.afterSha256 === beforeSha256 ? 'replace-owned'
       : ['registry', 'hooks', 'instructions'].includes(item.kind) && item.path !== claudePluginFiles[1] && !owned ? 'append-managed-block' : 'conflict';
     if (owned && owned.afterSha256 !== beforeSha256) action = 'conflict';
+    if (item.kind === 'retire' && !owned) action = 'conflict';
+    if (item.kind === 'retire' && item.path === '.agents/hooks.json' && owned && (owned.beforeSha256 !== (item.body ? sha(item.body) : null))) action = 'conflict';
     if (borrowed && (borrowed.afterSha256 !== beforeSha256 || !item.body || borrowed.afterSha256 !== sha(item.body))) action = 'conflict';
     actions.push({ path: item.path, kind: item.kind, sourcePath: item.sourcePath ?? null, action, beforeSha256,
       afterSha256: action === 'conflict' ? null : item.body ? sha(item.body) : null });
   }
-  const plan = { schemaVersion: 1, harnessRoot: path.resolve(harnessRoot), projectRoot: path.resolve(projectRoot), inputRoot: path.resolve(inputRoot), target, setupId, profile, actions, sourceHashes, nativeSmoke: 'unverified' };
+  const plan = { schemaVersion: 1, harnessRoot: path.resolve(harnessRoot), projectRoot: path.resolve(projectRoot), inputRoot: path.resolve(inputRoot), target, setupId, profile,
+    antigravityHooks, actions, sourceHashes, nativeSmoke: 'unverified', ...(target === 'antigravity' && process.platform === 'win32'
+      ? { warnings: ['Antigravity lifecycle hooks on Windows remain unverified (issue #257)'] } : {}) };
   plan.planSha256 = planDigest(plan);
   planBodies.set(plan, new Map([...desired.values()].map(item => [item.path, item.body])));
   return plan;
@@ -373,6 +453,7 @@ async function createBackup(file, content, relative, recordCreation) {
     throw error;
   }
 }
+function retiredHookBackupFrom(record) { return record?.retiredBackups?.find(item => item.path === '.agents/hooks.json'); }
 function bridgeResult(plan, changedPaths) {
   return { setupId: plan.setupId, target: plan.target, projectRoot: plan.projectRoot, changedPaths, manifestPath: path.join(plan.harnessRoot, manifestPath(plan.target)), nativeSmoke: 'unverified' };
 }
@@ -385,7 +466,7 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
   return withLock(harnessRoot, async () => {
     if ((await pendingBridgeJournals(harnessRoot)).length) throw new Error('pending bridge journal requires recovery before Apply');
     const journalFile = await safeStatePath(harnessRoot, `.harness/adapters/${plan.target}.journal.json`);
-    const replay = await buildBridgePlan({ harnessRoot, projectRoot: plan.projectRoot, inputRoot: plan.inputRoot, target: plan.target, setupId: plan.setupId, profile: plan.profile });
+    const replay = await buildBridgePlan({ harnessRoot, projectRoot: plan.projectRoot, inputRoot: plan.inputRoot, target: plan.target, setupId: plan.setupId, profile: plan.profile, antigravityHooks: plan.antigravityHooks });
     if (replay.planSha256 !== plan.planSha256) throw new Error('bridge source or input changed since planning');
     const desired = planBodies.get(replay);
     if (plan.actions.some(item => item.action === 'conflict')) throw new Error('bridge plan contains review conflict');
@@ -405,7 +486,12 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
         const destination = await safePath(outputRoot, item.path, plan.target);
         const before = await bytes(destination);
         const previousOwnership = priorManifest?.actions.find(owned => owned.path === item.path);
-        const backup = before && !previousOwnership ? await backupPath(harnessRoot, plan.setupId, plan.target, item.path) : null;
+        const reuseRetired = item.path === '.agents/hooks.json' && retiredHookBackupFrom(priorManifest)?.beforeSha256 === item.beforeSha256;
+        const backup = before && !previousOwnership && !reuseRetired ? await backupPath(harnessRoot, plan.setupId, plan.target, item.path) : null;
+        if (reuseRetired) {
+          const retainedBackup = await bytes(await backupPath(harnessRoot, plan.setupId, plan.target, item.path));
+          if (!retainedBackup || sha(retainedBackup) !== retiredHookBackupFrom(priorManifest).backupSha256) throw new Error(`bridge backup drift: ${item.path}`);
+        }
         const entry = { path: item.path, kind: item.kind, beforeSha256: previousOwnership ? previousOwnership.beforeSha256 : item.beforeSha256,
           afterSha256: item.afterSha256, backupSha256: previousOwnership ? previousOwnership.backupSha256 : before ? sha(before) : null, ownership: 'harness-managed' };
         const journalEntry = { ...entry, currentBeforeBase64: before?.toString('base64') ?? null, backupCreated: false };
@@ -448,8 +534,12 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
         }
         retained.set(item.path.toLowerCase(), { ...borrowed.entry, ownership: 'harness-shared' });
       }
+      const retiredBackups = [...(priorManifest?.retiredBackups ?? [])];
+      for (const item of journal.actions) if (item.kind === 'retire' && item.path === '.agents/hooks.json' && item.backupSha256
+          && !retiredBackups.some(backup => backup.path === item.path))
+        retiredBackups.push({ path: item.path, beforeSha256: item.beforeSha256, backupSha256: item.backupSha256 });
       const record = { schemaVersion: 1, setupId: plan.setupId, target: plan.target, projectRoot: plan.projectRoot,
-        actions: [...retained.values()].sort((a, b) => a.path.localeCompare(b.path)) };
+        actions: [...retained.values()].sort((a, b) => a.path.localeCompare(b.path)), ...(retiredBackups.length ? { retiredBackups } : {}) };
       await atomicWrite(await safeStatePath(harnessRoot, manifestPath(plan.target)), JSON.stringify(record, null, 2) + '\n');
       await rm(journalFile, { force: true });
       return bridgeResult(plan, changedPaths);
@@ -480,15 +570,24 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
 
 export async function checkNativeBridge({ harnessRoot, projectRoot, target } = {}) {
   assertRoots(harnessRoot, projectRoot, target);
-  const record = await manifest(harnessRoot, target);
+  let record;
   const issues = [];
+  try { record = await manifest(harnessRoot, target); }
+  catch (error) { if (error.message !== 'invalid bridge manifest') throw error; issues.push(error.message); }
   if ((await pendingBridgeJournals(harnessRoot)).length) issues.push('pending bridge journal requires recovery');
-  if (!record || record.projectRoot !== path.resolve(projectRoot) || record.target !== target) issues.push('missing or mismatched adapter manifest');
+  if (!record || record.projectRoot !== path.resolve(projectRoot) || record.target !== target || !Array.isArray(record.actions)) issues.push('missing or mismatched adapter manifest');
   else for (const item of record.actions) {
     const current = await bytes(await safePath(projectRoot, item.path, target));
     if (!current || sha(current) !== item.afterSha256) issues.push(`owned file drift: ${item.path}`);
   }
-  return { ok: issues.length === 0, issues, target, projectRoot: path.resolve(projectRoot), nativeSmoke: 'unverified', discovery: 'unverified', permission: 'unverified', hooks: 'unverified' };
+  const verifiedRecord = record && record.projectRoot === path.resolve(projectRoot) && record.target === target && Array.isArray(record.actions) && !issues.length;
+  const hooks = target === 'antigravity' ? !verifiedRecord ? 'unknown/unverified'
+    : record.actions.some(item => item.path === '.agents/hooks.json') ? 'on/unverified' : 'off' : 'unverified';
+  return { ok: issues.length === 0, issues, target, projectRoot: path.resolve(projectRoot), nativeSmoke: 'unverified', discovery: 'unverified', permission: 'unverified', hooks,
+    ...(target === 'antigravity' ? { hookNote: hooks === 'off'
+      ? 'Antigravity hooks: off (enable: npm run setup -- --target antigravity --antigravity-hooks on --plan; review/save JSON, then npm run setup -- --apply <plan-file>)'
+      : hooks === 'on/unverified' ? 'Antigravity hooks: on/unverified (Windows issue #257)'
+        : 'Antigravity hooks: unknown/unverified (manifest missing, mismatched, or drifted)' } : {}) };
 }
 
 export async function planBridgeUpdate(options = {}) { return buildBridgePlan(options); }
