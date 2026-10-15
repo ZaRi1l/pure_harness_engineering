@@ -63,6 +63,8 @@ Main의 모델은 사용자가 선택하거나 현재 설정을 상속합니다.
 
 정본 역할·Skill은 Harness의 `harness/agents/`와 `.agents/skills/`에 있습니다. 설정·업데이트 계획은 선택한 도구의 관리 대상 파일만 `project/`에 배치합니다. Codex는 `.codex/agents/*.toml`, `.codex/config.toml`, 선택적 `.codex/hooks.json`, `.agents/skills/*`를 사용합니다. Claude Code는 `.claude/agents/*.md`와 `.claude/skills/*`, OpenCode는 `.opencode/agents/*.md`와 `.agents/skills/*`, Antigravity는 `.agents/agents/*/agent.md`와 `.agents/skills/*`를 사용합니다. 기존 사용자 파일은 소유권·해시·충돌 검사를 통과해야 하며, 관리 대상 밖의 파일은 변경하지 않습니다.
 
+Claude Code는 `project/.claude/skills/pure-harness-lifecycle/`에 프로젝트 한정 플러그인을 생성합니다. `hooks/hooks.json`은 `SubagentStart`, `SubagentStop`, `PostToolUse(TaskStop)`를 등록하며, 새 설치는 사용자 `.claude/settings.json`이나 전역 설정에 Harness 훅을 추가하지 않습니다. 이전에 Harness가 소유한 설정 훅은 해시와 원본 백업을 검증한 업데이트 계획에서만 은퇴하고 원래 설정 바이트를 복원합니다. `claude plugin validate project/.claude/skills/pure-harness-lifecycle`로 형식을 검사한 뒤, 신뢰 승인된 `project/`를 주 작업 디렉터리로 새 세션을 시작하여 `claude plugin list` 또는 `/plugin`에서 실제 로딩을 확인하세요. 파일 변경 후에는 `/reload-plugins` 또는 세션 재시작이 필요합니다. 격리된 한 세션에서만 명시적으로 로드하려면 프로젝트 루트에서 `claude --plugin-dir ./.claude/skills/pure-harness-lifecycle`을 사용합니다. 형식 검증과 로딩 목록만으로 실제 훅 발송을 입증할 수는 없습니다.
+
 파일 배치와 기본 CLI 점검만으로 도구의 네이티브 역할 탐색, Skill 소비, 실행 권한, 훅 발송을 증명할 수는 없습니다. 2026-10-12 중립 Codex 세션에서 실제 root·worker·planner 역할 ID와 프로젝트 훅 5종의 발송은 관찰했습니다. 그러나 Windows 실행 helper 오류로 Node hello CLI·`node --test`의 실제 실행, Skill 소비, 명령 실행 권한의 실효성은 미검증이며 `nativeSmoke`는 승격하지 않습니다. Claude Code, OpenCode, Antigravity의 네이티브 동작도 미검증입니다. [네이티브 스모크 절차](native-smoke-worksheet.md)는 검증 절차이지 통과 기록이 아닙니다.
 
 Codex에서 처음 `project/`를 열면 폴더의 신뢰 여부를 검토하고, 신뢰할 수 있다고 판단되면 승인하세요. `/hooks`에서 현재 설치된 훅의 정확한 정의·실행 명령을 살펴본 뒤 각각 신뢰 여부를 결정하세요. 파일 생성이나 Node 기반 설정 점검만으로 실제 실행 권한이 승인되지는 않습니다. 신뢰 단계를 우회하는 옵션을 기본 설정으로 사용하지 마세요.

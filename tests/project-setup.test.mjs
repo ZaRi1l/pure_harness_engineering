@@ -24,6 +24,8 @@ async function fixture(t, emptyDestination = false) {
   await cp(path.join(engine, 'harness/agents'), path.join(harnessRoot, 'harness/agents'), { recursive: true });
   await cp(path.join(engine, '.agents/skills'), path.join(harnessRoot, '.agents/skills'), { recursive: true });
   await cp(path.join(engine, 'harness/compatibility.json'), path.join(harnessRoot, 'harness/compatibility.json'));
+  await mkdir(path.join(harnessRoot, 'scripts'));
+  await cp(path.join(engine, 'scripts/hook-runtime.mjs'), path.join(harnessRoot, 'scripts/hook-runtime.mjs'));
   if (emptyDestination) await mkdir(path.join(harnessRoot, 'project'));
   return { base, harnessRoot, projectRoot: path.join(harnessRoot, 'project') };
 }
@@ -208,6 +210,45 @@ test('bridge write failure rolls back published child and retains recoverable se
   assert.equal(await exists(f.projectRoot), false);
   assert.equal(await exists(path.join(f.harnessRoot, '.harness/config.json')), false);
   assert.equal(await exists(path.join(f.harnessRoot, '.harness/setup-journal.json')), true);
+});
+
+test('Claude setup migration restores a bridge-created settings file on failure, then retires it', async t => {
+  const f = await fixture(t);
+  const first = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'new', target: 'claude' });
+  await applyProjectSetup({ harnessRoot: f.harnessRoot, plan: first });
+  const configPath = path.join(f.harnessRoot, '.harness/config.json');
+  const configBefore = await readFile(configPath);
+  const manifestPath = path.join(f.harnessRoot, '.harness/adapters/claude.json');
+  const manifest = JSON.parse(await readFile(manifestPath));
+  for (const relative of ['.claude/skills/pure-harness-lifecycle/.claude-plugin/plugin.json', '.claude/skills/pure-harness-lifecycle/hooks/hooks.json']) {
+    await rm(path.join(f.projectRoot, relative));
+    manifest.actions = manifest.actions.filter(item => item.path !== relative);
+  }
+  const script = path.join(f.harnessRoot, 'scripts/hook-runtime.mjs');
+  const settings = path.join(f.projectRoot, '.claude/settings.json');
+  const oldGroup = { hooks: [{ type: 'command', command: 'node', args: [script], timeout: 5 }] };
+  const oldBytes = Buffer.from(`${JSON.stringify({ hooks: { SubagentStart: [oldGroup], SubagentStop: [oldGroup] } }, null, 2)}\n`);
+  await writeFile(settings, oldBytes);
+  manifest.actions.push({ path: '.claude/settings.json', kind: 'hooks', beforeSha256: null, afterSha256: sha(oldBytes), backupSha256: null, ownership: 'harness-managed' });
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const manifestBefore = await readFile(manifestPath);
+  const plan = await planProjectSetup({ harnessRoot: f.harnessRoot, mode: 'update', target: 'claude' });
+  const retirement = plan.bridge.actions.find(item => item.path === '.claude/settings.json');
+  assert.equal(retirement.action, 'retire-owned');
+  assert.equal(retirement.afterSha256, null);
+  await assert.rejects(applyProjectSetup({ harnessRoot: f.harnessRoot, plan }, {
+    beforeWrite: phase => { if (phase === 'before-config') throw new Error('injected setup finalization failure'); }
+  }), /injected setup finalization failure/);
+  assert.deepEqual(await readFile(settings), oldBytes);
+  assert.deepEqual(await readFile(manifestPath), manifestBefore);
+  assert.deepEqual(await readFile(configPath), configBefore);
+  assert.equal(await exists(path.join(f.projectRoot, '.claude/skills/pure-harness-lifecycle/hooks/hooks.json')), false);
+  assert.equal(JSON.parse(await readFile(path.join(f.harnessRoot, '.harness/setup-journal.json'))).phase, 'rolled-back');
+  const result = await applyProjectSetup({ harnessRoot: f.harnessRoot, plan });
+  assert.equal(result.verification.ok, true);
+  assert.equal(await exists(settings), false);
+  assert.equal(await exists(path.join(f.projectRoot, '.claude/skills/pure-harness-lifecycle/hooks/hooks.json')), true);
+  assert.equal(JSON.parse(await readFile(manifestPath)).actions.some(item => item.path === '.claude/settings.json'), false);
 });
 
 test('update retains setup identity and prior config until final commit', async t => {

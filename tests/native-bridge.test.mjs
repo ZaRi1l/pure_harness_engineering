@@ -11,13 +11,15 @@ import { buildBridgePlan, applyBridgePlan, checkNativeBridge, planBridgeUpdate, 
 const source = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
-async function fixture(t) {
-  const harnessRoot = await mkdtemp(path.join(os.tmpdir(), 'native-bridge-'));
+async function fixture(t, prefix = 'native-bridge-') {
+  const harnessRoot = await mkdtemp(path.join(os.tmpdir(), prefix));
   t.after(() => rm(harnessRoot, { recursive: true, force: true }));
   await cp(path.join(source, 'harness/agents'), path.join(harnessRoot, 'harness/agents'), { recursive: true });
   await cp(path.join(source, '.agents/skills'), path.join(harnessRoot, '.agents/skills'), { recursive: true });
   await mkdir(path.join(harnessRoot, 'harness'), { recursive: true });
   await cp(path.join(source, 'harness/compatibility.json'), path.join(harnessRoot, 'harness/compatibility.json'));
+  await mkdir(path.join(harnessRoot, 'scripts'));
+  await cp(path.join(source, 'scripts/hook-runtime.mjs'), path.join(harnessRoot, 'scripts/hook-runtime.mjs'));
   const projectRoot = path.join(harnessRoot, 'project');
   await mkdir(projectRoot);
   execFileSync('git', ['init', '--initial-branch=main', projectRoot], { stdio: 'ignore' });
@@ -96,51 +98,249 @@ test('Codex preserves user TOML, hook ordering, and product AGENTS while adding 
   assert.equal(await readFile(path.join(f.projectRoot, 'AGENTS.md'), 'utf8'), '# Product rules\nKeep this.\n');
 });
 
-test('Claude installs two executable subagent hooks while preserving user settings and rollback bytes', async t => {
-  const f = await fixture(t);
-  await mkdir(path.join(f.projectRoot, '.claude'));
-  const original = '{\n  "permissions": {"allow": ["Read"]},\n  "hooks": {"SubagentStart": [{"hooks": [{"type": "command", "command": "echo user"}]}], "CustomEvent": []}\n}\n';
+const pluginPath = '.claude/skills/pure-harness-lifecycle';
+const pluginManifest = `${pluginPath}/.claude-plugin/plugin.json`;
+const pluginHooks = `${pluginPath}/hooks/hooks.json`;
+const hookScript = f => path.join(f.harnessRoot, 'scripts/hook-runtime.mjs');
+const hookGroup = script => ({ hooks: [{ type: 'command', command: 'node', args: [script], timeout: 5 }] });
+async function legacyClaude(f, { initial = null, taskStop = false } = {}) {
   const file = path.join(f.projectRoot, '.claude/settings.json');
-  await writeFile(file, original);
+  if (initial !== null) { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, initial); }
+  const original = initial === null ? {} : JSON.parse(initial);
+  const data = structuredClone(original);
+  data.hooks ??= {};
+  for (const event of ['SubagentStart', 'SubagentStop']) (data.hooks[event] ??= []).push(hookGroup(hookScript(f)));
+  if (taskStop) (data.hooks.PostToolUse ??= []).push({ matcher: 'TaskStop', ...hookGroup(hookScript(f)) });
+  const rendered = `${JSON.stringify(data, null, 2)}\n`;
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, rendered);
+  const backupSha256 = initial === null ? null : sha(Buffer.from(initial));
+  if (initial !== null) {
+    const backup = path.join(f.harnessRoot, '.harness/backups', f.setupId, 'claude', sha(Buffer.from('.claude/settings.json')));
+    await mkdir(path.dirname(backup), { recursive: true }); await writeFile(backup, initial);
+  }
+  const manifest = { schemaVersion: 1, setupId: f.setupId, target: 'claude', projectRoot: f.projectRoot,
+    actions: [{ path: '.claude/settings.json', kind: 'hooks', beforeSha256: backupSha256, afterSha256: sha(Buffer.from(rendered)), backupSha256, ownership: 'harness-managed' }] };
+  const manifestFile = path.join(f.harnessRoot, '.harness/adapters/claude.json');
+  await mkdir(path.dirname(manifestFile), { recursive: true }); await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+  return { file, rendered, manifestFile };
+}
+
+test('Claude fresh install writes project plugin, not settings, and rollback preserves user settings bytes', async t => {
+  const f = await fixture(t);
+  const file = path.join(f.projectRoot, '.claude/settings.json');
+  const original = '{\r\n  "permissions": {"allow": ["Read"]},\r\n  "hooks": {"SubagentStart": [{"hooks": [{"type": "command", "command": "echo user"}]}], "PostToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": "echo user"}]}]}\r\n}\r\n';
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, original);
   const plan = await buildBridgePlan({ ...f, target: 'claude' });
-  assert.equal(plan.actions.find(item => item.path === '.claude/settings.json')?.action, 'append-managed-block');
+  assert.equal(plan.actions.some(item => item.path === '.claude/settings.json'), false);
+  assert.deepEqual(plan.actions.filter(item => item.kind === 'plugin' || item.kind === 'hooks').map(item => item.path), [pluginManifest, pluginHooks]);
   await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
-  const settings = JSON.parse(await readFile(file, 'utf8'));
-  assert.deepEqual(settings.permissions, { allow: ['Read'] });
-  assert.equal(settings.hooks.SubagentStart[0].hooks[0].command, 'echo user');
-  assert.deepEqual(Object.keys(settings.hooks), ['SubagentStart', 'CustomEvent', 'SubagentStop']);
-  for (const event of ['SubagentStart', 'SubagentStop']) {
-    const hook = settings.hooks[event].at(-1).hooks[0];
-    assert.equal(hook.type, 'command');
+  assert.equal(await readFile(file, 'utf8'), original);
+  assert.equal(JSON.parse(await readFile(path.join(f.projectRoot, pluginManifest), 'utf8')).name, 'pure-harness-lifecycle');
+  const data = JSON.parse(await readFile(path.join(f.projectRoot, pluginHooks), 'utf8'));
+  assert.deepEqual(Object.keys(data.hooks), ['SubagentStart', 'SubagentStop', 'PostToolUse']);
+  assert.deepEqual(data.hooks.PostToolUse.map(entry => entry.matcher), ['TaskStop']);
+  for (const event of ['SubagentStart', 'SubagentStop', 'PostToolUse']) {
+    const hook = data.hooks[event][0].hooks[0];
     assert.equal(hook.command, 'node');
-    assert.deepEqual(hook.args, [path.join(f.harnessRoot, 'scripts/hook-runtime.mjs')]);
+    assert.deepEqual(hook.args, [hookScript(f)]);
     assert.equal('commandWindows' in hook, false);
   }
-  assert.equal(settings.hooks.SubagentStart.length, 2);
-  assert.equal(settings.hooks.SubagentStop.length, 1);
-  assert.equal(settings.hooks.SessionStart, undefined);
-  assert.equal((await planBridgeUpdate({ ...f, target: 'claude' })).actions.find(item => item.path === '.claude/settings.json').action, 'unchanged');
+  const update = await planBridgeUpdate({ ...f, target: 'claude' });
+  assert.ok(update.actions.every(item => item.action === 'unchanged'));
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: update });
   assert.equal((await checkNativeBridge({ harnessRoot: f.harnessRoot, projectRoot: f.projectRoot, target: 'claude' })).ok, true);
   await rollbackNativeBridge({ ...f, target: 'claude' });
   assert.equal(await readFile(file, 'utf8'), original);
+  await assert.rejects(readFile(path.join(f.projectRoot, pluginHooks)));
 });
 
-test('Claude settings with no hooks are accepted and post-install user edits block updates', async t => {
+test('Claude existing settings without hooks remain untouched; post-install plugin drift blocks update and rollback', async t => {
   const f = await fixture(t);
-  await mkdir(path.join(f.projectRoot, '.claude'));
   const file = path.join(f.projectRoot, '.claude/settings.json');
-  await writeFile(file, '{"permissions":{"allow":["Read"]}}\n');
-  const plan = await buildBridgePlan({ ...f, target: 'claude' });
-  assert.equal(plan.actions.find(item => item.path === '.claude/settings.json')?.action, 'append-managed-block');
-  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
-  const settings = JSON.parse(await readFile(file, 'utf8'));
-  assert.deepEqual(Object.keys(settings.hooks), ['SubagentStart', 'SubagentStop']);
-  settings.hooks.SubagentStop.push({ hooks: [{ type: 'command', command: 'echo later user change' }] });
-  await writeFile(file, JSON.stringify(settings));
+  const original = '{"permissions":{"allow":["Read"]}}\n';
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, original);
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: await buildBridgePlan({ ...f, target: 'claude' }) });
+  assert.equal(await readFile(file, 'utf8'), original);
+  const hooks = path.join(f.projectRoot, pluginHooks);
+  await writeFile(hooks, '{"hooks":{}}\n');
   const update = await planBridgeUpdate({ ...f, target: 'claude' });
-  assert.equal(update.actions.find(item => item.path === '.claude/settings.json').action, 'conflict');
+  assert.equal(update.actions.find(item => item.path === pluginHooks).action, 'conflict');
   await assert.rejects(rollbackNativeBridge({ ...f, target: 'claude' }), /drift/);
-  assert.equal(JSON.parse(await readFile(file, 'utf8')).hooks.SubagentStop.at(-1).hooks[0].command, 'echo later user change');
+  assert.equal(await readFile(hooks, 'utf8'), '{"hooks":{}}\n');
+});
+
+test('Claude migrates hash-clean two- and three-hook settings, restores exact user bytes and retires ownership', async t => {
+  for (const taskStop of [false, true]) await t.test(taskStop ? 'three-hook' : 'two-hook', async t => {
+    const f = await fixture(t);
+    const original = '{\r\n  "permissions": {"allow": ["Read"]},\r\n  "hooks": {"SubagentStart": [{"hooks": [{"type": "command", "command": "echo user start"}]}], "PostToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": "echo user edit"}]}]}\r\n}\r\n';
+    const { file, rendered, manifestFile } = await legacyClaude(f, { initial: original, taskStop });
+    const plan = await buildBridgePlan({ ...f, target: 'claude' });
+    const retired = plan.actions.find(item => item.path === '.claude/settings.json');
+    assert.equal(retired.action, 'retire-owned');
+    assert.equal(retired.beforeSha256, sha(Buffer.from(rendered)));
+    assert.equal(retired.afterSha256, sha(Buffer.from(original)));
+    assert.equal(plan.actions.at(-1).path, '.claude/settings.json', 'retirement happens after plugin writes');
+    const result = await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+    assert.equal(result.changedPaths.at(-1), '.claude/settings.json');
+    assert.equal(await readFile(file, 'utf8'), original);
+    const ownership = JSON.parse(await readFile(manifestFile, 'utf8'));
+    assert.equal(ownership.actions.some(action => action.path === '.claude/settings.json'), false);
+    assert.equal(ownership.actions.some(action => action.path === pluginHooks), true);
+    const update = await planBridgeUpdate({ ...f, target: 'claude' });
+    assert.ok(update.actions.every(item => item.action === 'unchanged'));
+    await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: update });
+    await rollbackNativeBridge({ ...f, target: 'claude' });
+    assert.equal(await readFile(file, 'utf8'), original);
+  });
+});
+
+test('Claude plugin Node arguments preserve an absolute Windows path containing spaces', async t => {
+  const f = await fixture(t, 'native bridge space ');
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  assert.match(hookScript(f), /native bridge space /);
+  assert.ok(path.isAbsolute(hookScript(f)));
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  const hooks = JSON.parse(await readFile(path.join(f.projectRoot, pluginHooks), 'utf8')).hooks;
+  for (const event of ['SubagentStart', 'SubagentStop', 'PostToolUse'])
+    assert.deepEqual(hooks[event][0].hooks[0].args, [hookScript(f)]);
+});
+
+test('Claude rejects a hook runtime reached through a scripts junction during plan and Apply', async t => {
+  const f = await fixture(t);
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  const external = await mkdtemp(path.join(os.tmpdir(), 'bridge-hook-redirect-'));
+  t.after(() => rm(external, { recursive: true, force: true }));
+  await cp(hookScript(f), path.join(external, 'hook-runtime.mjs'));
+  await rm(path.join(f.harnessRoot, 'scripts'), { recursive: true });
+  await symlink(external, path.join(f.harnessRoot, 'scripts'), 'junction');
+  await assert.rejects(buildBridgePlan({ ...f, target: 'claude' }), /symlink/);
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan }), /symlink/);
+  await assert.rejects(readFile(path.join(f.projectRoot, pluginHooks)), { code: 'ENOENT' });
+  assert.deepEqual(await readdir(external), ['hook-runtime.mjs']);
+});
+
+test('Claude migrates a settings-based install over a zero-byte settings file and restores the empty bytes', async t => {
+  const f = await fixture(t);
+  const file = path.join(f.projectRoot, '.claude/settings.json');
+  // Exact output of the earlier settings-based installer for an existing empty settings file.
+  const rendered = `${JSON.stringify({ hooks: { SubagentStart: [hookGroup(hookScript(f))], SubagentStop: [hookGroup(hookScript(f))] } }, null, 2)}\n`;
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, rendered);
+  const backup = path.join(f.harnessRoot, '.harness/backups', f.setupId, 'claude', sha(Buffer.from('.claude/settings.json')));
+  await mkdir(path.dirname(backup), { recursive: true }); await writeFile(backup, '');
+  const manifestFile = path.join(f.harnessRoot, '.harness/adapters/claude.json');
+  await mkdir(path.dirname(manifestFile), { recursive: true });
+  await writeFile(manifestFile, `${JSON.stringify({ schemaVersion: 1, setupId: f.setupId, target: 'claude', projectRoot: f.projectRoot,
+    actions: [{ path: '.claude/settings.json', kind: 'hooks', beforeSha256: sha(''), afterSha256: sha(rendered), backupSha256: sha(''), ownership: 'harness-managed' }] }, null, 2)}\n`);
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  const retired = plan.actions.find(item => item.path === '.claude/settings.json');
+  assert.equal(retired.action, 'retire-owned');
+  assert.equal(retired.afterSha256, sha(''));
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  assert.equal(await readFile(file, 'utf8'), '');
+  assert.equal(JSON.parse(await readFile(manifestFile, 'utf8')).actions.some(item => item.path === '.claude/settings.json'), false);
+  const update = await planBridgeUpdate({ ...f, target: 'claude' });
+  assert.ok(update.actions.every(item => item.action === 'unchanged'));
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: update });
+  assert.equal(await readFile(file, 'utf8'), '');
+  await rollbackNativeBridge({ ...f, target: 'claude' });
+  assert.equal(await readFile(file, 'utf8'), '');
+});
+
+test('Claude fresh install over a zero-byte settings file is not a conflict and keeps the empty bytes', async t => {
+  const f = await fixture(t);
+  const file = path.join(f.projectRoot, '.claude/settings.json');
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, '');
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  assert.equal(plan.actions.some(item => item.path === '.claude/settings.json'), false);
+  assert.ok(plan.actions.every(item => item.action !== 'conflict'));
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  assert.equal((await readFile(file)).length, 0);
+});
+
+test('Claude refuses an absent or altered legacy backup even when managed settings are hash-clean', async t => {
+  for (const backupState of ['missing', 'altered']) await t.test(backupState, async t => {
+    const f = await fixture(t);
+    const original = '{"permissions":{"allow":["Read"]}}\r\n';
+    const { file, rendered, manifestFile } = await legacyClaude(f, { initial: original });
+    const backup = path.join(f.harnessRoot, '.harness/backups', f.setupId, 'claude', sha(Buffer.from('.claude/settings.json')));
+    if (backupState === 'missing') await rm(backup);
+    else await writeFile(backup, 'altered');
+    const manifestBefore = await readFile(manifestFile);
+    await assert.rejects(buildBridgePlan({ ...f, target: 'claude' }), /backup drift/);
+    assert.equal(await readFile(file, 'utf8'), rendered);
+    assert.deepEqual(await readFile(manifestFile), manifestBefore);
+  });
+});
+
+test('Claude legacy bridge-created settings are removed after plugin install, with interruption rollback', async t => {
+  const f = await fixture(t);
+  const { file, rendered, manifestFile } = await legacyClaude(f);
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  const retired = plan.actions.find(item => item.path === '.claude/settings.json');
+  assert.equal(retired.action, 'retire-owned');
+  assert.equal(retired.afterSha256, null);
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan }, { beforeWrite(relative) {
+    if (relative === '.claude/settings.json') throw new Error('injected retirement failure');
+  } }), /injected retirement failure/);
+  assert.equal(await readFile(file, 'utf8'), rendered);
+  await assert.rejects(readFile(path.join(f.projectRoot, pluginHooks)));
+  assert.equal(JSON.parse(await readFile(manifestFile)).actions.length, 1);
+  await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapters/claude.journal.json')), { code: 'ENOENT' });
+  const result = await applyBridgePlan({ harnessRoot: f.harnessRoot, plan });
+  assert.equal(result.changedPaths.at(-1), '.claude/settings.json');
+  await assert.rejects(readFile(file));
+  assert.equal(JSON.parse(await readFile(manifestFile)).actions.some(item => item.path === '.claude/settings.json'), false);
+  await rollbackNativeBridge({ ...f, target: 'claude' });
+  await assert.rejects(readFile(file));
+});
+
+test('Claude refuses malformed, drifted and unverified legacy settings without adopting new bytes', async t => {
+  const f = await fixture(t);
+  const original = '{"permissions":{"allow":["Read"]}}\n';
+  const { file, rendered, manifestFile } = await legacyClaude(f, { initial: original, taskStop: false });
+  const manifestBefore = await readFile(manifestFile);
+  const modified = JSON.parse(await readFile(file, 'utf8'));
+  modified.hooks.PostToolUse = [{ matcher: 'TaskStop', ...hookGroup(hookScript(f)) }];
+  await writeFile(file, JSON.stringify(modified));
+  const drift = await buildBridgePlan({ ...f, target: 'claude' });
+  assert.equal(drift.actions.find(item => item.path === '.claude/settings.json').action, 'conflict');
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan: drift }), /conflict/);
+  assert.deepEqual(await readFile(manifestFile), manifestBefore);
+  await writeFile(file, '{bad');
+  const malformed = await buildBridgePlan({ ...f, target: 'claude' });
+  assert.equal(malformed.actions.find(item => item.path === '.claude/settings.json').action, 'conflict');
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan: malformed }), /conflict/);
+  await writeFile(file, rendered);
+  const manifest = JSON.parse(manifestBefore);
+  manifest.actions[0].afterSha256 = sha(Buffer.from('foreign bytes'));
+  await writeFile(manifestFile, JSON.stringify(manifest));
+  await assert.rejects(buildBridgePlan({ ...f, target: 'claude' }), /cannot be verified/);
+});
+
+test('Claude refuses a prior manifest pointing to unlisted plugin files', async t => {
+  const f = await fixture(t);
+  const { manifestFile } = await legacyClaude(f);
+  const record = JSON.parse(await readFile(manifestFile));
+  record.actions.push({ path: `${pluginPath}/hooks/register.tsx`, kind: 'hooks', beforeSha256: null,
+    afterSha256: sha(Buffer.from('foreign')), backupSha256: null, ownership: 'harness-managed' });
+  await writeFile(manifestFile, JSON.stringify(record));
+  await assert.rejects(buildBridgePlan({ ...f, target: 'claude' }), /allowlisted/);
+});
+
+test('Claude refuses duplicate runtime registration in user settings and pre-existing plugin files', async t => {
+  const f = await fixture(t);
+  const settings = path.join(f.projectRoot, '.claude/settings.json');
+  await mkdir(path.dirname(settings), { recursive: true });
+  await writeFile(settings, JSON.stringify({ hooks: { SubagentStop: [hookGroup(hookScript(f))] } }));
+  const conflict = await buildBridgePlan({ ...f, target: 'claude' });
+  assert.equal(conflict.actions.find(item => item.path === '.claude/settings.json').action, 'conflict');
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan: conflict }), /conflict/);
+  await writeFile(settings, '{"permissions":{"allow":["Read"]}}');
+  await mkdir(path.dirname(path.join(f.projectRoot, pluginHooks)), { recursive: true });
+  await writeFile(path.join(f.projectRoot, pluginHooks), '{"hooks":{}}');
+  const pluginConflict = await buildBridgePlan({ ...f, target: 'claude' });
+  assert.equal(pluginConflict.actions.find(item => item.path === pluginHooks).action, 'conflict');
 });
 
 test('planning marks conflicting role registration and malformed configuration for review', async t => {
@@ -174,6 +374,47 @@ test('partial write failure restores exact baseline and leaves unrelated user fi
   assert.equal(await readFile(unrelated, 'utf8'), 'user bytes\n');
   await assert.rejects(readFile(path.join(f.projectRoot, '.opencode/agents/planner.md')));
   await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapters/opencode.json')));
+});
+
+test('Apply refuses an existing deterministic backup without overwriting or deleting it', async t => {
+  const f = await fixture(t);
+  const original = '# user product notes\n';
+  const foreign = 'foreign backup bytes\n';
+  const destination = path.join(f.projectRoot, 'AGENTS.md');
+  await writeFile(destination, original);
+  const plan = await buildBridgePlan({ ...f, target: 'claude' });
+  const backup = path.join(f.harnessRoot, '.harness/backups', f.setupId, 'claude', sha(Buffer.from('AGENTS.md')));
+  await mkdir(path.dirname(backup), { recursive: true });
+  await writeFile(backup, foreign);
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan }), /backup collision/);
+  assert.equal(await readFile(backup, 'utf8'), foreign);
+  assert.equal(await readFile(destination, 'utf8'), original);
+  for (const item of plan.actions.filter(action => action.action === 'create'))
+    await assert.rejects(readFile(path.join(f.projectRoot, item.path)), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapters/claude.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapters/claude.journal.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapter.lock')), { code: 'ENOENT' });
+});
+
+test('a matching foreign backup for a borrowed shared path is not adopted or removed', async t => {
+  const f = await fixture(t);
+  const original = '# user product notes\n';
+  await writeFile(path.join(f.projectRoot, 'AGENTS.md'), original);
+  await applyBridgePlan({ harnessRoot: f.harnessRoot, plan: await buildBridgePlan({ ...f, target: 'codex' }) });
+  const firstBackup = path.join(f.harnessRoot, '.harness/backups', f.setupId, 'codex', sha(Buffer.from('AGENTS.md')));
+  const foreignBackup = path.join(f.harnessRoot, '.harness/backups', f.setupId, 'opencode', sha(Buffer.from('AGENTS.md')));
+  await mkdir(path.dirname(foreignBackup), { recursive: true });
+  await writeFile(foreignBackup, await readFile(firstBackup));
+  const sharedBefore = await readFile(path.join(f.projectRoot, 'AGENTS.md'));
+  const plan = await buildBridgePlan({ ...f, target: 'opencode' });
+  await assert.rejects(applyBridgePlan({ harnessRoot: f.harnessRoot, plan }), /backup collision/);
+  assert.equal(await readFile(foreignBackup, 'utf8'), original);
+  assert.deepEqual(await readFile(path.join(f.projectRoot, 'AGENTS.md')), sharedBefore);
+  assert.equal(await readFile(firstBackup, 'utf8'), original);
+  for (const item of plan.actions.filter(action => action.action === 'create'))
+    await assert.rejects(readFile(path.join(f.projectRoot, item.path)), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapters/opencode.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(f.harnessRoot, '.harness/adapters/opencode.journal.json')), { code: 'ENOENT' });
 });
 
 test('malformed hooks and case-colliding paths cannot be installed', async t => {
@@ -382,7 +623,6 @@ test('rollback crash after manifest removal blocks new plan and Apply until jour
 test('generated project guidance claim command runs against the fixed child from its cwd', async t => {
   const f = await fixture(t);
   execFileSync('git', ['init', '--initial-branch=main', f.harnessRoot], { stdio: 'ignore' });
-  await mkdir(path.join(f.harnessRoot, 'scripts'));
   for (const name of ['runtime-state.mjs', 'project-context.mjs', 'task-records.mjs', 'telemetry-schema.mjs'])
     await cp(path.join(source, 'scripts', name), path.join(f.harnessRoot, 'scripts', name));
   await mkdir(path.join(f.harnessRoot, '.harness'));

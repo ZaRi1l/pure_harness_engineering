@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cp, lstat, mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +20,8 @@ async function fixture(t) {
   await cp(path.join(engine, 'harness/agents'), path.join(harnessRoot, 'harness/agents'), { recursive: true });
   await cp(path.join(engine, '.agents/skills'), path.join(harnessRoot, '.agents/skills'), { recursive: true });
   await cp(path.join(engine, 'harness/compatibility.json'), path.join(harnessRoot, 'harness/compatibility.json'));
+  await mkdir(path.join(harnessRoot, 'scripts'));
+  await cp(path.join(engine, 'scripts/hook-runtime.mjs'), path.join(harnessRoot, 'scripts/hook-runtime.mjs'));
   const output = { stdout: '', stderr: '' };
   const io = { harnessRoot, stdout: { write: value => { output.stdout += value; } }, stderr: { write: value => { output.stderr += value; } } };
   return { harnessRoot, io, output };
@@ -66,8 +68,11 @@ test('configured target-only plan is update and invalid or legacy flags fail clo
   assert.equal(await main(['--apply', file], f.io), 0);
   f.output.stdout = '';
   assert.equal(await main(['--target', 'claude', '--plan'], f.io), 0);
-  assert.equal(JSON.parse(f.output.stdout).mode, 'update');
-  assert.equal(JSON.parse(f.output.stdout).profile, 'all');
+  const update = JSON.parse(f.output.stdout);
+  assert.equal(update.mode, 'update');
+  assert.equal(update.profile, 'all');
+  assert.equal(update.bridge.sourceHashes.hookRuntime, createHash('sha256')
+    .update(await readFile(path.join(f.harnessRoot, 'scripts/hook-runtime.mjs'))).digest('hex'));
   assert.equal(await main(['--profile', 'invalid', '--plan'], f.io), 1);
   assert.equal(await main(['--profile', 'core', '--profile', 'all', '--plan'], f.io), 1);
   assert.equal(await main(['--project', 'other', '--plan'], f.io), 1);

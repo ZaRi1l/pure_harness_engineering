@@ -47,12 +47,172 @@ test('Claude project hooks record native start and stop without inferring a resu
   assert.ok(stopped.events.filter(event => event.type === 'hook_dispatch').every(event => !event.message.includes('Codex')));
 });
 
+test('stop dispatch distinguishes missing, unknown, stale, mismatched, stopped, and duplicate without payload bodies', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root); await store.initialize();
+  const stop = payload => legacyHook({ hook_event_name: 'SubagentStop',
+    prompt: 'SECRET_PROMPT', agent_transcript_path: 'SECRET_PATH', error: 'SECRET_ERROR', ...payload }, root);
+  await stop({ agent_id: 'SECRET INVALID ID' });
+  await stop({ agent_id: 'unknown-1' });
+  await store.agentStarted('stale-1', 'worker', '', { source: 'hook' });
+  await store.agentStopped('stale-1', 'stopped', { source: 'orchestration' });
+  await store.agentResumed('stale-1', '', 'Accepted', { task_id: 'shared', turn_token: 'turn-2', source: 'orchestration' });
+  await store.claim('stale-1', ['src/stale']);
+  await stop({ agent_id: 'stale-1', task_id: 'shared' });
+  await store.agentStarted('mismatch-1', 'worker', '', { source: 'hook' });
+  await store.agentStopped('mismatch-1', 'stopped', { source: 'orchestration' });
+  await store.agentResumed('mismatch-1', '', 'Accepted', { task_id: 'current', turn_token: 'turn-3', source: 'orchestration' });
+  await store.claim('mismatch-1', ['src/mismatch']);
+  await stop({ agent_id: 'mismatch-1', task_id: 'old', turn_token: 'turn-3' });
+  await store.agentStarted('accepted-1', 'worker', '', { source: 'hook' });
+  await store.claim('accepted-1', ['src/accepted']);
+  await stop({ agent_id: 'accepted-1' });
+  await stop({ agent_id: 'accepted-1' });
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.events.filter(event => event.type === 'hook_stop_diagnostic' && event.data?.hook_event === 'SubagentStop')
+    .map(event => [event.data.agent_id, event.data.disposition]), [
+    [undefined, 'missing_id'], ['unknown-1', 'unknown_agent'], ['stale-1', 'stale_turn'],
+    ['mismatch-1', 'task_mismatch'], ['accepted-1', 'stopped'], ['accepted-1', 'duplicate'],
+  ]);
+  assert.deepEqual(snapshot.claims.claims.map(claim => claim.agent_id).sort(), ['mismatch-1', 'stale-1']);
+  assert.deepEqual(snapshot.status.active_agents.map(agent => agent.id).sort(), ['mismatch-1', 'stale-1']);
+  assert.equal(snapshot.events.filter(event => event.type === 'agent_stopped' && event.data.agent_id === 'accepted-1').length, 1);
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET_PROMPT|SECRET_PATH|SECRET_ERROR|SECRET INVALID ID/);
+});
+
 test('hook without native child or parent IDs does not fabricate a confirmed link', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
   const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
   await handleHook({ hook_event_name: 'SubagentStart', task_id: 'task-1', root_turn_id: 'root-1', task: 'SECRET_PROMPT' }, store);
   assert.deepEqual(await store.readChildLinks(), []);
   assert.deepEqual((await store.readStatus()).agents, []);
+});
+
+test('TaskStop callback diagnostic stores only categorical facts and never stops an agent', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  await store.agentStarted('a1aed61c61cefb817', 'worker', '', { source: 'hook' });
+  await handleHook({ hook_event_name: 'PostToolUse', tool_name: 'TaskStop',
+    tool_input: { task_id: 'a1aed61c61cefb817', prompt: 'SECRET_INPUT' },
+    tool_response: { task_type: 'local_agent',
+      message: 'Successfully stopped task: a1aed61c61cefb817 (SECRET_RESPONSE)' } }, store);
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.events.filter(event => event.type === 'taskstop_callback_diagnostic').map(event => event.data), [{
+    hook_event: 'PostToolUse', input_id: 'valid', response_id: 'missing_or_invalid', task_type: 'local_agent', success_marker: 'other_or_missing',
+  }]);
+  assert.deepEqual(snapshot.status.active_agents.map(agent => agent.id), ['a1aed61c61cefb817']);
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET_INPUT|SECRET_RESPONSE/);
+});
+
+test('TaskStop accepts punctuation in a confirmed task description without storing it', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  const id = 'native-1';
+  await store.agentStarted(id, 'worker', '', { source: 'hook' });
+  await store.claim(id, ['src/backend']);
+  await handleHook({ hook_event_name: 'PostToolUse', tool_name: 'TaskStop',
+    tool_input: { task_id: id },
+    tool_response: { task_id: id, task_type: 'local_agent', message: `Successfully stopped task: ${id} (Fix #42: parser?! [a+b] & @scope)` } }, store);
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.status.active_agents, []);
+  assert.deepEqual(snapshot.claims.claims, []);
+  assert.equal(snapshot.events.filter(event => event.type === 'agent_stopped').length, 1);
+  assert.doesNotMatch(JSON.stringify(snapshot), /Fix #42|parser\?!|@scope/);
+});
+
+test('TaskStop accepts balanced parentheses in a bounded task description', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  const id = 'native-1';
+  await store.agentStarted(id, 'worker', '', { source: 'hook' });
+  await handleHook({ hook_event_name: 'PostToolUse', tool_name: 'TaskStop',
+    tool_input: { task_id: id },
+    tool_response: { task_id: id, task_type: 'local_agent', message: `Successfully stopped task: ${id} (Fix (nested) parser)` } }, store);
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.status.active_agents, []);
+  assert.doesNotMatch(JSON.stringify(snapshot), /Fix \(nested\) parser/);
+});
+
+test('confirmed native TaskStop stops only its matching active agent and releases its claims', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  const id = 'a1aed61c61cefb817';
+  await store.agentStarted(id, 'worker', '', { source: 'hook' });
+  await store.claim(id, ['src/backend']);
+  const stop = { hook_event_name: 'PostToolUse', tool_name: 'TaskStop',
+    tool_input: { task_id: id, prompt: 'SECRET_INPUT' },
+    tool_response: { task_id: id, task_type: 'local_agent', message: `Successfully stopped task: ${id} (Observe native forced termination)`, command: 'SECRET_RESPONSE' } };
+  await handleHook(stop, store);
+  await handleHook(stop, store);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: id }, store);
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.status.active_agents, []);
+  assert.deepEqual(snapshot.claims.claims, []);
+  assert.equal(snapshot.status.agents[0].stop_source, 'hook');
+  assert.equal(snapshot.events.filter(event => event.type === 'agent_stopped').length, 1);
+  assert.deepEqual(snapshot.events.filter(event => event.type === 'hook_stop_diagnostic').map(event => [event.data.hook_event, event.data.disposition]), [
+    ['PostToolUse:TaskStop', 'stopped'], ['PostToolUse:TaskStop', 'duplicate'], ['SubagentStop', 'duplicate'],
+  ]);
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET_INPUT|SECRET_RESPONSE|Observe native forced termination/);
+});
+
+test('TaskStop failure, mismatch, invalid ID, and wrong context leave agents active', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  const id = 'a1aed61c61cefb817';
+  await store.agentStarted(id, 'worker', '', { source: 'hook' });
+  await store.claim(id, ['src/backend']);
+  const base = { hook_event_name: 'PostToolUse', tool_name: 'TaskStop', tool_input: { task_id: id },
+    tool_response: { task_id: id, task_type: 'local_agent', message: `Successfully stopped task: ${id} (Worker)` } };
+  for (const payload of [
+    { ...base, tool_response: { ...base.tool_response, message: 'Failed to stop task: SECRET_ERROR' } },
+    { ...base, tool_response: { ...base.tool_response, isError: true } },
+    { ...base, tool_response: { ...base.tool_response, message: `${base.tool_response.message} SECRET_ERROR` } },
+    { ...base, tool_response: { ...base.tool_response, message: `Successfully stopped task: ${id} (Worker) (SECRET_ERROR)` } },
+    { ...base, tool_response: { ...base.tool_response, message: `Successfully stopped task: ${id} (Worker) STOP_FAILED)` } },
+    // Without a structured native success field, even a legitimate unmatched ')' is ambiguous and must fail closed.
+    { ...base, tool_response: { ...base.tool_response, message: `Successfully stopped task: ${id} (Fix unmatched ) in parser)` } },
+    { ...base, tool_response: { ...base.tool_response, task_id: 'other-id' } },
+    { ...base, tool_response: { ...base.tool_response, task_type: 'shell_command' } },
+    { ...base, tool_response: { ...base.tool_response, message: `Successfully stopped task: ${id} (Worker)\nSECRET_ERROR` } },
+    { ...base, tool_input: { task_id: 'INVALID ID' } },
+    { ...base, tool_name: 'Agent' },
+    { ...base, hook_event_name: 'PreToolUse' },
+  ]) await handleHook(payload, store);
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.status.active_agents.map(agent => agent.id), [id]);
+  assert.deepEqual(snapshot.claims.claims.map(claim => claim.agent_id), [id]);
+  assert.equal(snapshot.events.filter(event => event.type === 'agent_stopped').length, 0);
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET_ERROR|INVALID ID/);
+});
+
+test('unknown and delayed native TaskStop cannot stop a resumed turn or release its claims', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root);
+  const stop = id => ({ hook_event_name: 'PostToolUse', tool_name: 'TaskStop', tool_input: { task_id: id },
+    tool_response: { task_id: id, task_type: 'local_agent', message: `Successfully stopped task: ${id} (Worker)` } });
+  await handleHook(stop('unknown-1'), store);
+  await store.agentStarted('native-1', 'worker', '', { source: 'hook' });
+  await store.agentStopped('native-1', 'stopped', { source: 'hook' });
+  await store.agentResumed('native-1', '', 'Accepted', { turn_token: 'turn-2', source: 'orchestration' });
+  await store.claim('native-1', ['src/backend']);
+  await handleHook(stop('native-1'), store);
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.status.active_agents.map(agent => agent.id), ['native-1']);
+  assert.deepEqual(snapshot.claims.claims.map(claim => claim.agent_id), ['native-1']);
+  assert.deepEqual(snapshot.events.filter(event => event.type === 'hook_stop_diagnostic' && event.data.hook_event === 'PostToolUse:TaskStop')
+    .map(event => event.data.disposition), ['unknown_agent', 'stale_turn']);
+});
+
+test('TaskStop handler rejects mismatched project checkout without recording a native stop', async () => {
+  const f = await fixedFixture();
+  const store = new RuntimeStore(await (await import('../scripts/project-context.mjs')).loadFixedProjectContext({ harnessRoot: f.harnessRoot, cwd: f.projectRoot }));
+  const id = 'a1aed61c61cefb817';
+  await store.agentStarted(id, 'worker', '', { source: 'hook' });
+  await runHook({ hook_event_name: 'PostToolUse', tool_name: 'TaskStop', cwd: path.dirname(f.harnessRoot),
+    tool_input: { task_id: id }, tool_response: { task_id: id, task_type: 'local_agent', message: `Successfully stopped task: ${id} (Worker)` } },
+  { harnessRoot: f.harnessRoot, diagnostic: () => {} });
+  assert.deepEqual((await store.readStatus()).active_agents.map(agent => agent.id), [id]);
 });
 
 test('unknown event names cannot persist prompt or credential-shaped payload text', async () => {
@@ -111,6 +271,44 @@ test('hook forwards explicitly observed native IDs into one exact child link', a
   assert.equal((await store.readChildLinks())[0].completed_at, '2026-10-01T00:00:01.000Z');
 });
 
+test('duplicate native stop preserves the first confirmed child completion time', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
+  await handleHook({ hook_event_name: 'SubagentStart', agent_id: 'child-1', parent_thread_id: 'parent-1',
+    spawned_at: '2026-10-01T00:00:00.000Z' }, store);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'child-1', completed_at: '2026-10-01T00:00:01.000Z' }, store);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'child-1', completed_at: '2026-10-01T00:00:02.000Z' }, store);
+  assert.equal((await store.readChildLinks())[0].completed_at, '2026-10-01T00:00:01.000Z');
+  assert.equal((await store.readEvents()).filter(event => event.type === 'agent_stopped').length, 1);
+});
+
+test('an orchestration-only stop accepts the first native completion time', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
+  await handleHook({ hook_event_name: 'SubagentStart', agent_id: 'child-1', parent_thread_id: 'parent-1',
+    spawned_at: '2026-10-01T00:00:00.000Z' }, store);
+  await store.agentStopped('child-1', 'stopped', { source: 'orchestration' });
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'child-1', completed_at: '2026-10-01T00:00:01.000Z' }, store);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'child-1', completed_at: '2026-10-01T00:00:02.000Z' }, store);
+  assert.equal((await store.readChildLinks())[0].completed_at, '2026-10-01T00:00:01.000Z');
+  assert.equal((await store.readStatus()).agents[0].stop_source, 'hook');
+});
+
+test('a stale stop hook cannot complete a resumed child link', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
+  await handleHook({ hook_event_name: 'SubagentStart', agent_id: 'child-1', parent_thread_id: 'parent-1', root_turn_id: 'root-1',
+    spawned_at: '2026-10-01T00:00:00.000Z' }, store);
+  await store.agentStopped('child-1', 'stopped', { source: 'orchestration' });
+  await store.agentResumed('child-1', '', 'Accepted', { turn_token: 'turn-2', source: 'orchestration' });
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'child-1', completed_at: '2026-10-01T00:00:01.000Z' }, store);
+  assert.deepEqual((await store.readStatus()).active_agents.map(agent => agent.id), ['child-1']);
+  assert.equal((await store.readChildLinks())[0].completed_at, null);
+  await handleHook({ hook_event_name: 'SubagentStop', agent_id: 'child-1', turn_token: 'turn-2', completed_at: '2026-10-01T00:00:02.000Z' }, store);
+  assert.deepEqual((await store.readStatus()).active_agents, []);
+  assert.equal((await store.readChildLinks())[0].completed_at, '2026-10-01T00:00:02.000Z');
+});
+
 test('hook preserves an opaque legacy task ID without copying prompt text into its short label', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
   const store = new RuntimeStore(RuntimeStore.coreContext({ engineRoot: root, runtimeRoot: path.join(root, '.ai', 'runtime') }));
@@ -164,16 +362,63 @@ test('hook dispatch reconciles orchestration fallback without duplicate lifecycl
   assert.deepEqual(snapshot.events.filter(event => event.type === 'hook_dispatch').map(event => event.data.hook_event), ['SubagentStart', 'SubagentStop']);
 });
 
-test('a duplicate stop hook reconciles history without releasing a newly claimed scope', async () => {
+test('a duplicate stop hook releases only a claim already held at the orchestration stop', async () => {
+  for (const claimBeforeStop of [true, false]) {
+    const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+    const store = RuntimeStore.legacyFixture(root); await store.initialize();
+    await store.agentStarted('native-1', 'worker', 'First', { task_id: 'task-1', source: 'orchestration' });
+    if (claimBeforeStop) await store.claim('native-1', ['src/backend/']);
+    await store.agentStopped('native-1', 'stopped', { task_id: 'task-1', source: 'orchestration' });
+    if (!claimBeforeStop) await store.claim('native-1', ['src/backend/']);
+    await legacyHook({ hook_event_name: 'SubagentStop', agent_id: 'native-1', agent_type: 'worker', task_id: 'task-1' }, root);
+    const snapshot = await store.readSnapshot();
+    assert.equal(snapshot.status.agents[0].stop_source, 'hook');
+    assert.deepEqual(snapshot.claims.claims.map(claim => claim.agent_id), claimBeforeStop ? [] : ['native-1']);
+    assert.equal(snapshot.events.filter(event => event.type === 'claim_released').length, claimBeforeStop ? 1 : 0);
+    assert.equal(snapshot.events.filter(event => event.type === 'agent_stopped').length, 1);
+  }
+});
+
+test('a duplicate TaskStop releases a claim held at the earlier orchestration stop', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
   const store = RuntimeStore.legacyFixture(root); await store.initialize();
-  await store.agentStarted('native-1', 'worker', 'First', { task_id: 'task-1', source: 'orchestration' });
-  await store.agentStopped('native-1', 'stopped', { task_id: 'task-1', source: 'orchestration' });
+  const id = 'native-1';
+  await store.agentStarted(id, 'worker', '', { source: 'orchestration' });
+  await store.claim(id, ['src/backend/']);
+  await store.agentStopped(id, 'stopped', { source: 'orchestration' });
+  await handleHook({ hook_event_name: 'PostToolUse', tool_name: 'TaskStop',
+    tool_input: { task_id: id },
+    tool_response: { task_id: id, task_type: 'local_agent', message: `Successfully stopped task: ${id} (Fix #42: parser?!)` } }, store);
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.claims.claims, []);
+  assert.equal(snapshot.status.agents[0].stop_source, 'hook');
+  assert.equal(snapshot.events.filter(event => event.type === 'agent_stopped').length, 1);
+});
+
+test('a replaced claim after orchestration stop survives a duplicate hook', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root); await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'First', { source: 'orchestration' });
+  await store.claim('native-1', ['src/first/']);
+  await store.agentStopped('native-1', 'stopped', { source: 'orchestration' });
+  await store.claim('native-1', ['src/first/']);
+  await legacyHook({ hook_event_name: 'SubagentStop', agent_id: 'native-1' }, root);
+  assert.deepEqual((await store.readClaims()).claims.map(claim => claim.scopes), [['src/first']]);
+});
+
+test('a delayed duplicate cannot release a resumed turn claim even if the previous turn held a claim', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pure-hook-'));
+  const store = RuntimeStore.legacyFixture(root); await store.initialize();
+  await store.agentStarted('native-1', 'worker', 'First', { source: 'orchestration' });
   await store.claim('native-1', ['src/backend/']);
-  await legacyHook({ hook_event_name: 'SubagentStop', agent_id: 'native-1', agent_type: 'worker', task_id: 'task-1' }, root);
-  const status = await store.readStatus();
-  assert.equal(status.agents[0].stop_source, 'hook');
-  assert.deepEqual((await store.readClaims()).claims.map(claim => claim.agent_id), ['native-1']);
+  await store.agentStopped('native-1', 'stopped', { source: 'orchestration' });
+  await store.agentResumed('native-1', 'Second', 'Accepted', { turn_token: 'turn-2', source: 'orchestration' });
+  await store.claim('native-1', ['src/frontend/']);
+  await legacyHook({ hook_event_name: 'SubagentStop', agent_id: 'native-1' }, root);
+  const snapshot = await store.readSnapshot();
+  assert.deepEqual(snapshot.status.active_agents.map(agent => agent.id), ['native-1']);
+  assert.deepEqual(snapshot.claims.claims.map(claim => claim.scopes), [['src/frontend']]);
+  assert.equal(snapshot.events.filter(event => event.type === 'claim_released').length, 0);
 });
 
 test('a stale uncorrelated stop hook cannot end a resumed turn or release its claim', async () => {

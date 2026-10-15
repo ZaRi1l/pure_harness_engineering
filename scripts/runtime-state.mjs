@@ -224,13 +224,19 @@ export class RuntimeStore {
       await atomicWrite(this.agentLinksPath, `${JSON.stringify({ schema_version: 1, project_id: projectId, links }, null, 2)}\n`);
     });
   }
-  async completeChildLink(childAgentId, completedAt) {
+  async completeChildLink(childAgentId, completedAt, stopSignalId = null) {
     const projectId = this.telemetryProjectId();
     if (typeof childAgentId !== 'string' || !childAgentId) throw new Error('invalid child agent id');
     await this.withLock(async () => {
+      if (stopSignalId) {
+        const { status } = await this.loadUnlocked();
+        const agent = status.agents.find(item => this.ownsAgent(item, childAgentId));
+        if (!agent?.stopped_at || agent.stop_signal_id !== stopSignalId) return;
+      }
       const links = await this.readChildLinks();
       const index = links.findIndex(item => item.child_agent_id === childAgentId);
       if (index < 0) throw new Error('unknown child agent id');
+      if (stopSignalId && links[index].completed_at !== null) return;
       links[index] = normalizeChildLink({ ...links[index], acknowledgement: 'success', completed_at: completedAt }, projectId);
       await atomicWrite(this.agentLinksPath, `${JSON.stringify({ schema_version: 1, project_id: projectId, links }, null, 2)}\n`);
     });
@@ -256,7 +262,7 @@ export class RuntimeStore {
     await atomicWrite(this.claimsPath, JSON.stringify(claims || { schema_version: 1, claims: [] }, null, 2) + '\n');
     await atomicWrite(this.tasksPath, `${JSON.stringify(tasks, null, 2)}\n`); await atomicWrite(this.statusPath, `${JSON.stringify(status, null, 2)}\n`); await atomicWrite(this.eventsPath, events.slice(-this.eventLimit).map(item => JSON.stringify(item)).join('\n') + (events.length ? '\n' : ''));
   }
-  async mutate(update) { await this.withLock(async () => { const state = await this.loadUnlocked(); await update(state); await this.persist(state.status, state.tasks, state.events, state.claims); }); }
+  async mutate(update) { return this.withLock(async () => { const state = await this.loadUnlocked(); const result = await update(state); await this.persist(state.status, state.tasks, state.events, state.claims); return result; }); }
   async setGoal(goal, phase = 'planning') { await this.mutate(({ status, events }) => { status.current_goal = String(goal).slice(0, 500); status.phase = phase; events.push(this.event('goal', 'Goal updated', { phase })); }); }
   async setPhase(phase) { await this.mutate(({ status, events }) => { status.phase = phase; events.push(this.event('phase', `Phase: ${phase}`)); }); }
   async upsertTask(id, title, taskStatus, owner = null) { if (!TASK_STATUSES.has(taskStatus)) throw new Error(`invalid task status: ${taskStatus}`); await this.mutate(({ tasks, events }) => { assertUniqueTaskIds(tasks); let record = tasks.tasks.find(task => task.id === id); if (!record) { record = { id, created_at: now() }; tasks.tasks.push(record); } Object.assign(record, { title: String(title).slice(0, 300), status: taskStatus, owner, updated_at: now(), revision: uniqueTaskToken(tasks, 'revision') }); events.push(this.event('task', `${id}: ${taskStatus}`, { owner })); }); }
@@ -336,22 +342,36 @@ export class RuntimeStore {
     Object.assign(agent, { status: 'running', current_task: String(task).slice(0, 300), started_at: startedAt, stopped_at: null,
       start_signal_id: signal.id, task_id: metadata.task_id, start_source: source, resumed_at: startedAt,
       turn_token: metadata.turn_token, resume_tokens: [...(agent.resume_tokens || []), metadata.turn_token] });
-    delete agent.stop_signal_id; delete agent.stop_source;
+    delete agent.stop_signal_id; delete agent.stop_source; delete agent.stop_claim_token;
     status.active_agents = status.active_agents.filter(item => !this.ownsAgent(item, id)).concat({ ...agent });
     events.push(this.event('agent_started', `${agent.role || 'agent'} resumed`, { agent_id: id, ...this.checkoutMetadata(), source }));
   }); }
-  async agentStopped(id, outcome = 'stopped', metadata = {}) { await this.mutate(({ status, events, claims }) => {
+  async agentStopped(id, outcome = 'stopped', metadata = {}) { return this.mutate(({ status, events, claims }) => {
     const source = lifecycleSource(metadata.source), active = status.active_agents.find(item => this.ownsAgent(item, id));
+    const diagnose = disposition => {
+      if (source === 'hook') events.push(this.event('hook_stop_diagnostic', 'Native stop hook assessed', {
+        hook_event: metadata.hook_event === 'PostToolUse:TaskStop' ? 'PostToolUse:TaskStop' : 'SubagentStop',
+        ...(typeof id === 'string' && id.length <= 128 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(id) ? { agent_id: id } : {}),
+        disposition,
+      }));
+    };
     let agent = status.agents.find(item => this.ownsAgent(item, id));
     if (!agent && active) { agent = { ...active }; status.agents = status.agents.concat(agent).slice(-30); }
-    if (!agent) return;
-    if (agent.resumed_at && source === 'hook' && metadata.turn_token !== agent.turn_token) return;
+    if (!agent) { diagnose('unknown_agent'); return null; }
+    if (agent.resumed_at && source === 'hook' && metadata.turn_token !== agent.turn_token) { diagnose('stale_turn'); return null; }
     if (agent.resumed_at && metadata.turn_token !== agent.turn_token) throw new Error('current turn token required to stop resumed agent');
-    if (agent.task_id && metadata.task_id && agent.task_id !== metadata.task_id) return;
+    if (agent.task_id && metadata.task_id && agent.task_id !== metadata.task_id) { diagnose('task_mismatch'); return null; }
     if (agent.stopped_at) {
+      diagnose('duplicate');
       const stopSource = preferredLifecycleSource(agent.stop_source, source);
       if (stopSource) agent.stop_source = stopSource;
       if (source === 'hook') {
+        const held = claims.claims.find(claim => this.ownsClaim(claim, id));
+        if (agent.stop_claim_token && held?.claim_token === agent.stop_claim_token) {
+          claims.claims = claims.claims.filter(claim => claim !== held);
+          events.push(this.event('claim_released', `${id} released claims`, { agent_id: id, ...this.checkoutMetadata() }));
+        }
+        delete agent.stop_claim_token;
         agent.status = outcome;
         const signal = agent.stop_signal_id ? status.signals.find(item => item.id === agent.stop_signal_id) : undefined;
         if (signal) {
@@ -362,9 +382,12 @@ export class RuntimeStore {
         const event = events.findLast(item => item.type === 'agent_stopped' && this.ownsLifecycleEvent(item, id));
         if (event) { event.message = `${agent.role || 'agent'} ${outcome}`; event.data = { ...event.data, source: 'hook' }; }
       }
-      return;
+      return source === 'hook' ? agent.stop_signal_id ?? null : null;
     }
+    diagnose('stopped');
     const stoppedAt = now(), stopSource = preferredLifecycleSource(agent.stop_source, source);
+    const held = claims.claims.find(claim => this.ownsClaim(claim, id));
+    if (source === 'orchestration' && held?.claim_token) agent.stop_claim_token = held.claim_token;
     status.active_agents = status.active_agents.filter(item => !this.ownsAgent(item, id));
     Object.assign(agent, { status: outcome, stopped_at: stoppedAt, ...(stopSource ? { stop_source: stopSource } : {}) });
     const signal = appendSignal(status, { time: stoppedAt, from: id, to: 'main', kind: 'result', summary: String(outcome).slice(0, 300), ...signalMetadata({ task_id: metadata.task_id, status: outcome !== 'stopped' ? outcome : undefined }) });
@@ -374,6 +397,7 @@ export class RuntimeStore {
       claims.claims = claims.claims.filter(claim => !this.ownsClaim(claim, id));
       events.push(this.event('claim_released', `${id} released claims`, { agent_id: id, ...this.checkoutMetadata() }));
     }
+    return source === 'hook' ? signal.id : null;
   }); }
   async addSignal(from, to, kind, summary, metadata = {}) { await this.mutate(({ status, events }) => { appendSignal(status, { time: now(), from, to, kind: String(kind).slice(0, 80), summary: String(summary).slice(0, 300), ...signalMetadata(metadata) }); events.push(this.event('agent_signal', `${from} -> ${to}: ${kind}`)); }); }
   async setVerification(checkStatus, name, detail = '') { if (!VERIFICATION_STATUSES.has(checkStatus)) throw new Error(`invalid verification status: ${checkStatus}`); await this.mutate(({ status, events }) => { const checks = status.verification.checks.filter(check => check.name !== name).concat({ name, status: checkStatus, detail: String(detail).slice(0, 500), time: now() }); const values = new Set(checks.map(check => check.status)); const aggregate = ['failed', 'blocked', 'running'].find(value => values.has(value)) || (checks.length && values.size === 1 && values.has('passed') ? 'passed' : 'not_run'); status.verification = { status: aggregate, checks, last_run: now() }; events.push(this.event('verification', `${name}: ${checkStatus}`)); }); }
@@ -419,7 +443,7 @@ export class RuntimeStore {
         const overlaps = coreOnWindows ? scopesOverlap(scope.toLowerCase(), existing.toLowerCase()) : scopesOverlap(scope, existing);
         if ((kind === 'installation' || this.sharesCheckout(claim)) && (claim.scope_kind || (this.context ? 'checkout' : 'legacy')) === kind && overlaps) throw new Error('claim conflict: ' + scope + ' overlaps ' + existing + ' (' + claim.agent_id + ')');
       }
-      claims.claims = others.concat({ agent_id: String(agentId), scopes: normalized, claimed_at: now(), ...(this.context ? { project_id: this.context.projectId, checkout_root: this.context.checkoutRoot, scope_kind: kind } : {}) });
+      claims.claims = others.concat({ agent_id: String(agentId), scopes: normalized, claimed_at: now(), claim_token: randomUUID(), ...(this.context ? { project_id: this.context.projectId, checkout_root: this.context.checkoutRoot, scope_kind: kind } : {}) });
       events.push(this.event('claim', String(agentId) + ' claimed ' + normalized.join(', '), { agent_id: agentId }));
     });
   }

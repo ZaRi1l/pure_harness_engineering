@@ -36,11 +36,14 @@ function assertRoots(harnessRoot, projectRoot, target, setupId) {
 }
 function allowed(relative, target) {
   if (typeof relative !== 'string' || relative.includes('\\') || relative.split('/').some(part => !part || part === '.' || part === '..')) return false;
+  if (target === 'claude' && relative.startsWith('.claude/skills/pure-harness-lifecycle/')
+      && !['.claude/skills/pure-harness-lifecycle/.claude-plugin/plugin.json', '.claude/skills/pure-harness-lifecycle/hooks/hooks.json'].includes(relative)) return false;
   const skill = new RegExp(`^\\.${target === 'claude' ? 'claude' : 'agents'}/skills/[a-z][a-z0-9-]*/(?:[^/]+/)*[^/]+$`).test(relative);
   const role = target === 'antigravity' ? /^\.agents\/agents\/[a-z][a-z0-9-]*\/agent\.md$/.test(relative)
     : target === 'codex' ? /^\.codex\/agents\/[a-z][a-z0-9-]*\.toml$/.test(relative)
     : new RegExp(`^\\.${target}/agents/[a-z][a-z0-9-]*\\.md$`).test(relative);
-  return skill || role || relative === 'AGENTS.md' || (target === 'codex' && ['.codex/config.toml', '.codex/hooks.json'].includes(relative)) || (target === 'claude' && relative === '.claude/settings.json');
+  return skill || role || relative === 'AGENTS.md' || (target === 'codex' && ['.codex/config.toml', '.codex/hooks.json'].includes(relative))
+    || (target === 'claude' && ['.claude/settings.json', '.claude/skills/pure-harness-lifecycle/.claude-plugin/plugin.json', '.claude/skills/pure-harness-lifecycle/hooks/hooks.json'].includes(relative));
 }
 async function safePath(root, relative, target) {
   if (!allowed(relative, target)) throw new Error(`bridge path not allowlisted: ${relative}`);
@@ -146,34 +149,64 @@ function mergeHooks(prior, harnessRoot) {
   }
   return `${JSON.stringify(document, null, 2)}\n`;
 }
-function claudeHookEntry(harnessRoot) {
-  return { hooks: [{ type: 'command', command: 'node', args: [path.join(harnessRoot, 'scripts/hook-runtime.mjs')], timeout: 5 }] };
+const claudePluginRoot = '.claude/skills/pure-harness-lifecycle';
+const claudeSettings = '.claude/settings.json';
+const claudePluginFiles = [
+  `${claudePluginRoot}/.claude-plugin/plugin.json`,
+  `${claudePluginRoot}/hooks/hooks.json`,
+];
+function claudeHookEntry(script) {
+  return { hooks: [{ type: 'command', command: 'node', args: [script], timeout: 5 }] };
 }
-function mergeClaudeHooks(prior, harnessRoot) {
-  let document;
-  try { document = prior ? JSON.parse(prior) : {}; } catch { return null; }
-  if (!document || typeof document !== 'object' || Array.isArray(document)
-      || (document.hooks !== undefined && (!document.hooks || typeof document.hooks !== 'object' || Array.isArray(document.hooks)))) return null;
-  document.hooks ??= {};
+function claudePluginHooks(script) {
+  return { hooks: {
+    SubagentStart: [claudeHookEntry(script)],
+    SubagentStop: [claudeHookEntry(script)],
+    PostToolUse: [{ matcher: 'TaskStop', ...claudeHookEntry(script) }],
+  } };
+}
+function legacyClaudeSettings(body, script, taskStop) {
+  const data = body ? JSON.parse(body) : {};
+  data.hooks ??= {};
   for (const event of ['SubagentStart', 'SubagentStop']) {
-    if (document.hooks[event] !== undefined && !Array.isArray(document.hooks[event])) return null;
-    document.hooks[event] ??= [];
-    document.hooks[event].push(claudeHookEntry(harnessRoot));
+    data.hooks[event] ??= [];
+    data.hooks[event].push(claudeHookEntry(script));
   }
-  return `${JSON.stringify(document, null, 2)}\n`;
+  if (taskStop) {
+    data.hooks.PostToolUse ??= [];
+    data.hooks.PostToolUse.push({ matcher: 'TaskStop', ...claudeHookEntry(script) });
+  }
+  return Buffer.from(`${JSON.stringify(data, null, 2)}\n`);
 }
-function stripOwnedClaudeHooks(prior, harnessRoot) {
-  try {
-    const data = JSON.parse(prior);
-    const owned = JSON.stringify(claudeHookEntry(harnessRoot));
-    for (const event of ['SubagentStart', 'SubagentStop']) {
-      if (!Array.isArray(data.hooks?.[event])) return null;
-      const last = data.hooks[event].length - 1;
-      if (last < 0 || JSON.stringify(data.hooks[event][last]) !== owned) return null;
-      data.hooks[event].pop();
-    }
-    return JSON.stringify(data);
-  } catch { return null; }
+function hasClaudeHookConflict(body, script) {
+  if (!body?.length) return false;
+  let data;
+  try { data = JSON.parse(body); } catch { return true; }
+  if (!data || typeof data !== 'object' || Array.isArray(data) || (data.hooks !== undefined && (!data.hooks || typeof data.hooks !== 'object' || Array.isArray(data.hooks)))) return true;
+  for (const event of ['SubagentStart', 'SubagentStop', 'PostToolUse']) {
+    const entries = data.hooks?.[event];
+    if (entries !== undefined && !Array.isArray(entries)) return true;
+    if (entries?.some(entry => Array.isArray(entry?.hooks) && entry.hooks.some(hook => hook?.type === 'command'
+        && (hook.args?.includes?.(script) || hook.command?.includes?.(script))))) return true;
+  }
+  return false;
+}
+async function retiredClaudeSettings(harnessRoot, setupId, previous, script) {
+  if (!previous || previous.path !== claudeSettings || !previous.afterSha256) throw new Error('invalid legacy Claude settings ownership');
+  if (previous.beforeSha256 === null && previous.backupSha256 === null) {
+    if (sha(legacyClaudeSettings(null, script, false)) !== previous.afterSha256
+        && sha(legacyClaudeSettings(null, script, true)) !== previous.afterSha256)
+      throw new Error('legacy Claude settings ownership cannot be verified');
+    return null;
+  }
+  if (!previous.beforeSha256 || previous.beforeSha256 !== previous.backupSha256) throw new Error('invalid legacy Claude settings backup');
+  const backup = await bytes(await backupPath(harnessRoot, setupId, 'claude', claudeSettings));
+  if (!backup || sha(backup) !== previous.beforeSha256) throw new Error('bridge backup drift: .claude/settings.json');
+  if (sha(legacyClaudeSettings(backup.toString('utf8'), script, false)) !== previous.afterSha256
+      && sha(legacyClaudeSettings(backup.toString('utf8'), script, true)) !== previous.afterSha256)
+    throw new Error('legacy Claude settings ownership cannot be verified');
+  if (hasClaudeHookConflict(backup, script)) throw new Error('legacy Claude settings backup conflicts with plugin hooks');
+  return backup;
 }
 function stripOwnedHooks(prior, harnessRoot) {
   try {
@@ -238,7 +271,8 @@ export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = pr
   if (!path.isAbsolute(inputRoot) || !['core', 'all'].includes(profile)) throw new Error('invalid bridge input/profile');
   if ((await pendingBridgeJournals(harnessRoot)).length) throw new Error('pending bridge journal requires recovery before planning');
   const priorManifest = await manifest(harnessRoot, target);
-  if (priorManifest && priorManifest.setupId !== setupId) throw new Error('bridge setupId mismatch');
+  if (priorManifest && (priorManifest.setupId !== setupId || priorManifest.projectRoot !== path.resolve(projectRoot))) throw new Error('bridge setupId/project mismatch');
+  if (priorManifest?.actions.some(item => !allowed(item.path, target))) throw new Error('bridge prior path not allowlisted');
   const shared = await otherSharedOwners(harnessRoot, projectRoot, setupId, target);
   const compatibility = JSON.parse(await readFile(path.join(harnessRoot, 'harness/compatibility.json'), 'utf8'));
   const roles = await loadRoles(harnessRoot, profile), skills = await listSkills(harnessRoot, profile);
@@ -268,28 +302,39 @@ export async function buildBridgePlan({ harnessRoot, projectRoot, inputRoot = pr
     add('.codex/hooks.json', hooks ?? '', hooks === null ? 'conflict' : 'hooks');
   }
   if (target === 'claude') {
-    let hookInput = (await bytes(await safePath(inputRoot, '.claude/settings.json', target)))?.toString('utf8') ?? '';
-    if (prior.has('.claude/settings.json')) hookInput = stripOwnedClaudeHooks(hookInput, harnessRoot);
-    const hooks = hookInput === null ? null : mergeClaudeHooks(hookInput, harnessRoot);
-    add('.claude/settings.json', hooks ?? '', hooks === null ? 'conflict' : 'hooks');
+    const script = await checkedPath(harnessRoot, 'scripts/hook-runtime.mjs');
+    const runtime = await bytes(script);
+    if (!runtime) throw new Error('missing verified Claude hook runtime script');
+    sourceHashes.hookRuntime = sha(runtime);
+    const settingsBytes = await bytes(await safePath(inputRoot, claudeSettings, target));
+    const priorSettings = prior.get(claudeSettings);
+    if (priorSettings) {
+      const restored = await retiredClaudeSettings(harnessRoot, setupId, priorSettings, script);
+      desired.set(claudeSettings, { path: claudeSettings, body: restored, kind: 'retire', sourcePath: null });
+    } else if (hasClaudeHookConflict(settingsBytes, script)) {
+      desired.set(claudeSettings, { path: claudeSettings, body: null, kind: 'conflict', sourcePath: null });
+    }
+    add(claudePluginFiles[0], `${JSON.stringify({ name: 'pure-harness-lifecycle', version: '0.1.0', description: 'Project-scoped Pure Harness agent lifecycle hooks' }, null, 2)}\n`, 'plugin');
+    add(claudePluginFiles[1], `${JSON.stringify(claudePluginHooks(script), null, 2)}\n`, 'hooks');
   }
   let agentsInput = (await bytes(await safePath(inputRoot, 'AGENTS.md', target)))?.toString('utf8') ?? '';
   if (prior.has('agents.md') || shared.has('AGENTS.md')) agentsInput = stripOwnedAgents(agentsInput);
   const agents = mergeAgents(agentsInput, harnessRoot);
   add('AGENTS.md', agents ?? '', agents === null ? 'conflict' : 'instructions');
   const actions = [];
-  for (const item of [...desired.values()].sort((a, b) => a.path.localeCompare(b.path))) {
+  for (const item of [...desired.values()].sort((a, b) => (a.kind === 'retire') - (b.kind === 'retire') || a.path.localeCompare(b.path))) {
     const before = await bytes(await safePath(inputRoot, item.path, target));
     const beforeSha256 = before ? sha(before) : null;
     const owned = prior.get(item.path.toLowerCase());
     const borrowed = shared.get(item.path)?.entry;
-    let action = item.kind === 'conflict' ? 'conflict' : !before ? 'create' : before.equals(item.body) ? 'unchanged'
+    let action = item.kind === 'conflict' ? 'conflict' : item.kind === 'retire' ? 'retire-owned'
+      : !before ? 'create' : before.equals(item.body) ? 'unchanged'
       : owned && owned.afterSha256 === beforeSha256 ? 'replace-owned'
-      : ['registry', 'hooks', 'instructions'].includes(item.kind) && !owned ? 'append-managed-block' : 'conflict';
+      : ['registry', 'hooks', 'instructions'].includes(item.kind) && item.path !== claudePluginFiles[1] && !owned ? 'append-managed-block' : 'conflict';
     if (owned && owned.afterSha256 !== beforeSha256) action = 'conflict';
-    if (borrowed && (borrowed.afterSha256 !== beforeSha256 || borrowed.afterSha256 !== sha(item.body))) action = 'conflict';
+    if (borrowed && (borrowed.afterSha256 !== beforeSha256 || !item.body || borrowed.afterSha256 !== sha(item.body))) action = 'conflict';
     actions.push({ path: item.path, kind: item.kind, sourcePath: item.sourcePath ?? null, action, beforeSha256,
-      afterSha256: action === 'conflict' ? null : sha(item.body) });
+      afterSha256: action === 'conflict' ? null : item.body ? sha(item.body) : null });
   }
   const plan = { schemaVersion: 1, harnessRoot: path.resolve(harnessRoot), projectRoot: path.resolve(projectRoot), inputRoot: path.resolve(inputRoot), target, setupId, profile, actions, sourceHashes, nativeSmoke: 'unverified' };
   plan.planSha256 = planDigest(plan);
@@ -312,6 +357,22 @@ async function withLock(harnessRoot, run) {
 async function backupPath(harnessRoot, setupId, target, relative) {
   return safeStatePath(harnessRoot, `.harness/backups/${setupId}/${target}/${sha(relative)}`);
 }
+async function createBackup(file, content, relative, recordCreation) {
+  await mkdir(path.dirname(file), { recursive: true });
+  const handle = await open(file, 'wx').catch(error => {
+    if (error.code === 'EEXIST') throw new Error(`bridge backup collision: ${relative}`);
+    throw error;
+  });
+  try {
+    await handle.writeFile(content);
+    await handle.close();
+    await recordCreation();
+  } catch (error) {
+    await handle.close().catch(() => {});
+    await rm(file, { force: true });
+    throw error;
+  }
+}
 function bridgeResult(plan, changedPaths) {
   return { setupId: plan.setupId, target: plan.target, projectRoot: plan.projectRoot, changedPaths, manifestPath: path.join(plan.harnessRoot, manifestPath(plan.target)), nativeSmoke: 'unverified' };
 }
@@ -329,6 +390,7 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
     const desired = planBodies.get(replay);
     if (plan.actions.some(item => item.action === 'conflict')) throw new Error('bridge plan contains review conflict');
     const priorManifest = await manifest(harnessRoot, plan.target);
+    const priorManifestBytes = await bytes(await safeStatePath(harnessRoot, manifestPath(plan.target)));
     const shared = await otherSharedOwners(harnessRoot, plan.projectRoot, plan.setupId, plan.target);
     const journal = { schemaVersion: 1, setupId: plan.setupId, target: plan.target, priorManifest, actions: [], borrowedBackups: [] };
     for (const item of plan.actions) {
@@ -346,18 +408,25 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
         const backup = before && !previousOwnership ? await backupPath(harnessRoot, plan.setupId, plan.target, item.path) : null;
         const entry = { path: item.path, kind: item.kind, beforeSha256: previousOwnership ? previousOwnership.beforeSha256 : item.beforeSha256,
           afterSha256: item.afterSha256, backupSha256: previousOwnership ? previousOwnership.backupSha256 : before ? sha(before) : null, ownership: 'harness-managed' };
-        journal.actions.push({ ...entry, currentBeforeBase64: before?.toString('base64') ?? null, backupCreated: !!backup });
+        const journalEntry = { ...entry, currentBeforeBase64: before?.toString('base64') ?? null, backupCreated: false };
+        journal.actions.push(journalEntry);
         await atomicWrite(journalFile, JSON.stringify(journal));
-        if (backup) await atomicWrite(backup, before);
+        if (backup) await createBackup(backup, before, item.path, async () => {
+          journalEntry.backupCreated = true;
+          await atomicWrite(journalFile, JSON.stringify(journal));
+        });
         await beforeWrite?.(item.path);
         const latest = await bytes(await safePath(outputRoot, item.path, plan.target));
         if ((latest ? sha(latest) : null) !== item.beforeSha256) throw new Error(`bridge destination changed before write: ${item.path}`);
-        await atomicWrite(destination, desired.get(item.path));
-        if (sha(await readFile(destination)) !== item.afterSha256) throw new Error(`bridge post-write mismatch: ${item.path}`);
+        if (desired.get(item.path)) await atomicWrite(destination, desired.get(item.path));
+        else await unlink(destination);
+        const written = await bytes(destination);
+        if ((written ? sha(written) : null) !== item.afterSha256) throw new Error(`bridge post-write mismatch: ${item.path}`);
         changedPaths.push(item.path);
       }
       const retained = new Map((priorManifest?.actions ?? []).map(item => [item.path.toLowerCase(), item]));
       for (const item of journal.actions) {
+        if (item.kind === 'retire') { retained.delete(item.path.toLowerCase()); continue; }
         const { currentBeforeBase64, backupCreated, ...recordEntry } = item;
         retained.set(item.path.toLowerCase(), recordEntry);
       }
@@ -371,12 +440,11 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
           if (!sourceBackup || sha(sourceBackup) !== borrowed.entry.backupSha256) throw new Error(`shared bridge backup drift: ${item.path}`);
           const destinationBackup = await backupPath(harnessRoot, plan.setupId, plan.target, item.path);
           const existingBackup = await bytes(destinationBackup);
-          if (existingBackup && sha(existingBackup) !== borrowed.entry.backupSha256) throw new Error(`shared bridge backup collision: ${item.path}`);
-          if (!existingBackup) {
+          if (existingBackup) throw new Error(`shared bridge backup collision: ${item.path}`);
+          await createBackup(destinationBackup, sourceBackup, item.path, async () => {
             journal.borrowedBackups.push(item.path);
             await atomicWrite(journalFile, JSON.stringify(journal));
-            await atomicWrite(destinationBackup, sourceBackup);
-          }
+          });
         }
         retained.set(item.path.toLowerCase(), { ...borrowed.entry, ownership: 'harness-shared' });
       }
@@ -401,7 +469,7 @@ export async function applyBridgePlan({ harnessRoot, plan } = {}, { beforeWrite 
         for (const item of journal.actions) if (item.backupCreated) await rm(await backupPath(harnessRoot, plan.setupId, plan.target, item.path), { force: true });
         for (const relative of journal.borrowedBackups) await rm(await backupPath(harnessRoot, plan.setupId, plan.target, relative), { force: true });
         const file = await safeStatePath(harnessRoot, manifestPath(plan.target));
-        if (priorManifest) await atomicWrite(file, JSON.stringify(priorManifest, null, 2) + '\n');
+        if (priorManifestBytes) await atomicWrite(file, priorManifestBytes);
         else await rm(file, { force: true });
         await rm(journalFile, { force: true });
       }
