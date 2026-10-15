@@ -58,6 +58,20 @@ async function mountIntegratedDashboard({ fetchImpl, hash = '#dashboard', DateIm
   };
 }
 
+test('dashboard excludes session-ended records from reported-running counts', async () => {
+  const current = snapshot();
+  current.status.active_agents = [
+    { id: 'recorded', role: 'worker', short_title: 'Scoped work', status: 'running', started_at: new Date().toISOString() },
+    { id: 'uncertain', role: 'worker', short_title: 'Prior work', status: 'running', started_at: new Date().toISOString(), session_ended_at: new Date().toISOString() }
+  ];
+  const fetchImpl = async url => response(url === '/runtime/snapshot' ? current : url === '/runtime/tasks' ? tasks() : url === '/runtime/telemetry' ? telemetry() : { agents: [], skills: [], taskSpecs: [] });
+  const { document } = await mountIntegratedDashboard({ fetchImpl });
+  const agents = document.querySelector('#agents').textContent;
+  assert.match(agents, /Scoped work/);
+  assert.match(agents, /Prior work.*session ended; agent stop unverified/);
+  assert.match(agents, /Reported running: 1; started\/resumed within past hour: 1/);
+});
+
 test('dashboard-integrated-navigation-keeps-real-widgets', async () => {
   const current = { snapshot: snapshot(), tasks: tasks(), telemetry: telemetry() };
   const requests = { snapshot: [], tasks: [], telemetry: [] };
@@ -124,6 +138,7 @@ test('dashboard-integrated-navigation-keeps-real-widgets', async () => {
   current.telemetry = telemetry(120, 60);
   await ui.tick();
   assert.equal(document.querySelector('#telemetry [data-telemetry-value="processed"]').textContent, '60');
+  document.querySelector('#agent-network [data-network-older]').click();
   document.querySelector('#agent-network [data-node-id="newer-agent"]').click();
   assert.match(document.querySelector('#agent-network [data-node-id="newer-agent"]').className, /asn-selected/);
   ui.preferences.setLocale('ko'); await ui.settle();

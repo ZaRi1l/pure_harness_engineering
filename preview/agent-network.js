@@ -20,6 +20,10 @@
   const string = value => String(value ?? '');
   const displayTime = value => value == null || (typeof value === 'string' && !value.trim())
     ? undefined : typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : 'unknown';
+  const recordedAge = (value, at = Date.now()) => {
+    const start = typeof value === 'string' ? Date.parse(value) : NaN;
+    return Number.isFinite(start) && start <= at ? at - start : null;
+  };
 
   function buildModel(snapshot = {}, catalog = {}, viewState = {}) {
     const status = snapshot?.status || {};
@@ -147,8 +151,13 @@
       'network.empty': 'Select an agent or signal. {agents} agents, {signals} signals.',
       'network.noData': 'No agents or signals in this snapshot.',
       'network.noActive': 'No agents reported running in this snapshot. Switch to Full history for retained records.',
-      'network.observed': 'Runtime records report {agents} as running. No live liveness check; last snapshot update: {time}. This is not the full native agent list.',
+      'network.noRecent': 'No recent records shown. Reveal older unconfirmed records or switch to Full history.',
+      'network.observed': 'Runtime records report {agents} as running without observed session end; {ended} session-ended, agent stop unverified. No live liveness check; last snapshot update: {time}. This is not the full native agent list.',
       'network.reportedRunning': 'reported running; liveness unconfirmed',
+      'network.sessionEnded': 'session ended; agent stop unverified',
+      'network.showOlder': 'Show {count} older unconfirmed records', 'network.hideOlder': 'Hide {count} older unconfirmed records',
+      'network.recordedLink': 'recorded delegation (signal expired)', 'network.recordedElapsed': '{time} since recorded start; liveness unconfirmed',
+      'common.unknown': 'unknown',
       'network.noTaskData': 'No linked network data for the selected task.',
       'network.historyNote': 'History includes only agents and signals retained in this runtime.',
       'network.agent': 'Agent', 'network.role': 'Role', 'network.status': 'Status', 'network.model': 'Model',
@@ -167,7 +176,7 @@
     if (!document.querySelector?.('[data-agent-network-styles]')) {
       const style = element(document, 'style');
       data(style, 'agent-network-styles', '');
-      style.textContent = '.asn{font:13px/1.45 system-ui,sans-serif;color:inherit}.asn-controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.asn-controls button,.asn-controls select{font:inherit;width:auto;max-width:100%;padding:5px 9px;border:1px solid var(--graph-border,#607383);border-radius:6px;background:var(--graph-control,#172730);color:inherit}.asn-main{display:grid;grid-template-columns:minmax(0,2fr) minmax(220px,1fr);gap:12px}.asn-svg{display:block;width:100%;height:auto;min-height:360px;border:1px solid var(--graph-border,#53616c);border-radius:8px;background:var(--graph-bg,#0e1a22);touch-action:none}.asn-detail{padding:12px;border:1px solid var(--graph-border,#53616c);border-radius:8px;overflow-wrap:anywhere}.asn-detail-row{margin:4px 0}.asn-edge{fill:none;stroke:var(--graph-edge,#6f8794);stroke-width:2}.asn-edge[data-emphasis="false"]{opacity:.23}.asn-edge[data-failure="true"]{stroke:#d94f68;stroke-dasharray:7 4}.asn-edge[data-kind="retry"]{stroke:#c98b16;stroke-width:3;stroke-dasharray:6 4}.asn-hit{fill:none;stroke:transparent;stroke-width:16;cursor:pointer}.asn-node{cursor:pointer}.asn-node circle{fill:#397f9b;stroke:var(--graph-node-stroke,#c1dae5);stroke-width:2}.asn-node[data-status="reported-running"] circle{fill:#9b792c;stroke-dasharray:4 3}.asn-node[data-status="completed"] circle{fill:#60798b}.asn-node[data-status="failed"] circle,.asn-node[data-status="blocked"] circle{fill:#ad4058}.asn-node[data-emphasis="false"]{opacity:.3}.asn-node text{fill:var(--graph-text,#f1f5f8);text-anchor:middle;font:11px system-ui,sans-serif;pointer-events:none}.asn-selected circle,.asn-selected path,.asn-node:focus-visible circle,.asn-hit:focus-visible{stroke:#d3a700;stroke-width:4;outline:none}.asn-note{margin:5px 0;color:var(--m,#9bb2bf)}@media(max-width:760px){.asn-main{grid-template-columns:1fr}.asn-svg{min-height:280px}.asn-detail{min-height:100px}}';
+      style.textContent = '.asn{font:13px/1.45 system-ui,sans-serif;color:inherit}.asn-controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.asn-controls button,.asn-controls select{font:inherit;width:auto;max-width:100%;padding:5px 9px;border:1px solid var(--graph-border,#607383);border-radius:6px;background:var(--graph-control,#172730);color:inherit}.asn-main{display:grid;grid-template-columns:minmax(0,2fr) minmax(220px,1fr);gap:12px}.asn-svg{display:block;width:100%;height:auto;min-height:360px;border:1px solid var(--graph-border,#53616c);border-radius:8px;background:var(--graph-bg,#0e1a22);touch-action:none}.asn-detail{padding:12px;border:1px solid var(--graph-border,#53616c);border-radius:8px;overflow-wrap:anywhere}.asn-detail-row{margin:4px 0}.asn-edge{fill:none;stroke:var(--graph-edge,#6f8794);stroke-width:2}.asn-edge[data-view-only="true"]{stroke-dasharray:3 5;opacity:.7}.asn-edge[data-emphasis="false"]{opacity:.23}.asn-edge[data-failure="true"]{stroke:#d94f68;stroke-dasharray:7 4}.asn-edge[data-kind="retry"]{stroke:#c98b16;stroke-width:3;stroke-dasharray:6 4}.asn-hit{fill:none;stroke:transparent;stroke-width:16;cursor:pointer}.asn-node{cursor:pointer}.asn-node circle{fill:#397f9b;stroke:var(--graph-node-stroke,#c1dae5);stroke-width:2}.asn-node[data-status="reported-running"] circle{fill:#9b792c;stroke-dasharray:4 3}.asn-node[data-status="completed"] circle{fill:#60798b}.asn-node[data-status="failed"] circle,.asn-node[data-status="blocked"] circle{fill:#ad4058}.asn-node[data-emphasis="false"]{opacity:.3}.asn-node text{fill:var(--graph-text,#f1f5f8);text-anchor:middle;font:11px system-ui,sans-serif;pointer-events:none}.asn-selected circle,.asn-selected path,.asn-node:focus-visible circle,.asn-hit:focus-visible{stroke:#d3a700;stroke-width:4;outline:none}.asn-note{margin:5px 0;color:var(--m,#9bb2bf)}@media(max-width:760px){.asn-main{grid-template-columns:1fr}.asn-svg{min-height:280px}.asn-detail{min-height:100px}}';
       document.head.append(style);
     }
     const root = element(document, 'section', 'asn');
@@ -191,6 +200,8 @@
     const task = data(element(document, 'select'), 'network-task', '');
     task.setAttribute('aria-label', t('network.taskLabel'));
     controls.append(filter, task);
+    const older = options.staticMode ? null : data(element(document, 'button'), 'network-older', '');
+    if (older) { older.type = 'button'; controls.append(older); }
     const actionButtons = new Map();
     const actionLabels = new Map([['zoom-in', 'network.zoomIn'], ['zoom-out', 'network.zoomOut'], ['fit', 'network.fit'], ['reset', 'network.reset']]);
     for (const [action, key] of actionLabels) {
@@ -214,6 +225,7 @@
       mode: options.staticMode ? 'history' : (['live', 'history'].includes(initial.mode) ? initial.mode : 'live'),
       filter: ['all', 'active', 'failures', 'task'].includes(initial.filter) ? initial.filter : 'all',
       taskId: string(initial.taskId),
+      showOlder: initial.showOlder === true,
       selection: initial.selection ? { ...initial.selection } : null,
       transform: {
         x: Number.isFinite(initialTransform.x) ? initialTransform.x : 0,
@@ -224,18 +236,27 @@
     let snapshot = {}, catalog = {}, model = { nodes: [], edges: [], tasks: [] }, positions = [], drag = null, destroyed = false, focusAfterDraw = false;
     const bounds = { width: 800, height: 440 };
     const clampScale = value => Math.max(0.35, Math.min(3, value));
-    function visibleModel() {
-      if (state.mode !== 'live') return model;
+    const recordedRunning = () => {
       const activeIds = Array.isArray(snapshot?.status?.active_agents)
         ? new Set(snapshot.status.active_agents.filter(item => item?.id).map(item => item.id)) : null;
-      const running = model.nodes.filter(node => node.id !== 'main' && active(node) && (!activeIds || activeIds.has(node.id)));
+      return model.nodes.filter(node => node.id !== 'main' && active(node) && (!activeIds || activeIds.has(node.id)));
+    };
+    const olderRecord = node => Boolean(node.session_ended_at) || recordedAge(node.started_at) > 3600000;
+    function visibleModel() {
+      if (state.mode !== 'live') return model;
+      const running = recordedRunning().filter(node => state.showOlder || !olderRecord(node));
       const main = model.nodes.find(node => node.id === 'main');
       const nodes = running.length
         ? [{ ...main, id: 'main', role: main?.role || 'main', status: 'unknown', claims: main?.claims || [], matchesFilter: Boolean(main?.matchesFilter), emphasized: true }, ...running]
         : [];
       const runningIds = new Set(running.map(node => node.id));
       const ids = new Set(nodes.map(node => node.id));
-      return { nodes, edges: model.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to) && (runningIds.has(edge.from) || runningIds.has(edge.to))), tasks: model.tasks };
+      const edges = model.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to) && (runningIds.has(edge.from) || runningIds.has(edge.to)));
+      const retainedSignals = snapshot?.status?.signals || [];
+      for (const node of running) if (node.start_signal_id && !retainedSignals.some(signal => signal.id === node.start_signal_id))
+        edges.push({ from: 'main', to: node.id, kind: 'recorded', key: `recorded:${node.id}:${node.start_signal_id}`, viewOnly: true,
+          summary: t('network.recordedLink'), emphasized: node.emphasized, matchesFilter: node.matchesFilter });
+      return { nodes, edges, tasks: model.tasks };
     }
     function scaleAround(factor, x = bounds.width / 2, y = bounds.height / 2) {
       const next = clampScale(state.transform.scale * factor);
@@ -262,7 +283,9 @@
       if (state.selection.type === 'node') {
         for (const [label, value] of [
           [t('network.agent'), record.id], [t('network.role'), record.role], [t('network.status'), shownStatus(record.status)], [t('network.model'), record.catalog?.model],
-          [t('network.reasoning'), record.catalog?.reasoning], [t('network.currentLastTask'), record.current_task], [t('network.started'), displayTime(record.started_at)],
+          [t('network.reasoning'), record.catalog?.reasoning], [t('network.currentLastTask'), record.short_title || record.current_task], [t('network.started'), displayTime(record.started_at)],
+          ...(record.session_ended_at ? [[t('network.status'), t('network.sessionEnded')]] : []),
+          ...(record.status === 'active' ? [[t('network.elapsed'), t('network.recordedElapsed', { time: recordedAge(record.started_at) === null ? t('common.unknown') : `${Math.floor(recordedAge(record.started_at) / 60000)}m` })]] : []),
           [t('network.finished'), displayTime(record.stopped_at)], [t('network.claims'), record.claims.join(', ')],
           [t('network.inbound'), visible.edges.filter(edge => edge.to === record.id).length],
           [t('network.outbound'), visible.edges.filter(edge => edge.from === record.id).length]
@@ -299,6 +322,12 @@
       mode && (mode.value = state.mode);
       filter.value = state.filter;
       task.value = state.taskId;
+      if (older) {
+        const count = recordedRunning().filter(olderRecord).length;
+        older.hidden = state.mode !== 'live' || count === 0;
+        older.textContent = t(state.showOlder ? 'network.hideOlder' : 'network.showOlder', { count });
+        older.setAttribute('aria-expanded', String(state.showOlder && state.mode === 'live'));
+      }
       graph.setAttribute('transform', `translate(${state.transform.x} ${state.transform.y}) scale(${state.transform.scale})`);
       graph.replaceChildren();
       let focusTarget = null, focusedTarget = null;
@@ -309,8 +338,9 @@
       const counts = new Map();
       for (const edge of visibleModelNow.edges) {
         const path = pathFor(edge, counts);
-        const visible = svgElement(document, 'path', { d: path, class: 'asn-edge', 'marker-end': 'url(#asn-arrow)', 'data-emphasis': edge.emphasized, 'data-failure': failed(edge.kind) || failed(edge.status), 'data-kind': string(edge.kind) });
-        const hit = data(svgElement(document, 'path', { d: path, class: 'asn-hit', 'aria-label': t('network.edgeLabel', { from: string(edge.from), to: string(edge.to), kind: string(edge.kind) }), 'data-edge-key': edge.key }), 'edge-index', edge.index);
+        const visible = svgElement(document, 'path', { d: path, class: 'asn-edge', 'marker-end': 'url(#asn-arrow)', 'data-emphasis': edge.emphasized, 'data-failure': failed(edge.kind) || failed(edge.status), 'data-kind': string(edge.kind), 'data-view-only': Boolean(edge.viewOnly) });
+        const hit = svgElement(document, 'path', { d: path, class: 'asn-hit', 'aria-label': edge.viewOnly ? t('network.recordedLink') : t('network.edgeLabel', { from: string(edge.from), to: string(edge.to), kind: string(edge.kind) }), 'data-edge-key': edge.key });
+        if (!edge.viewOnly) data(hit, 'edge-index', edge.index);
         if (state.selection?.type === 'edge' && state.selection.key === edge.key) visible.setAttribute('class', 'asn-edge asn-selected');
         if (state.selection?.type === 'edge' && state.selection.key === edge.key) focusTarget = hit;
         if (focusedEdgeKey === edge.key) focusedTarget = hit;
@@ -319,7 +349,7 @@
       }
       for (const position of positions) {
         const node = visibleModelNow.nodes.find(item => item.id === position.id);
-        const group = data(svgElement(document, 'g', { class: state.selection?.type === 'node' && state.selection.id === node.id ? 'asn-node asn-selected' : 'asn-node', 'data-status': node.status === 'active' ? 'reported-running' : node.status, 'data-emphasis': node.emphasized, 'aria-label': `${node.id}, ${shownStatus(node.status)}` }), 'node-id', node.id);
+        const group = data(svgElement(document, 'g', { class: state.selection?.type === 'node' && state.selection.id === node.id ? 'asn-node asn-selected' : 'asn-node', 'data-status': node.status === 'active' ? 'reported-running' : node.status, 'data-emphasis': node.emphasized, 'aria-label': `${node.id}, ${node.short_title ? `${node.short_title}, ` : ''}${node.session_ended_at ? t('network.sessionEnded') : shownStatus(node.status)}` }), 'node-id', node.id);
         group.append(svgElement(document, 'circle', { cx: position.x, cy: position.y, r: 18 }));
         const label = svgElement(document, 'text', { x: position.x, y: position.y + 34 }); label.textContent = node.id; group.append(label);
         if (state.selection?.type === 'node' && state.selection.id === node.id) focusTarget = group;
@@ -328,16 +358,17 @@
         graph.append(group);
       }
       note.textContent = model.nodes.length === 0 && model.edges.length === 0 ? t('network.noData')
-        : state.mode === 'live' && !visibleModelNow.nodes.some(node => node.id !== 'main') ? t('network.noActive')
+        : state.mode === 'live' && !visibleModelNow.nodes.some(node => node.id !== 'main') ? t(recordedRunning().length ? 'network.noRecent' : 'network.noActive')
           : state.filter === 'task' && state.taskId && !visibleModelNow.nodes.some(node => node.matchesFilter) && !visibleModelNow.edges.some(edge => edge.matchesFilter)
             ? t('network.noTaskData')
             : t('network.historyNote');
       provenance.textContent = t('network.observed', {
-        agents: Array.isArray(snapshot?.status?.active_agents) ? snapshot.status.active_agents.length : model.nodes.filter(node => node.id !== 'main' && active(node)).length,
+        agents: recordedRunning().filter(node => !node.session_ended_at).length,
+        ended: recordedRunning().filter(node => node.session_ended_at).length,
         time: displayTime(snapshot?.status?.last_update) || t('common.unknown')
       });
       drawDetail();
-      if (focused) focusedTarget?.focus();
+      if (focused) (focusedTarget || (older && !older.hidden ? older : mode || filter)).focus();
       else if (focusAfterDraw) focusTarget?.focus();
       focusAfterDraw = false;
     }
@@ -391,6 +422,7 @@
       draw();
     }
     mode?.addEventListener('change', () => { state.mode = mode.value; rebuild(); });
+    older?.addEventListener('click', () => { state.showOlder = !state.showOlder; rebuild(); });
     filter.addEventListener('change', () => { state.filter = filter.value; rebuild(); });
     task.addEventListener('change', () => { state.taskId = task.value; rebuild(); });
     actionButtons.get('zoom-in').addEventListener('click', () => scaleAround(1.2));
@@ -439,7 +471,7 @@
     return {
       update,
       setTranslate,
-      getState: () => ({ mode: state.mode, filter: state.filter, taskId: state.taskId, selection: state.selection && { ...state.selection }, transform: { ...state.transform } }),
+      getState: () => ({ mode: state.mode, filter: state.filter, taskId: state.taskId, showOlder: state.showOlder, selection: state.selection && { ...state.selection }, transform: { ...state.transform } }),
       destroy: () => {
         if (destroyed) return;
         destroyed = true;

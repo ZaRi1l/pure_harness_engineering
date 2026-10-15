@@ -422,6 +422,84 @@ test('reported-running mode hides historical nodes and signals from DOM and keyb
   controller.destroy();
 });
 
+test('live mode collapses old and session-ended records with keyboard-accessible reveal and stable selection', () => {
+  const { host, document } = fixture();
+  const now = Date.now();
+  const recent = new Date(now - 10 * 60000).toISOString();
+  const old = new Date(now - 61 * 60000).toISOString();
+  const current = { status: { agents: [], active_agents: [
+    { id: 'recent', status: 'running', started_at: recent, short_title: 'Review graph' },
+    { id: 'old', status: 'running', started_at: old },
+    { id: 'ended', status: 'running', started_at: recent, session_ended_at: recent }
+  ], signals: [] } };
+  const controller = api.create(host);
+  controller.update(current, catalog);
+  const toggle = find(host, 'network-older', '');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.match(toggle.textContent, /Show 2 older unconfirmed records/);
+  assert.ok(find(host, 'node-id', 'recent'));
+  assert.equal(find(host, 'node-id', 'old'), undefined);
+  const oldOnly = { status: { agents: [], active_agents: current.status.active_agents.slice(1), signals: [] } };
+  controller.update(oldOnly, catalog);
+  assert.match(text(host), /No recent records shown.*Full history/);
+  controller.update(current, catalog);
+  toggle.focus(); toggle.click();
+  assert.equal(document.activeElement, toggle);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  find(host, 'node-id', 'old').keydown('Enter');
+  assert.equal(document.activeElement, find(host, 'node-id', 'old'));
+  controller.update(current, catalog);
+  assert.equal(document.activeElement, find(host, 'node-id', 'old'));
+  assert.equal(controller.getState().selection.id, 'old');
+  const mode = find(host, 'network-mode', ''); mode.value = 'history'; mode.dispatch('change');
+  assert.ok(find(host, 'node-id', 'ended'));
+  mode.value = 'live'; mode.dispatch('change');
+  assert.equal(controller.getState().selection.id, 'old');
+  toggle.click();
+  assert.equal(controller.getState().selection, null);
+  assert.equal(find(host, 'node-id', 'old'), undefined);
+  assert.equal(document.activeElement, toggle);
+  assert.match(text(host), /2 as running without observed session end; 1 session-ended, agent stop unverified/);
+  controller.destroy();
+});
+
+test('expired start signal yields a distinct view-only visual edge without changing snapshot data', () => {
+  const { host, document } = fixture();
+  const current = { status: { agents: [], active_agents: [{ id: 'child', status: 'running',
+    short_title: '<private> Safe title', started_at: new Date(Date.now() - 5 * 60000).toISOString(), start_signal_id: 'evicted' }],
+    signals: [{ id: 'other', from: 'main', to: 'child', kind: 'delegate', summary: 'Other delegation' }] } };
+  const controller = api.create(host);
+  controller.update(current, catalog);
+  const viewEdge = find(host, 'edge-key', 'recorded:child:evicted');
+  assert.ok(viewEdge);
+  assert.match(viewEdge.getAttribute('aria-label'), /recorded delegation \(signal expired\)/);
+  assert.match(document.head.textContent, /data-view-only/);
+  assert.equal(current.status.signals.length, 1);
+  viewEdge.keydown('Enter');
+  assert.match(text(find(host, 'network-detail', '')), /recorded delegation \(signal expired\)/);
+  assert.equal(document.activeElement, find(host, 'edge-key', 'recorded:child:evicted'));
+  find(host, 'node-id', 'child').click();
+  assert.match(text(find(host, 'network-detail', '')), /<private> Safe title.*since recorded start; liveness unconfirmed/s);
+  current.status.signals.push({ id: 'evicted', from: 'main', to: 'child', kind: 'delegate', summary: 'Original' });
+  controller.update(current, catalog);
+  assert.equal(find(host, 'edge-key', 'recorded:child:evicted'), undefined);
+  assert.equal(current.status.signals.length, 2);
+  controller.destroy();
+});
+
+test('future or malformed recorded starts render unknown age, not negative duration', () => {
+  const { host } = fixture();
+  const controller = api.create(host);
+  const current = { status: { agents: [], active_agents: [{ id: 'child', status: 'running', started_at: new Date(Date.now() + 60000).toISOString() }], signals: [] } };
+  controller.update(current, catalog);
+  find(host, 'node-id', 'child').click();
+  assert.match(text(find(host, 'network-detail', '')), /Elapsed: unknown since recorded start/);
+  current.status.active_agents[0].started_at = 'invalid';
+  controller.update(current, catalog);
+  assert.match(text(find(host, 'network-detail', '')), /Elapsed: unknown since recorded start/);
+  controller.destroy();
+});
+
 test('reported-running mode retains main delegation and result signals only for a reported-active worker', () => {
   const { host, document } = fixture();
   const current = {

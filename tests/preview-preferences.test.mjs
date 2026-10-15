@@ -153,6 +153,22 @@ test('reported-running and age-bucket copy never implies a live liveness check i
   assert.match(preferences.t('network.observed', { agents: 4, time: '2026-09-25T12:00:00Z' }), /런타임 기록.*4명.*생존 여부 미확인.*2026-09-25T12:00:00Z/);
 });
 
+test('older records, view-only links, and session uncertainty translate in both locales', () => {
+  const { api, document, storage } = fixture();
+  const preferences = api.create(document, { storage });
+  assert.equal(preferences.t('network.showOlder', { count: 2 }), 'Show 2 older unconfirmed records');
+  assert.match(preferences.t('network.recordedLink'), /signal expired/);
+  assert.match(preferences.t('network.recordedElapsed', { time: '10m' }), /10m.*liveness unconfirmed/);
+  assert.match(preferences.t('network.sessionEnded'), /agent stop unverified/);
+  assert.match(preferences.t('dashboard.sessionEnded'), /agent stop unverified/);
+  preferences.setLocale('ko');
+  assert.match(preferences.t('network.hideOlder', { count: 2 }), /2개 숨기기/);
+  assert.match(preferences.t('network.recordedLink'), /신호 만료/);
+  assert.match(preferences.t('network.recordedElapsed', { time: '10m' }), /10m.*생존 여부 미확인/);
+  assert.match(preferences.t('network.sessionEnded'), /에이전트 중지 미확인/);
+  assert.match(preferences.t('dashboard.sessionEnded'), /에이전트 중지 미확인/);
+});
+
 test('dashboard heading and network guide describe reported records, not confirmed runners', () => {
   const { api, document, storage } = fixture();
   const preferences = api.create(document, { storage });

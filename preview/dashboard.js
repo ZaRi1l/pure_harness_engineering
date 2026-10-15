@@ -212,10 +212,11 @@ async function paint() {
       bar.value = status.progress.completed;
       progress.append(bar);
     }
-    const reportedAgents = status.active_agents || [];
+    const recordedAgents = status.active_agents || [];
+    const reportedAgents = recordedAgents.filter(agent => !agent.session_ended_at);
     const observedAt = Date.now();
-    fill('#agents', reportedAgents, (li, agent) => {
-      li.textContent = `${q(agent.role)} — ${q(agent.current_task || t('dashboard.noTask'))} (${elapsed(agent.started_at, observedAt)}) — ${t('dashboard.reportedRunning')} · ${t(startedWithinPastHour(agent, observedAt) ? 'dashboard.startedRecent' : 'dashboard.startedOutside')}`;
+    fill('#agents', recordedAgents, (li, agent) => {
+      li.textContent = `${q(agent.role)} — ${q(agent.short_title || agent.current_task || t('dashboard.noTask'))} (${elapsed(agent.started_at, observedAt)}) — ${agent.session_ended_at ? t('dashboard.sessionEnded') : `${t('dashboard.reportedRunning')} · ${t(startedWithinPastHour(agent, observedAt) ? 'dashboard.startedRecent' : 'dashboard.startedOutside')}`}`;
     });
     const recentCount = reportedAgents.filter(agent => startedWithinPastHour(agent, observedAt)).length;
     document.querySelector('#agents').append(el('p', 'muted', t('dashboard.agentCount', { reported: reportedAgents.length, recent: recentCount, outside: reportedAgents.length - recentCount })));
