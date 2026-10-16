@@ -17,6 +17,8 @@ const el = (tag, className = '', text) => {
 let catalog = { agents: [], skills: [] };
 let selectedArtifactHref = '';
 let artifactRenderKey = '';
+let specsRenderKey = '';
+let specsRenderHost;
 let networkController;
 let networkHost;
 let renderedLocale = preferences.locale;
@@ -286,12 +288,20 @@ async function paintPreview() {
       fetch('/runtime/snapshot', { cache: 'no-store' }).then(response => response.json())
     ]);
     if (!current()) return;
-    specsHost.replaceChildren();
-    list(specsHost, specs.taskSpecs, (li, spec) => {
-      const details = el('details'), summary = el('summary', '', `${q(spec.title)} — ${q(spec.path)}`), source = el('pre', '', q(spec.content));
-      details.append(summary, source);
-      li.append(details);
-    });
+    const nextSpecsKey = JSON.stringify(specs.taskSpecs);
+    if (specsRenderHost !== specsHost || specsRenderKey !== nextSpecsKey) {
+      const existing = new Map(specsRenderHost === specsHost
+        ? [...specsHost.querySelectorAll('details')].map(details => [details.dataset.path, details]) : []);
+      specsHost.replaceChildren();
+      list(specsHost, specs.taskSpecs, (li, spec) => {
+        const details = existing.get(spec.path) || el('details');
+        details.dataset.path = spec.path;
+        details.replaceChildren(el('summary', '', `${q(spec.title)} — ${q(spec.path)}`), el('pre', '', q(spec.content)));
+        li.append(details);
+      });
+      specsRenderHost = specsHost;
+      specsRenderKey = nextSpecsKey;
+    }
     const artifacts = snapshot.status.artifact_preview_links || [];
     const nextArtifactKey = JSON.stringify([preferences.locale, artifacts.map(artifact => [artifact.label, artifact.href])]);
     if (artifactRenderKey !== nextArtifactKey || !artifactsHost.hasChildNodes()) {

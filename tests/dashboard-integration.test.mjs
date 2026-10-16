@@ -285,6 +285,58 @@ test('reported-running age buckets never claim native liveness at a fixed one-ho
   assert.doesNotMatch(text, /0 live agents|confirmed live/i);
 });
 
+test('Preview Task Specs retain disclosure state through polling and content changes', async () => {
+  let taskSpecs = [
+    { title: 'First', path: '.ai/tasks/first.md', content: 'First content' },
+    { title: 'Second', path: '.ai/tasks/second.md', content: 'Second content' }
+  ];
+  const fetchImpl = async url => response(url === '/runtime/catalog' ? { agents: [], skills: [] }
+    : url === '/runtime/task-specs' ? { taskSpecs }
+      : url === '/runtime/tasks' ? tasks()
+        : url === '/runtime/telemetry' ? telemetry() : snapshot());
+  const ui = await mountIntegratedDashboard({ fetchImpl, hash: '#preview' });
+  const { document } = ui;
+  const details = () => document.querySelectorAll('#task-specs details');
+  const [first, second] = details();
+  first.open = true;
+  await ui.tick();
+  assert.ok(details()[0] === first, 'unchanged open spec keeps its DOM node');
+  assert.ok(details()[1] === second, 'unchanged closed spec keeps its DOM node');
+  assert.equal(details()[0].open, true);
+  assert.equal(Boolean(details()[1].open), false);
+
+  taskSpecs = [
+    { title: 'First revised', path: '.ai/tasks/first.md', content: 'Revised content' },
+    { title: 'Second', path: '.ai/tasks/second.md', content: 'Second content' }
+  ];
+  await ui.tick();
+  assert.equal(details()[0], first);
+  assert.equal(details()[0].open, true);
+  assert.match(details()[0].textContent, /First revised.*Revised content/);
+  assert.equal(details()[1], second);
+  assert.equal(Boolean(details()[1].open), false);
+
+  taskSpecs = [taskSpecs[1]];
+  await ui.tick();
+  assert.equal(details().length, 1);
+  assert.equal(details()[0], second);
+  taskSpecs = [{ title: 'First returned', path: '.ai/tasks/first.md', content: 'Returned content' }, taskSpecs[0]];
+  await ui.tick();
+  assert.notEqual(details()[0], first);
+  assert.equal(Boolean(details()[0].open), false);
+  assert.equal(details()[1], second);
+
+  details()[0].open = true;
+  await ui.navigate('#guide');
+  await ui.navigate('#preview');
+  assert.equal(Boolean(details()[0].open), false);
+  assert.match(details()[0].textContent, /Returned content/);
+  const visited = details()[0];
+  ui.preferences.setLocale('ko'); await ui.settle();
+  assert.notEqual(details()[0], visited);
+  assert.match(document.querySelector('#app').textContent, /작업 명세|작업 사양/);
+});
+
 test('preview rejection after leaving its route cannot append an error to Guide', async () => {
   const delayedSpecs = deferred();
   let firstSpecs = true;
